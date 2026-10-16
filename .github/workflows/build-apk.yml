@@ -80,10 +80,10 @@ jobs:
           unzip -o -q so.zip
           ls -la
 
-          mkdir -p apps/figcraft-android/android/app/src/main/jniLibs/$ANDROID_ABI
+          mkdir -p "apps/figcraft-android/android/app/src/main/jniLibs/$ANDROID_ABI"
           cp libfigcraft_android.so \
-             apps/figcraft-android/android/app/src/main/jniLibs/$ANDROID_ABI/
-          chmod 644 apps/figcraft-android/android/app/src/main/jniLibs/$ANDROID_ABI/libfigcraft_android.so
+             "apps/figcraft-android/android/app/src/main/jniLibs/$ANDROID_ABI/"
+          chmod 644 "apps/figcraft-android/android/app/src/main/jniLibs/$ANDROID_ABI/libfigcraft_android.so"
           echo "### colocada en jniLibs/$ANDROID_ABI"
 
       - name: Fijar la versión de Gradle

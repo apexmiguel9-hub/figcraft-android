@@ -69,8 +69,8 @@ jobs:
         env:
           ANDROID_NDK_HOME: ${{ env.NDK_DIR }}
         run: |
-          cargo ndk -t $ANDROID_ABI -o ./target build -p figcraft-android --locked
-          SO=target/$ANDROID_TARGET/debug/libfigcraft_android.so
+          cargo ndk -t "$ANDROID_ABI" -o ./target build -p figcraft-android --locked
+          SO="target/$ANDROID_TARGET/debug/libfigcraft_android.so"
           echo "--- .so producido ---"
           ls -la "$SO"
           file "$SO"
