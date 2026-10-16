@@ -33,10 +33,7 @@ impl eframe::App for App {
             && (l > 0.0 || t > 0.0 || r > 0.0 || b > 0.0)
             && let Some(pantalla) = raw.screen_rect
         {
-            raw.screen_rect = Some(egui::Rect::from_min_max(
-                pantalla.min + egui::vec2(l, t),
-                pantalla.max - egui::vec2(r, b),
-            ));
+            raw.screen_rect = Some(egui::Rect::from_min_max(pantalla.min + egui::vec2(l, t), pantalla.max - egui::vec2(r, b)));
         }
     }
 
@@ -48,9 +45,7 @@ impl eframe::App for App {
 /// Construye el editor con servicios de escritorio degradados.
 /// v1: `NoServices` (sin rfd/arboard). El browser `egui_file` + `permiso.rs`
 /// de vectorcraft se enchufa aqui en el siguiente paso.
-pub fn build(
-    _cc: &eframe::CreationContext<'_>,
-) -> std::result::Result<Box<dyn eframe::App>, String> {
+pub fn build(_cc: &eframe::CreationContext<'_>) -> std::result::Result<Box<dyn eframe::App>, String> {
     let mut session = Session::empty();
     // Primera ejecucion: arranca en un fichero nuevo, no en home vacio.
     if session.docs.is_empty() {
@@ -63,18 +58,12 @@ pub fn build(
 fn wgpu_solo_opengl() -> eframe::egui_wgpu::WgpuConfiguration {
     let mut setup = eframe::egui_wgpu::WgpuSetupCreateNew::without_display_handle();
     setup.instance_descriptor.backends = eframe::egui_wgpu::wgpu::Backends::GL;
-    eframe::egui_wgpu::WgpuConfiguration {
-        wgpu_setup: eframe::egui_wgpu::WgpuSetup::CreateNew(setup),
-        ..Default::default()
-    }
+    eframe::egui_wgpu::WgpuConfiguration { wgpu_setup: eframe::egui_wgpu::WgpuSetup::CreateNew(setup), ..Default::default() }
 }
 
 fn window_options() -> eframe::NativeOptions {
     eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1280.0, 800.0])
-            .with_min_inner_size([360.0, 480.0])
-            .with_fullscreen(true),
+        viewport: egui::ViewportBuilder::default().with_inner_size([1280.0, 800.0]).with_min_inner_size([360.0, 480.0]).with_fullscreen(true),
         renderer: eframe::Renderer::Wgpu,
         wgpu_options: wgpu_solo_opengl(),
         ..Default::default()
@@ -83,11 +72,7 @@ fn window_options() -> eframe::NativeOptions {
 
 /// Arranque en escritorio, para probar sin movil.
 pub fn run() -> eframe::Result {
-    eframe::run_native(
-        "FigCraft",
-        window_options(),
-        Box::new(|cc| build(cc).map_err(|e| e.into())),
-    )
+    eframe::run_native("FigCraft", window_options(), Box::new(|cc| build(cc).map_err(|e| e.into())))
 }
 
 /// Insets del sistema en puntos como [l, t, r, b].
@@ -104,9 +89,7 @@ fn insets() -> [f32; 4] {
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidApp) {
-    android_logger::init_once(
-        android_logger::Config::default().with_max_level(log::LevelFilter::Info),
-    );
+    android_logger::init_once(android_logger::Config::default().with_max_level(log::LevelFilter::Info));
     log::set_max_level(log::LevelFilter::Info);
     log::info!("nivel de log resuelto: {}", log::max_level());
 
@@ -115,21 +98,11 @@ pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidA
         eprintln!("PANIC de Rust: {info}");
     }));
 
-    let options = eframe::NativeOptions {
-        android_app: Some(app),
-        ..window_options()
-    };
+    let options = eframe::NativeOptions { android_app: Some(app), ..window_options() };
 
-    log::info!(
-        "figcraft-android: arrancando, version {}",
-        env!("CARGO_PKG_VERSION")
-    );
+    log::info!("figcraft-android: arrancando, version {}", env!("CARGO_PKG_VERSION"));
 
-    let resultado = eframe::run_native(
-        "FigCraft",
-        options,
-        Box::new(|cc| build(cc).map_err(|e| e.into())),
-    );
+    let resultado = eframe::run_native("FigCraft", options, Box::new(|cc| build(cc).map_err(|e| e.into())));
 
     if let Err(e) = resultado {
         log::error!("figcraft-android: no se pudo arrancar: {e:?}");

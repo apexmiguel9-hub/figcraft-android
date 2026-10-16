@@ -28,13 +28,13 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Poner el rustc por delante de el de la imagen
-        run: echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       - name: Decir que rustc se va a usar
         run: rustc --version && cargo --version
 
       - name: Instalar target Android
-        run: rustup target add $ANDROID_TARGET
+        run: rustup target add "$ANDROID_TARGET"
 
       - name: Instalar cargo-ndk
         run: cargo install cargo-ndk --locked
@@ -63,7 +63,7 @@ jobs:
         run: |
           yes | sdkmanager --licenses > /dev/null 2>&1 || true
           sdkmanager "ndk;26.1.10909125"
-          echo "NDK_DIR=$ANDROID_SDK_ROOT/ndk/26.1.10909125" >> $GITHUB_ENV
+          echo "NDK_DIR=$ANDROID_SDK_ROOT/ndk/26.1.10909125" >> "$GITHUB_ENV"
 
       - name: Compilar la libreria nativa
         env:
@@ -75,7 +75,7 @@ jobs:
           ls -la "$SO"
           file "$SO"
           echo "--- quitando la tabla de depuracion (no los simbolos) ---"
-          STRIP=$(ls "$ANDROID_NDK_HOME"/toolchains/llvm/prebuilt/*/bin/llvm-strip 2>/dev/null | head -1)
+          STRIP=$(find "$ANDROID_NDK_HOME"/toolchains/llvm/prebuilt -name llvm-strip -type f 2>/dev/null | head -1)
           test -n "$STRIP" || { echo "::error::no encuentro llvm-strip en el NDK"; exit 1; }
           "$STRIP" --strip-debug "$SO"
           ls -la "$SO"
@@ -83,7 +83,7 @@ jobs:
       - name: Comprobar que el .so tiene tabla de excepciones
         run: |
           SO=target/$ANDROID_TARGET/debug/libfigcraft_android.so
-          READELF=$(ls "$ANDROID_NDK_HOME"/toolchains/llvm/prebuilt/*/bin/llvm-readelf 2>/dev/null | head -1)
+          READELF=$(find "$ANDROID_NDK_HOME"/toolchains/llvm/prebuilt -name llvm-readelf -type f 2>/dev/null | head -1)
           "$READELF" -S "$SO" | grep -q '\.eh_frame' || {
             echo "::error::el .so no tiene .eh_frame: los panics saldrán sin backtrace"
             exit 1
@@ -97,9 +97,9 @@ jobs:
         run: |
           SO=target/$ANDROID_TARGET/debug/libfigcraft_android.so
           BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt"
-          READELF=$(ls $BIN/*/bin/llvm-readelf | head -1)
-          NM=$(ls $BIN/*/bin/llvm-nm | head -1)
-          SIZE=$(ls $BIN/*/bin/llvm-size | head -1)
+          READELF=$(find "$BIN" -name llvm-readelf -type f | head -1)
+          NM=$(find "$BIN" -name llvm-nm -type f | head -1)
+          SIZE=$(find "$BIN" -name llvm-size -type f | head -1)
 
           echo "=== las diez secciones mas grandes ==="
           "$SIZE" -A -d "$SO" 2>/dev/null | sort -k2 -n -r | head -11 \

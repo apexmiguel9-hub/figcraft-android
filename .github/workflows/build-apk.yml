@@ -41,7 +41,7 @@ jobs:
         run: |
           yes | sdkmanager --licenses > /dev/null 2>&1 || true
           sdkmanager "ndk;26.1.10909125"
-          echo "NDK_DIR=$ANDROID_SDK_ROOT/ndk/26.1.10909125" >> $GITHUB_ENV
+          echo "NDK_DIR=$ANDROID_SDK_ROOT/ndk/26.1.10909125" >> "$GITHUB_ENV"
 
       - name: Cache de Gradle
         uses: actions/cache@v4
@@ -110,7 +110,7 @@ jobs:
           }
           echo "OK: la libreria esta dentro"
           unzip -p "$APK" lib/arm64-v8a/libfigcraft_android.so > /tmp/so.apk.so
-          READELF=$(ls "$ANDROID_NDK_HOME"/toolchains/llvm/prebuilt/*/bin/llvm-readelf 2>/dev/null | head -1)
+          READELF=$(find "$ANDROID_NDK_HOME"/toolchains/llvm/prebuilt -name llvm-readelf -type f 2>/dev/null | head -1)
           "$READELF" -S /tmp/so.apk.so | grep -q '\.symtab' || {
             echo "::error::la .so del APK no tiene .symtab"
             exit 1
@@ -120,7 +120,7 @@ jobs:
       - name: Comprobar que el APK se puede instalar
         run: |
           APK=apps/figcraft-android/android/app/build/outputs/apk/debug/app-debug.apk
-          AAPT=$(ls "$ANDROID_SDK_ROOT"/build-tools/*/aapt2 | head -1)
+          AAPT=$(find "$ANDROID_SDK_ROOT"/build-tools -name aapt2 -type f 2>/dev/null | head -1)
           "$AAPT" dump badging "$APK" | head -5
           "$AAPT" dump badging "$APK" | grep -q "package: name" || {
             echo "::error::aapt no lee el APK"
