@@ -23,7 +23,7 @@ impl eframe::App for App {
         self.0.logic(ctx);
     }
 
-    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, _raw: &mut egui::RawInput) {
         // Recorta `screen_rect`, no rellena `safe_area_insets`.
         // Medido en vectorcraft (2400x1080, 2.4375 px/pt): la ventana llega
         // edge-to-edge y winit 0.30 solo rellena safe_area en iOS.
@@ -31,9 +31,9 @@ impl eframe::App for App {
         #[cfg(target_os = "android")]
         if let [l, t, r, b] = insets()
             && (l > 0.0 || t > 0.0 || r > 0.0 || b > 0.0)
-            && let Some(pantalla) = raw.screen_rect
+            && let Some(pantalla) = _raw.screen_rect
         {
-            raw.screen_rect = Some(egui::Rect::from_min_max(pantalla.min + egui::vec2(l, t), pantalla.max - egui::vec2(r, b)));
+            _raw.screen_rect = Some(egui::Rect::from_min_max(pantalla.min + egui::vec2(l, t), pantalla.max - egui::vec2(r, b)));
         }
     }
 
