@@ -76,15 +76,45 @@ jobs:
           ls -la "$SO"
           file "$SO"
           echo "--- quitando la tabla de depuracion (no los simbolos) ---"
-          STRIP=$(find "$ANDROID_NDK_HOME"/toolchains/llvm/prebuilt -name llvm-strip -type f 2>/dev/null | head -1)
-          test -n "$STRIP" || { echo "::error::no encuentro llvm-strip en el NDK"; exit 1; }
+          # Encuentra las herramientas de llvm del NDK probando varias rutas posibles
+          # (la estructura interna del NDK varia segun la version de sdkmanager).
+          find_ndk_tool() {
+            local name="$1"
+            for cand in \
+              "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/$name" \
+              "$ANDROID_NDK_HOME/prebuilt/linux-x86_64/bin/$name" \
+              $(find "$ANDROID_NDK_HOME" -name "$name" -type f 2>/dev/null | head -1); do
+              if [ -x "$cand" ]; then
+                echo "$cand"
+                return 0
+              fi
+            done
+            return 1
+          }
+          STRIP=$(find_ndk_tool llvm-strip)
+          test -n "$STRIP" || { echo "::error::no encuentro llvm-strip en el NDK ($ANDROID_NDK_HOME)"; ls "$ANDROID_NDK_HOME" 2>/dev/null || true; exit 1; }
+          echo "Usando strip: $STRIP"
           "$STRIP" --strip-debug "$SO"
           ls -la "$SO"
 
       - name: Comprobar que el .so tiene tabla de excepciones
         run: |
+          # Encuentra las herramientas de llvm del NDK (igual que el paso de compilacion).
+          find_ndk_tool() {
+            local name="$1"
+            for cand in \
+              "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/$name" \
+              "$ANDROID_NDK_HOME/prebuilt/linux-x86_64/bin/$name" \
+              $(find "$ANDROID_NDK_HOME" -name "$name" -type f 2>/dev/null | head -1); do
+              if [ -x "$cand" ]; then
+                echo "$cand"
+                return 0
+              fi
+            done
+            return 1
+          }
           SO=target/$ANDROID_TARGET/debug/libfigcraft_android.so
-          READELF=$(find "$ANDROID_NDK_HOME"/toolchains/llvm/prebuilt -name llvm-readelf -type f 2>/dev/null | head -1)
+          READELF=$(find_ndk_tool llvm-readelf)
           "$READELF" -S "$SO" | grep -q '\.eh_frame' || {
             echo "::error::el .so no tiene .eh_frame: los panics saldrán sin backtrace"
             exit 1
@@ -96,11 +126,24 @@ jobs:
 
       - name: Comprobar que el .so esta COMPLETO
         run: |
+          # Encuentra las herramientas de llvm del NDK (igual que el paso de compilacion).
+          find_ndk_tool() {
+            local name="$1"
+            for cand in \
+              "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/$name" \
+              "$ANDROID_NDK_HOME/prebuilt/linux-x86_64/bin/$name" \
+              $(find "$ANDROID_NDK_HOME" -name "$name" -type f 2>/dev/null | head -1); do
+              if [ -x "$cand" ]; then
+                echo "$cand"
+                return 0
+              fi
+            done
+            return 1
+          }
           SO=target/$ANDROID_TARGET/debug/libfigcraft_android.so
-          BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt"
-          READELF=$(find "$BIN" -name llvm-readelf -type f | head -1)
-          NM=$(find "$BIN" -name llvm-nm -type f | head -1)
-          SIZE=$(find "$BIN" -name llvm-size -type f | head -1)
+          READELF=$(find_ndk_tool llvm-readelf)
+          NM=$(find_ndk_tool llvm-nm)
+          SIZE=$(find_ndk_tool llvm-size)
 
           echo "=== las diez secciones mas grandes ==="
           "$SIZE" -A -d "$SO" 2>/dev/null | sort -k2 -n -r | head -11 \

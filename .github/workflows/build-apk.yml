@@ -111,7 +111,21 @@ jobs:
           }
           echo "OK: la libreria esta dentro"
           unzip -p "$APK" lib/arm64-v8a/libfigcraft_android.so > /tmp/so.apk.so
-          READELF=$(find "$ANDROID_NDK_HOME"/toolchains/llvm/prebuilt -name llvm-readelf -type f 2>/dev/null | head -1)
+          # Encuentra llvm-readelf en el NDK (mismo criterio que en build-android-so).
+          find_ndk_tool() {
+            local name="$1"
+            for cand in \
+              "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/$name" \
+              "$ANDROID_NDK_HOME/prebuilt/linux-x86_64/bin/$name" \
+              $(find "$ANDROID_NDK_HOME" -name "$name" -type f 2>/dev/null | head -1); do
+              if [ -x "$cand" ]; then
+                echo "$cand"
+                return 0
+              fi
+            done
+            return 1
+          }
+          READELF=$(find_ndk_tool llvm-readelf)
           "$READELF" -S /tmp/so.apk.so | grep -q '\.symtab' || {
             echo "::error::la .so del APK no tiene .symtab"
             exit 1
