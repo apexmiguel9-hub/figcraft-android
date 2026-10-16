@@ -3,6 +3,10 @@ plan/
 plans/
 /target/
 /target-*/
+# Del port Android (plantilla vectorcraft-android).
+local.properties
+.gradle/
+apps/figcraft-android/android/app/src/main/jniLibs/
 /dist/
 /corpus/
 /log/

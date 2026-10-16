@@ -1,0 +1,138 @@
+name: build-android-so
+
+on:
+  push:
+    paths:
+      - 'apps/figcraft-android/**'
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/build-android-so.yml'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  ANDROID_TARGET: aarch64-linux-android
+  ANDROID_ABI: arm64-v8a
+  SO_ARTIFACT: figcraft-android-so
+
+jobs:
+  so:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instalar toolchain de Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Poner el rustc por delante de el de la imagen
+        run: echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Decir que rustc se va a usar
+        run: rustc --version && cargo --version
+
+      - name: Instalar target Android
+        run: rustup target add $ANDROID_TARGET
+
+      - name: Instalar cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      - name: Cache de target/
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: android-so-${{ hashFiles('Cargo.lock') }}
+          restore-keys: android-so-
+
+      - name: JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Poner el SDK de Android en el PATH
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+          accept-android-sdk-licenses: true
+          log-accepted-android-sdk-licenses: true
+
+      - name: Instalar el NDK
+        run: |
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager "ndk;26.1.10909125"
+          echo "NDK_DIR=$ANDROID_SDK_ROOT/ndk/26.1.10909125" >> $GITHUB_ENV
+
+      - name: Compilar la libreria nativa
+        env:
+          ANDROID_NDK_HOME: ${{ env.NDK_DIR }}
+        run: |
+          cargo ndk -t $ANDROID_ABI -o ./target build -p figcraft-android --locked
+          SO=target/$ANDROID_TARGET/debug/libfigcraft_android.so
+          echo "--- .so producido ---"
+          ls -la "$SO"
+          file "$SO"
+          echo "--- quitando la tabla de depuracion (no los simbolos) ---"
+          STRIP=$(ls "$ANDROID_NDK_HOME"/toolchains/llvm/prebuilt/*/bin/llvm-strip 2>/dev/null | head -1)
+          test -n "$STRIP" || { echo "::error::no encuentro llvm-strip en el NDK"; exit 1; }
+          "$STRIP" --strip-debug "$SO"
+          ls -la "$SO"
+
+      - name: Comprobar que el .so tiene tabla de excepciones
+        run: |
+          SO=target/$ANDROID_TARGET/debug/libfigcraft_android.so
+          READELF=$(ls "$ANDROID_NDK_HOME"/toolchains/llvm/prebuilt/*/bin/llvm-readelf 2>/dev/null | head -1)
+          "$READELF" -S "$SO" | grep -q '\.eh_frame' || {
+            echo "::error::el .so no tiene .eh_frame: los panics saldrán sin backtrace"
+            exit 1
+          }
+          echo "OK: .eh_frame presente"
+          MB=$(( $(stat -c%s "$SO") / 1000000 ))
+          echo "### .so: ${MB} MB"
+          [ "$MB" -lt 200 ] || { echo "::error::el .so pesa ${MB} MB: el strip no ha corrido"; exit 1; }
+
+      - name: Comprobar que el .so esta COMPLETO
+        run: |
+          SO=target/$ANDROID_TARGET/debug/libfigcraft_android.so
+          BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt"
+          READELF=$(ls $BIN/*/bin/llvm-readelf | head -1)
+          NM=$(ls $BIN/*/bin/llvm-nm | head -1)
+          SIZE=$(ls $BIN/*/bin/llvm-size | head -1)
+
+          echo "=== las diez secciones mas grandes ==="
+          "$SIZE" -A -d "$SO" 2>/dev/null | sort -k2 -n -r | head -11 \
+            || "$READELF" -S "$SO" | head -20
+
+          echo
+          echo "=== hay secciones de depuracion? (no deberia haber) ==="
+          if "$READELF" -S "$SO" | grep -q '\.debug_'; then
+            echo "::error::quedan secciones .debug_: el strip no ha corrido"
+            exit 1
+          fi
+          echo "OK: ninguna"
+
+          echo
+          echo "=== simbolos de entrada ==="
+          "$NM" -D --defined-only "$SO" | grep -w android_main \
+            || { echo "::error::la .so no exporta android_main: no arranca"; exit 1; }
+          echo "OK: android_main exportado"
+
+          echo
+          echo "=== cuanto codigo hay de verdad ==="
+          TEXT=$("$SIZE" -A -d "$SO" | awk '$1==".text"{print $2}')
+          echo "### .text = $TEXT bytes ($((TEXT / 1000000)) MB)"
+          [ "$TEXT" -gt 5000000 ] || {
+            echo "::error::solo $TEXT bytes de .text: el enlazador se ha comido el codigo."
+            exit 1
+          }
+          echo "OK: la libreria esta entera"
+
+      - name: Publicar la .so
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.SO_ARTIFACT }}
+          path: target/aarch64-linux-android/debug/libfigcraft_android.so
+          if-no-files-found: error
+          retention-days: 30

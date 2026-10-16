@@ -77,6 +77,9 @@ eframe = { version = "0.36", default-features = false }
 rfd = "0.17"
 arboard = { version = "3.6", default-features = false }
 webbrowser = "1"
+# Del port Android (plantilla vectorcraft-android): logcat y AndroidApp.
+android_logger = "0.14"
+winit = "0.30"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

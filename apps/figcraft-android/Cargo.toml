@@ -1,0 +1,39 @@
+[package]
+name = "figcraft-android"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "FigCraft en Android: clon Figma 100% Rust con gestos tactiles"
+
+# Igual que vectorcraft-android: aqui NO se heredan los lints del workspace.
+# El workspace prohibe `unsafe_code = "forbid"`, y `#[unsafe(no_mangle)]`
+# en `android_main` lo necesita (patron eframe/examples/hello_android).
+# [lints]
+# workspace = true
+
+[dependencies]
+figcraft-engine = { workspace = true }
+figcraft-ui-egui = { workspace = true }
+figcraft-collab-net = { workspace = true }
+figcraft-format = { workspace = true }
+figcraft-text = { workspace = true }
+serde_json = { workspace = true }
+log = { workspace = true }
+eframe = { workspace = true, features = ["default_fonts", "wgpu", "android-native-activity"] }
+egui = { workspace = true }
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.22"
+winit = { workspace = true }
+android-activity = { version = "0.6", default-features = false, features = ["native-activity"] }
+android_logger = { workspace = true }
+
+[lib]
+name = "figcraft_android"
+path = "src/lib.rs"
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "figcraft-android"
+path = "src/main.rs"
