@@ -28,6 +28,17 @@ jni = "0.22"
 winit = { workspace = true }
 android-activity = { version = "0.6", default-features = false, features = ["native-activity"] }
 android_logger = { workspace = true }
+# El browser de ficheros, dibujado DENTRO de la app.
+#
+# MEDIDO y es lo que sustituye a SAF entero: abrir una segunda Activity da ANR en este port
+# (el handshake de `android-activity` bloquea el hilo principal de Java hasta que el hilo del
+# bucle confirma la pausa, y ese hilo es el que corre el update de egui).
+#
+# MEDIDO que este crate no trae nada de Android: `grep -rniE 'android|jni|SAF' src/` no
+# devuelve ni una linea. Es egui puro con el sistema de ficheros enchufable, y el que trae
+# por defecto ya es `std::fs` (`src/lib.rs:231`, `fs: Box::new(Fs {})`). O sea: no hay que
+# escribir ni un `Vfs`.
+egui_file = "0.28"
 
 [lib]
 name = "figcraft_android"

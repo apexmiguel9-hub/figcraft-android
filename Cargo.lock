@@ -1133,6 +1133,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
 
 [[package]]
+name = "dyn-clone"
+version = "1.0.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
+
+[[package]]
 name = "ecolor"
 version = "0.36.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1250,6 +1256,16 @@ dependencies = [
  "itertools",
  "log",
  "profiling",
+]
+
+[[package]]
+name = "egui_file"
+version = "0.28.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "829175309461e62868cb039412e4d31b459c56a35940e473b4b51e3c0f0aa6c7"
+dependencies = [
+ "dyn-clone",
+ "egui",
 ]
 
 [[package]]
@@ -1514,6 +1530,7 @@ dependencies = [
  "android_logger",
  "eframe",
  "egui",
+ "egui_file",
  "figcraft-collab-net",
  "figcraft-engine",
  "figcraft-format",
@@ -2686,9 +2703,9 @@ checksum = "09edd9e8b54e49e587e4f6295a7d29c3ea94d469cb40ab8ca70b288248a81db2"
 
 [[package]]
 name = "libc"
-version = "0.2.190"
+version = "0.2.191"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce5d3ddc6d3fa000eb1536d85e147bfe31aacaba692ed6a876f95cb7c855be78"
+checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
 
 [[package]]
 name = "libloading"

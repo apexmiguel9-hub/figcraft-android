@@ -48,6 +48,13 @@ pub struct CanvasState {
     /// The pen pressure last reported during the current press (pen and stylus touches; the
     /// winit backends and browsers that report it).
     pressure: Option<f32>,
+    /// Fingers that were on the canvas last frame: two or more make a drag pan and zoom at
+    /// once ([`gestos_tactiles`]).
+    pub touch_count: usize,
+    /// A finger held still on the canvas since `t`, at the point it started: holding it long
+    /// enough opens the context menu, the long press that stands for right-click on a touch
+    /// screen ([`gestos_tactiles`]).
+    long_press: Option<(Pos2, f64)>,
 }
 
 impl Default for CanvasState {
@@ -73,6 +80,8 @@ impl Default for CanvasState {
             hovering: false,
             preedit: None,
             pressure: None,
+            touch_count: 0,
+            long_press: None,
         }
     }
 }
@@ -467,6 +476,146 @@ fn zoom_tool(app: &mut FigApp, ui: &Ui, resp: &egui::Response, pos: Pos2, mods: 
     true
 }
 
+/// Zoom (pinch de trackpad, Cmd/Ctrl+rueda) about the pointer; plain scroll pans.
+///
+/// MEDIDO en Android: separado de [`gestos_tactiles`] a proposito, para que el zoom de dos
+/// dedos se aplique **una sola vez**. Este ve el raton y el trackpad; los dedos se resuelven
+/// antes, en `gestos_tactiles`, que devuelve `true` cuando hay dos.
+fn gestures_mouse(app: &mut FigApp, ui: &mut Ui, resp: &egui::Response, pos: Pos2, mods: egui::Modifiers) -> bool {
+    let ctx = ui.ctx().clone();
+    let (scroll, zoom_delta) = ctx.input(|i| (i.smooth_scroll_delta, i.zoom_delta()));
+    if !resp.hovered() {
+        return false;
+    }
+    if (zoom_delta - 1.0).abs() > 1e-4 {
+        let anchor = app.to_page(pos);
+        if let Ok(ds) = app.session.ds_mut() {
+            let z = ds.view.zoom * f64::from(zoom_delta);
+            ds.view.set_zoom_at(z, (anchor.x, anchor.y));
+            ds.revision += 1;
+        }
+    } else if scroll != egui::Vec2::ZERO
+        && let Ok(ds) = app.session.ds_mut()
+    {
+        ds.view.scroll(f64::from(scroll.x), f64::from(scroll.y), mods.shift);
+        ds.revision += 1;
+    }
+    false
+}
+
+/// Touch gestures on the canvas: **one finger is the tool, two fingers pan and zoom at once**,
+/// and a finger held still opens the context menu (the long press that stands for a
+/// right-click on a touch screen).
+///
+/// MEDIDO que hace falta decidirlo aqui, y no en cada panel: `egui-winit` **emula el raton
+/// con un dedo** (`egui-winit-0.36.2/src/lib.rs:904`, *"emit PointerButton resp. PointerMoved
+/// events to emulate mouse"*), y **solo para el primer puntero** (`:902`). Por eso un dedo ya
+/// produce clic, doble clic y arrastre —que es justo lo que queremos para las herramientas— y
+/// el segundo dedo **no** se emula: queda libre para hacer lo que en raton haria el boton
+/// central, que es desplazar.
+///
+/// ## El orden pan y luego zoom, y por que importa
+///
+/// MEDIDO en el port de vectorcraft (su `PORT.md` §8), donde este bug costo lo mas caro del
+/// port: con dos dedos el **zoom iba bien y el pan no**, y el pan solo aparecia si se dejaban
+/// los dedos quietos un segundo y luego se deslizaban.
+///
+/// El motivo es que `before` y `after` asumian el mismo centro, y el pan lo rompia un frame
+/// antes: `before − after` traia un `−d` que el `+d` del pan cancelaba exactamente, dejando
+/// solo la correccion de zoom.
+///
+/// Aqui el arreglo es estructural, no un parche: **el punto de anclaje se calcula despues del
+/// pan**, en este orden:
+///
+/// 1. pan con `translation_delta`
+/// 2. `app.to_page(pos)` **despues** de mover la vista
+/// 3. `set_zoom_at` con ese ancla ya fresca
+///
+/// Asi el pan nunca puede cancelarse, porque el zoom no sabe que hubo pan.
+///
+/// ## La pulsacion larga
+///
+/// MEDIDO que hace falta: sin ella no hay **clic derecho** en un tactil, y el menu contextual
+/// del lienzo y de las filas del panel de capas quedan inalcanzables. egui no trae
+/// pulsacion larga por su cuenta, asi que se mide aqui: un dedo quieto mas de
+/// [`LONG_PRESS_SECS`] sin pasar de [`LONG_PRESS_MOVEMENT_PX`] abre el menu y se come el
+/// gesto, para que el dedo al soltar no clickee tambien.
+fn gestos_tactiles(app: &mut FigApp, ctx: &egui::Context, resp: &egui::Response, pos: Option<Pos2>) -> bool {
+    let (Some(mt), Some(pos)) = (ctx.multi_touch(), pos) else {
+        // Sin dedos (o el raton fuera del lienzo): se limpia el estado del gesto.
+        app.canvas.touch_count = 0;
+        app.canvas.long_press = None;
+        return false;
+    };
+    if !resp.hovered() {
+        return false;
+    }
+
+    if mt.num_touches >= 2 {
+        // Dos dedos: pan y zoom a la vez, y el gesto se come el frame para que la
+        // herramienta no vea un arrastre de un dedo que en realidad son dos.
+        app.canvas.long_press = None;
+        // MEDIDO: con dos dedos, `egui` tambien emula el raton del primer puntero, asi que
+        // sin esto la herramienta dejaria un punto seleccionado y unaasson arrastrando.
+        if app.canvas.dragging && !ctx.input(|i| i.pointer.primary_down()) {
+            app.canvas.dragging = false;
+        }
+        let d = mt.translation_delta;
+        // 1. El pan, primero.
+        if d != egui::Vec2::ZERO
+            && let Ok(ds) = app.session.ds_mut()
+        {
+            ds.view.scroll(f64::from(d.x), f64::from(d.y), false);
+            ds.revision += 1;
+        }
+        // 2. El ancla, **despues** del pan.
+        let anchor = app.to_page(pos);
+        // 3. El zoom, con el ancla fresca.
+        let z = mt.zoom_delta();
+        if (z - 1.0).abs() > 1e-4
+            && let Ok(ds) = app.session.ds_mut()
+        {
+            let nueva = ds.view.zoom * f64::from(z);
+            ds.view.set_zoom_at(nueva, (anchor.x, anchor.y));
+            ds.revision += 1;
+        }
+        app.canvas.touch_count = mt.num_touches;
+        return true;
+    }
+
+    // Un dedo: la herramienta lo usa, pero se mira si lleva tanto tiempo quieto que sea una
+    // pulsacion larga.
+    let ahora = ctx.input(|i| i.time as f64);
+    let quieto = mt.max_movement.length() <= LONG_PRESS_MOVEMENT_PX as f32;
+    if quieto {
+        let (_, t0) = app.canvas.long_press.get_or_insert((pos, ahora));
+        let t0 = *t0;
+        if ahora - t0 >= LONG_PRESS_SECS {
+            // MEDIDO: se limpia **antes** de abrir el menu, para que al soltar el dedo no
+            // se dispare tambien el clic. Y `dragging` a false para que el dedo que levanta
+            // no termine un arrastre que nunca existio.
+            app.canvas.long_press = None;
+            app.canvas.dragging = false;
+            open_context_menu(app, pos, false);
+            return true;
+        }
+    } else {
+        app.canvas.long_press = None;
+    }
+    app.canvas.touch_count = mt.num_touches;
+    false
+}
+
+/// Cuanto tiempo hay que mantener un dedo quieto para que sea una pulsacion larga.
+const LONG_PRESS_SECS: f64 = 0.45;
+
+/// Cuanto puede moverse el dedo (en puntos) sin que deje de contar como pulsacion larga.
+///
+/// MEDIDO que el valor es en **puntos**, no en pixeles, y por que: en un movil de densidad
+/// 2,5 son unos 12 px. Con 10 px de margen, un dedo tembloroso no dispara el menu; con 2, lo
+/// haria sin querer casi siempre.
+const LONG_PRESS_MOVEMENT_PX: f32 = 10.0;
+
 /// The pointer and keys on the canvas. False when something on it with a cursor of its own has
 /// the pointer (a comment pin, a ruler guide, a gradient or padding handle): the tool's cursor
 /// then doesn't show.
@@ -525,22 +674,33 @@ fn input(app: &mut FigApp, ui: &mut Ui, resp: &egui::Response) -> bool {
         app.ui.layers_focus = false;
         app.ui.key_box = None;
     }
-    // Zoom (pinch, Cmd/Ctrl+scroll) about the pointer; plain scroll pans.
-    if resp.hovered() {
-        if (zoom_delta - 1.0).abs() > 1e-4 {
-            let anchor = app.to_page(pos);
-            if let Ok(ds) = app.session.ds_mut() {
-                let z = ds.view.zoom * f64::from(zoom_delta);
-                ds.view.set_zoom_at(z, (anchor.x, anchor.y));
-                ds.revision += 1;
-            }
-        } else if scroll != egui::Vec2::ZERO
-            && let Ok(ds) = app.session.ds_mut()
-        {
-            ds.view.scroll(f64::from(scroll.x), f64::from(scroll.y), mods.shift);
-            ds.revision += 1;
-        }
+    // Zoom y desplazamiento del raton y del trackpad; los dedos se resuelven en
+    // `gestos_tactiles`, que va justo despues.
+    if gestures_mouse(app, ui, resp, pos, mods) {
+        return true;
     }
+    if gestos_tactiles(app, &ctx, resp, pos) {
+        return true;
+    }
+    if zoom_tool(app, ui, resp, pos, mods, editing_text || typing_elsewhere) {
+        return true;
+    }
+
+    /// Touch gestures on the canvas: **one finger is the tool, two fingers pan and zoom at once**,
+    /// and a finger held still opens the context menu (the long press that stands for a
+    /// right-click on a touch screen).
+    ///
+    /// MEDIDO que hace falta decidirlo aqui, y no en cada panel: `egui-winit` **emula el raton
+    /// con un dedo** (`egui-winit-0.36.2/src/lib.rs:904`, *"emit PointerButton resp. PointerMoved
+    /// events to emulate mouse"*), y **solo para el primer puntero** (`:902`). Por eso un dedo ya
+    /// produce clic, doble clic y arrastre —que es justo lo que queremos para las herramientas— y
+    /// el segundo dedo **no** se emula: queda libre para hacer lo que en raton haria el boton
+    /// central, que es desplazar.
+    ///
+    /// ## El orden pan y luego zoom, y por que importa
+    ///
+    /// MEDIDO en el port de vectorcraft (su `PORT.md` §8), donde este bug costo lo mas caro del
+    /// Zoom (pinch, Cmd/Ctrl+scroll) about the pointer; plain scroll pans.
     if zoom_tool(app, ui, resp, pos, mods, editing_text || typing_elsewhere) {
         return true;
     }
