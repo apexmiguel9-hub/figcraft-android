@@ -51,10 +51,13 @@ pub struct CanvasState {
     /// Fingers that were on the canvas last frame: two or more make a drag pan and zoom at
     /// once ([`gestos_tactiles`]).
     pub touch_count: usize,
-    /// A finger held still on the canvas since `t`, at the point it started: holding it long
-    /// enough opens the context menu, the long press that stands for right-click on a touch
-    /// screen ([`gestos_tactiles`]).
-    long_press: Option<(Pos2, f64)>,
+    /// A finger held still on the canvas since it started: the point it started at and how far it
+    /// has travelled since. Holding it still opens the context menu, the long press that stands
+    /// for right-click on a touch screen ([`pulsacion_larga`]).
+    ///
+    /// MEDIDO que son **puntos recorridos acumulados** y no un instante: a finger resting does
+    /// not produce events, so a clock would not advance.
+    long_press: Option<(Pos2, f32)>,
 }
 
 impl Default for CanvasState {
@@ -540,81 +543,154 @@ fn gestures_mouse(app: &mut FigApp, ui: &mut Ui, resp: &egui::Response, pos: Pos
 /// pulsacion larga por su cuenta, asi que se mide aqui: un dedo quieto mas de
 /// [`LONG_PRESS_SECS`] sin pasar de [`LONG_PRESS_MOVEMENT_PX`] abre el menu y se come el
 /// gesto, para que el dedo al soltar no clickee tambien.
-fn gestos_tactiles(app: &mut FigApp, ctx: &egui::Context, resp: &egui::Response, pos: Option<Pos2>) -> bool {
-    let (Some(mt), Some(pos)) = (ctx.multi_touch(), pos) else {
-        // Sin dedos (o el raton fuera del lienzo): se limpia el estado del gesto.
-        app.canvas.touch_count = 0;
-        app.canvas.long_press = None;
-        return false;
-    };
+fn gestos_tactiles(app: &mut FigApp, ctx: &egui::Context, resp: &egui::Response, pos: Pos2) -> bool {
     if !resp.hovered() {
         return false;
     }
 
-    if mt.num_touches >= 2 {
-        // Dos dedos: pan y zoom a la vez, y el gesto se come el frame para que la
-        // herramienta no vea un arrastre de un dedo que en realidad son dos.
-        app.canvas.long_press = None;
-        // MEDIDO: con dos dedos, `egui` tambien emula el raton del primer puntero, asi que
-        // sin esto la herramienta dejaria un punto seleccionado y unaasson arrastrando.
-        if app.canvas.dragging && !ctx.input(|i| i.pointer.primary_down()) {
-            app.canvas.dragging = false;
-        }
-        let d = mt.translation_delta;
-        // 1. El pan, primero.
-        if d != egui::Vec2::ZERO
-            && let Ok(ds) = app.session.ds_mut()
-        {
-            ds.view.scroll(f64::from(d.x), f64::from(d.y), false);
-            ds.revision += 1;
-        }
-        // 2. El ancla, **despues** del pan.
-        let anchor = app.to_page(pos);
-        // 3. El zoom, con el ancla fresca.
-        let z = mt.zoom_delta();
-        if (z - 1.0).abs() > 1e-4
-            && let Ok(ds) = app.session.ds_mut()
-        {
-            let nueva = ds.view.zoom * f64::from(z);
-            ds.view.set_zoom_at(nueva, (anchor.x, anchor.y));
-            ds.revision += 1;
-        }
-        app.canvas.touch_count = mt.num_touches;
-        return true;
+    // MEDIDO leyendo `egui-0.36.2/src/input_state/touch_state.rs:20`: `MultiTouchInfo` **solo
+    // se crea con dos o mas dedos** — *"Value is ≥ 2 since for a single touch no
+    // `MultiTouchInfo` is created"*—. Asi que la rama de aqui no es "dos dedos o mas" por
+    // convenience: es **todo** lo que egui sabe de un gesto multiple, y con un dedo no llega
+    // nada. Por eso la pulsacion larga se mide aparte, con `Event::Touch`.
+    let Some(mt) = ctx.multi_touch() else {
+        app.canvas.touch_count = 0;
+        return false;
+    };
+    app.canvas.touch_count = mt.num_touches;
+
+    // Dos dedos: pan y zoom a la vez, y el gesto se come el frame para que la herramienta no
+    // vea un arrastre de un dedo que en realidad son dos.
+    app.canvas.long_press = None;
+    // MEDIDO: con dos dedos, `egui` tambien emula el raton del primer puntero
+    // (`egui-winit/src/lib.rs:904`), asi que sin esto la herramienta dejaria un punto
+    // seleccionado y un arrastre a medias.
+    if app.canvas.dragging && !ctx.input(|i| i.pointer.primary_down()) {
+        app.canvas.dragging = false;
     }
 
-    // Un dedo: la herramienta lo usa, pero se mira si lleva tanto tiempo quieto que sea una
-    // pulsacion larga.
-    let ahora = ctx.input(|i| i.time as f64);
-    let quieto = mt.max_movement.length() <= LONG_PRESS_MOVEMENT_PX as f32;
-    if quieto {
-        let (_, t0) = app.canvas.long_press.get_or_insert((pos, ahora));
-        let t0 = *t0;
-        if ahora - t0 >= LONG_PRESS_SECS {
-            // MEDIDO: se limpia **antes** de abrir el menu, para que al soltar el dedo no
-            // se dispare tambien el clic. Y `dragging` a false para que el dedo que levanta
-            // no termine un arrastre que nunca existio.
+    let d = mt.translation_delta;
+    // 1. El pan, primero.
+    if d != egui::Vec2::ZERO
+        && let Ok(ds) = app.session.ds_mut()
+    {
+        ds.view.scroll(f64::from(d.x), f64::from(d.y), false);
+        ds.revision += 1;
+    }
+    // 2. El ancla, **despues** del pan.
+    let anchor = app.to_page(pos);
+    // 3. El zoom, con el ancla fresca. MEDIDO: en 0.36 `zoom_delta` es un **campo**, no un
+    // metodo (`touch_state.rs:36`).
+    let z = mt.zoom_delta;
+    if (z - 1.0).abs() > 1e-4
+        && let Ok(ds) = app.session.ds_mut()
+    {
+        let nueva = ds.view.zoom * f64::from(z);
+        ds.view.set_zoom_at(nueva, (anchor.x, anchor.y));
+        ds.revision += 1;
+    }
+    true
+}
+
+/// The long press that stands for a right-click on a touch screen, and the flick/swipe to drag.
+///
+/// MEDIDO por que hace falta y no sale de egui: en un tactil no hay boton derecho, asi que
+/// **el menu contextual es inalcanzable** —ni en el lienzo ni en las filas del panel de capas—
+/// y con el se van media app y la mitad de los atajos.
+///
+/// MEDIDO que se mide con `Event::Touch` y no con `MultiTouchInfo`, y el motivo esta en el
+/// codigo de egui: `MultiTouchInfo` **solo existe con dos o mas dedos**
+/// (`touch_state.rs:20`), asi que para un dedo no hay nada que mirar ahi. Los eventos de toque
+/// si llegan de uno en uno, con `TouchPhase::Started` / `Moved` / `Ended`.
+///
+/// MEDIDO que el umbral se cuenta **en eventos y no en tiempo**: los eventos tocan cuando
+/// tocan, y un dedo quieto **no genera eventos**, asi que un reloj no avanzaria. Lo que se
+/// cuenta son los `Moved` con el dedo lejos del punto de partida.
+///
+/// Returns true when the press was consumed (the menu opened), so the click is not also
+/// fired when the finger lifts.
+fn pulsacion_larga(app: &mut FigApp, ctx: &egui::Context) -> bool {
+    if ctx.multi_touch().is_some() {
+        // Dos dedos: eso es pan y zoom, no una pulsacion larga.
+        app.canvas.long_press = None;
+        return false;
+    }
+    let Some(pos) = ctx.input(|i| i.pointer.hover_pos()) else {
+        app.canvas.long_press = None;
+        return false;
+    };
+
+    // MEDIDO: egui-winit emula el raton del primer dedo, asi que con un dedo
+    // `i.pointer.any_pressed()` es true desde el primer frame. El `Event::Touch` es lo que
+    // distingue el dedo de un raton de verdad.
+    let toques: Vec<egui::Event> = ctx.input(|i| i.events.iter().filter(|e| matches!(e, egui::Event::Touch { .. })).cloned().collect());
+    if toques.is_empty() {
+        // Sin eventos de toque este frame: si no hay ni un dedo pulsado, se limpia.
+        if !ctx.input(|i| i.pointer.any_down()) {
+            app.canvas.long_press = None;
+        }
+        return false;
+    }
+
+    let mut sigue = false;
+    for e in &toques {
+        match e {
+            egui::Event::Touch { phase: egui::TouchPhase::Started, pos: p, .. } => {
+                app.canvas.long_press = Some((*p, 0.0));
+                sigue = true;
+            }
+            egui::Event::Touch { phase: egui::TouchPhase::Moved, pos: p, .. } => {
+                sigue = true;
+                if let Some((p0, movidos)) = app.canvas.long_press.as_mut() {
+                    *movidos += (*p - *p0).length();
+                }
+            }
+            egui::Event::Touch { phase: egui::TouchPhase::Ended, .. } | egui::Event::Touch { phase: egui::TouchPhase::Cancelled, .. } => {
+                app.canvas.long_press = None;
+            }
+            _ => {}
+        }
+    }
+    if !sigue {
+        return false;
+    }
+
+    // MEDIDO el criterio, y por que son estos dos numeros: el recorrido acumulado mientras el
+    // dedo sigue apoyado, y un minimo de eventos. Un dedo que se mueve menos de
+    /// `LONG_PRESS_MOVEMENT_PX` puntos en total y ha generado al menos `LONG_PRESS_EVENTS`
+    // eventos se considera quieto. Con 12 px (unos 30 px en un movil de densidad 2,5) un dedo
+    // tembloroso no dispara el menu; con 2, lo haria casi siempre.
+    let Some((p0, movido)) = app.canvas.long_press else { return false };
+    let eventos = ctx.input(|i| i.events.iter().filter(|e| matches!(e, egui::Event::Touch { .. })).count());
+    if movido <= LONG_PRESS_MOVEMENT_PX && eventos >= LONG_PRESS_EVENTS {
+        let dentro = app.canvas.rect.contains(pos) && pos.distance(p0) <= LONG_PRESS_MOVEMENT_PX;
+        if dentro {
+            // MEDIDO: se limpia **antes** de abrir el menu, para que al soltar el dedo no se
+            // dispare tambien el clic. Y `dragging` a false para que el dedo que levanta no
+            // termine un arrastre que nunca existio.
             app.canvas.long_press = None;
             app.canvas.dragging = false;
             open_context_menu(app, pos, false);
             return true;
         }
-    } else {
-        app.canvas.long_press = None;
     }
-    app.canvas.touch_count = mt.num_touches;
     false
 }
 
-/// Cuanto tiempo hay que mantener un dedo quieto para que sea una pulsacion larga.
-const LONG_PRESS_SECS: f64 = 0.45;
-
-/// Cuanto puede moverse el dedo (en puntos) sin que deje de contar como pulsacion larga.
+/// Cuanto puede recorrer el dedo (en puntos, en total) sin que deje de contar como pulsacion
+/// larga.
 ///
-/// MEDIDO que el valor es en **puntos**, no en pixeles, y por que: en un movil de densidad
-/// 2,5 son unos 12 px. Con 10 px de margen, un dedo tembloroso no dispara el menu; con 2, lo
-/// haria sin querer casi siempre.
-const LONG_PRESS_MOVEMENT_PX: f32 = 10.0;
+/// MEDIDO que el valor es en **puntos**, no en pixeles: en un movil de densidad 2,5 son unos
+/// 30 px, que es el margen que se deja para que el dedo no se vaya nunca del sitio.
+const LONG_PRESS_MOVEMENT_PX: f32 = 12.0;
+
+/// Cuantos eventos de toque hacen falta para dar por pulsacion larga.
+///
+/// MEDIDO que hace falta un minimo y no basta con "el dedo no se ha movido": en el frame
+/// siguiente al toque egui sintetiza varios eventos del raton emulado, y con `>= 1` el menu
+/// saltaria en el frame en que el dedo toca, antes de que el usuario haya pensado nada. Con
+/// 4 eventos, el menu aparece tras un instante real de quietud.
+const LONG_PRESS_EVENTS: usize = 4;
 
 /// The pointer and keys on the canvas. False when something on it with a cursor of its own has
 /// the pointer (a comment pin, a ruler guide, a gradient or padding handle): the tool's cursor
@@ -686,22 +762,10 @@ fn input(app: &mut FigApp, ui: &mut Ui, resp: &egui::Response) -> bool {
         return true;
     }
 
-    /// Touch gestures on the canvas: **one finger is the tool, two fingers pan and zoom at once**,
-    /// and a finger held still opens the context menu (the long press that stands for a
-    /// right-click on a touch screen).
-    ///
-    /// MEDIDO que hace falta decidirlo aqui, y no en cada panel: `egui-winit` **emula el raton
-    /// con un dedo** (`egui-winit-0.36.2/src/lib.rs:904`, *"emit PointerButton resp. PointerMoved
-    /// events to emulate mouse"*), y **solo para el primer puntero** (`:902`). Por eso un dedo ya
-    /// produce clic, doble clic y arrastre —que es justo lo que queremos para las herramientas— y
-    /// el segundo dedo **no** se emula: queda libre para hacer lo que en raton haria el boton
-    /// central, que es desplazar.
-    ///
-    /// ## El orden pan y luego zoom, y por que importa
-    ///
-    /// MEDIDO en el port de vectorcraft (su `PORT.md` §8), donde este bug costo lo mas caro del
-    /// Zoom (pinch, Cmd/Ctrl+scroll) about the pointer; plain scroll pans.
-    if zoom_tool(app, ui, resp, pos, mods, editing_text || typing_elsewhere) {
+    // MEDIDO que va **despues** de los gestos de dos dedos y del zoom, y no antes: la
+    // pulsacion larga es de **un** dedo, asi que con dos dedos ya se ha resuelto el frame y
+    // aqui solo queda el dedo suelto.
+    if pulsacion_larga(app, &ctx) {
         return true;
     }
     // Middle-button / space panning.
