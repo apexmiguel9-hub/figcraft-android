@@ -635,7 +635,7 @@ fn pulsacion_larga(app: &mut FigApp, ctx: &egui::Context) -> bool {
     let mut sigue = false;
     for e in &toques {
         match e {
-            egui::Event::Touch { phase: egui::TouchPhase::Started, pos: p, .. } => {
+            egui::Event::Touch { phase: egui::TouchPhase::Start, pos: p, .. } => {
                 app.canvas.long_press = Some((*p, 0.0));
                 sigue = true;
             }
@@ -645,7 +645,7 @@ fn pulsacion_larga(app: &mut FigApp, ctx: &egui::Context) -> bool {
                     *movidos += (*p - *p0).length();
                 }
             }
-            egui::Event::Touch { phase: egui::TouchPhase::Ended, .. } | egui::Event::Touch { phase: egui::TouchPhase::Cancelled, .. } => {
+            egui::Event::Touch { phase: egui::TouchPhase::End, .. } | egui::Event::Touch { phase: egui::TouchPhase::Cancel, .. } => {
                 app.canvas.long_press = None;
             }
             _ => {}
@@ -657,8 +657,8 @@ fn pulsacion_larga(app: &mut FigApp, ctx: &egui::Context) -> bool {
 
     // MEDIDO el criterio, y por que son estos dos numeros: el recorrido acumulado mientras el
     // dedo sigue apoyado, y un minimo de eventos. Un dedo que se mueve menos de
-    /// `LONG_PRESS_MOVEMENT_PX` puntos en total y ha generado al menos `LONG_PRESS_EVENTS`
-    // eventos se considera quieto. Con 12 px (unos 30 px en un movil de densidad 2,5) un dedo
+    // `LONG_PRESS_MOVEMENT_PX` puntos en total y ha generado al menos `LONG_PRESS_EVENTS`
+    // eventos se considera quieto. Con 12 pt (unos 30 px en un movil de densidad 2,5) un dedo
     // tembloroso no dispara el menu; con 2, lo haria casi siempre.
     let Some((p0, movido)) = app.canvas.long_press else { return false };
     let eventos = ctx.input(|i| i.events.iter().filter(|e| matches!(e, egui::Event::Touch { .. })).count());
@@ -700,8 +700,10 @@ fn input(app: &mut FigApp, ui: &mut Ui, resp: &egui::Response) -> bool {
         return true;
     }
     let ctx = ui.ctx().clone();
-    let (mods, scroll, zoom_delta, hover_pos, space) =
-        ctx.input(|i| (i.modifiers, i.smooth_scroll_delta, i.zoom_delta(), i.pointer.hover_pos(), i.key_down(egui::Key::Space)));
+    // MEDIDO que aqui **no** se leen `smooth_scroll_delta` ni `zoom_delta`: los usa
+    // `gestures_mouse`, que los toma de su propia lectura, para que el zoom de dos dedos se
+    // aplique una sola vez y no aqui y alla.
+    let (mods, hover_pos, space) = ctx.input(|i| (i.modifiers, i.pointer.hover_pos(), i.key_down(egui::Key::Space)));
     let editing_text = app.session.ds().map(|d| d.text_edit.is_some()).unwrap_or(false);
     let typing_elsewhere = crate::a11y::field_focused(&ctx);
     app.canvas.space_pan = space && !editing_text && !typing_elsewhere;
