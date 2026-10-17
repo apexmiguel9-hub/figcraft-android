@@ -45,7 +45,33 @@ impl eframe::App for App {
 /// Construye el editor con servicios de escritorio degradados.
 /// v1: `NoServices` (sin rfd/arboard). El browser `egui_file` + `permiso.rs`
 /// de vectorcraft se enchufa aqui en el siguiente paso.
-pub fn build(_cc: &eframe::CreationContext<'_>) -> std::result::Result<Box<dyn eframe::App>, String> {
+pub fn build(cc: &eframe::CreationContext<'_>) -> std::result::Result<Box<dyn eframe::App>, String> {
+    // MEDIDO en el movil (Moto G56 5G, Android 16): sin esto la app **aborta al
+    // arrancar**, y el panic no sale con backtrace util:
+    //
+    //     epaint-0.36.2/src/text/fonts.rs:1025:41:
+    //     FontFamily::Name("semibold") is not bound to any fonts
+    //     panic in a function that cannot unwind
+    //     Fatal signal 6 (SIGABRT) ... in tid ... (android_main)
+    //
+    // FigCraft usa esa familia para `TextStyle::Heading` (`theme.rs:167`) y la
+    // registra en `theme::install_fonts`, que `FigApp::logic` llama en su primer
+    // frame (`crates/ui-egui/src/lib.rs:1112`). El problema es el orden: el
+    // theme se aplica (`theme.rs:1136`, que **nombra** la familia) antes de que
+    // ese frame llegue a instalar las fuentes, y egui entra en panic al no
+    // encontrar la familia.
+    //
+    // En escritorio el mismo camino no se nota porque hay un `CreationContext`
+    // antes; aqui `android_main` llama `run_native` y el primer frame es el que
+    // aplica el theme. Instalar las fuentes **aqui**, con el contexto que da
+    // `CreationContext`, es antes de cualquier frame y elimina la carrera.
+    //
+    // MEDIDO que hace falta de verdad: sin `install_fonts` el nombre de familia
+    // no existe en `FontDefinitions`, y `epaint` hace panic en vez de degradar
+    // a la familia proporcional. Y como `android_main` es `extern "C"`, el
+    // unwind esta prohibido: el panic aborta el proceso entero.
+    figcraft_ui_egui::theme::install_fonts(&cc.egui_ctx, false, 0);
+
     let mut session = Session::empty();
     // Primera ejecucion: arranca en un fichero nuevo, no en home vacio.
     if session.docs.is_empty() {
