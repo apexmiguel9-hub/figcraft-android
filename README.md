@@ -9,6 +9,29 @@
 
 <h1 align="center">FigCraft</h1>
 
+---
+
+> ### ⚠️ Fork de Android — empieza por aquí
+>
+> Este repo es un **fork** de [`storytold/figcraft`](https://github.com/storytold/figcraft) con un
+> port de Android, usando la plantilla del port de
+> [`vectorcraft-android`](https://github.com/apexmiguel9-hub/vectorcraft-android).
+>
+> **Antes de tocar nada, lee [`HANDOFF.md`](HANDOFF.md)**: tiene el estado real, los fallos ya
+> pagados (para no repetirlos), la hoja de ruta y lo que **nunca se ha verificado**.
+>
+> **El APK ya arranca en un móvil real** (Moto G56 5G, Android 16) con la UI completa.
+> Lo pendiente: probar los gestos con un dedo, el teclado blando, y `browser.rs`, que está
+> escrito contra una API todavía sin verificar.
+>
+> | Documento | Qué es |
+> |---|---|
+> | [`HANDOFF.md`](HANDOFF.md) | **Contexto completo de traspaso.** Estado, fallos, entorno, roadmap |
+> | [`ANDROID-PORT.md`](ANDROID-PORT.md) | Estado del port, fallos resueltos y hoja de ruta por fases |
+> | [`apps/figcraft-android/PORT.md`](apps/figcraft-android/PORT.md) | Mapa de los ficheros del port |
+
+---
+
 <p align="center">
   <b>Interface design; an open-source, clean-room reimplementation of Figma, rebuilt in pure Rust.</b><br>
   Frames, auto layout, components and variants, vector networks, styles, variables and prototypes,<br>
