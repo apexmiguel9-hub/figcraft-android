@@ -601,7 +601,7 @@ fn gestos_tactiles(app: &mut FigApp, ctx: &egui::Context, resp: &egui::Response,
 /// MEDIDO que se mide con `Event::Touch` y no con `MultiTouchInfo`, y el motivo esta en el
 /// codigo de egui: `MultiTouchInfo` **solo existe con dos o mas dedos**
 /// (`touch_state.rs:20`), asi que para un dedo no hay nada que mirar ahi. Los eventos de toque
-/// si llegan de uno en uno, con `TouchPhase::Started` / `Moved` / `Ended`.
+/// si llegan de uno en uno, con `TouchPhase::Start` / `Move` / `End` / `Cancel`.
 ///
 /// MEDIDO que el umbral se cuenta **en eventos y no en tiempo**: los eventos tocan cuando
 /// tocan, y un dedo quieto **no genera eventos**, asi que un reloj no avanzaria. Lo que se
@@ -639,7 +639,7 @@ fn pulsacion_larga(app: &mut FigApp, ctx: &egui::Context) -> bool {
                 app.canvas.long_press = Some((*p, 0.0));
                 sigue = true;
             }
-            egui::Event::Touch { phase: egui::TouchPhase::Moved, pos: p, .. } => {
+            egui::Event::Touch { phase: egui::TouchPhase::Move, pos: p, .. } => {
                 sigue = true;
                 if let Some((p0, movidos)) = app.canvas.long_press.as_mut() {
                     *movidos += (*p - *p0).length();
