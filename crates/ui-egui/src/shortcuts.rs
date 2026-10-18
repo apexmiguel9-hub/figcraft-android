@@ -395,7 +395,15 @@ fn keyboard_bridge(ctx: &Context) {
         .fixed_pos(pos2(area.min.x, area.min.y))
         .fixed_size(vec2(1.0, 1.0))
         .show(ctx, |ui| {
-            ui.add(egui::TextEdit::singleline(&mut buffer).id(field_id).desired_width(1.0).frame(egui::Frame::NONE));
+            // MEDIDO, y el segundo bug de Android: con `singleline`, la tecla **Enter** del teclado
+            // blando es la accion "done" del IME. Android la manda como *action*, no como tecla, y
+            // cierra el teclado: el texto tecleado se cancelaba y el teclado se quedaba abierto
+            // (o al reves), sin poder seguir escribiendo.
+            //
+            // `multiline` hace que Enter inserte un salto de linea, que es justo lo que hace el
+            // texto del lienzo en escritorio (`text_keys` -> `textedit::key(.., "Enter")`), asi que
+            // el movil y el PC hacen lo mismo y el IME no se cierra solo.
+            ui.add(egui::TextEdit::multiline(&mut buffer).id(field_id).desired_width(1.0).desired_rows(1).frame(egui::Frame::NONE));
         });
     // Una sola vez por edicion: pedirlo cada frame hace parpadear el teclado de Android.
     if !ctx.memory(|m| m.has_focus(field_id)) {
