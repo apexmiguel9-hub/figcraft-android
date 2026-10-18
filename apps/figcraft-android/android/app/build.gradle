@@ -12,19 +12,24 @@ apply plugin: 'com.android.application'
 //
 // La clave esta versionada en el repo a proposito: es una clave de **debug**, no protege nada,
 // y es lo unico que garantiza que todos los builds firmen igual.
-signingConfigs {
-    debug {
-        storeFile file('figcraft-debug.keystore')
-        storePassword 'android'
-        keyAlias 'figcraftdebug'
-        keyPassword 'android'
-    }
-}
-
+//
+// MEDIDO: `signingConfigs` va **dentro** de `android { }`. Fuera, Gradle contesta
+//
+//     Could not find method signingConfigs() for arguments [...] on project ':app'
+//
 android {
     namespace 'ai.storyteller.figcraft'
     compileSdk 34
     ndkVersion '26.1.10909125'
+
+    signingConfigs {
+        debug {
+            storeFile file('figcraft-debug.keystore')
+            storePassword 'android'
+            keyAlias 'figcraftdebug'
+            keyPassword 'android'
+        }
+    }
 
     defaultConfig {
         applicationId 'ai.storyteller.figcraft'
