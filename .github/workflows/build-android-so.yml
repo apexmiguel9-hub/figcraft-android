@@ -39,6 +39,9 @@ jobs:
       - name: Instalar cargo-ndk
         run: cargo install cargo-ndk --locked
 
+      - name: Regenerar Cargo.lock si hace falta
+        run: cargo generate-lockfile --quiet
+
       - name: Cache de target/
         uses: actions/cache@v4
         with:
