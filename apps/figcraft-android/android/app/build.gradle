@@ -1,5 +1,26 @@
 apply plugin: 'com.android.application'
 
+// MEDIDO, y es la pieza que hace funcionar `adb install -r`: una clave de firma **fija**.
+//
+// Sin esto, AGP genera `~/.android/debug.keystore` nuevo en cada runner de CI, cada APK sale
+// firmado con una clave distinta y la actualizacion falla con:
+//
+//     INSTALL_FAILED_UPDATE_INCOMPATIBLE: Existing package signatures do not match
+//
+// que obliga a `adb uninstall` — y el uninstall **borra los datos de la app y el permiso** de
+// almacenamiento, que es lo mas lento de probar.
+//
+// La clave esta versionada en el repo a proposito: es una clave de **debug**, no protege nada,
+// y es lo unico que garantiza que todos los builds firmen igual.
+signingConfigs {
+    debug {
+        storeFile file('figcraft-debug.keystore')
+        storePassword 'android'
+        keyAlias 'figcraftdebug'
+        keyPassword 'android'
+    }
+}
+
 android {
     namespace 'ai.storyteller.figcraft'
     compileSdk 34
@@ -11,6 +32,20 @@ android {
         targetSdk 34
         versionCode 1
         versionName '0.6.0'
+
+        // MEDIDO, y esto es lo que hace que `adb install -r` funcione: sin `signingConfig`
+        // explicito, AGP genera un keystore debug **nuevo en cada runner**, asi que cada APK
+        // sale firmado con una clave distinta y la instalacion falla con
+        //
+        //     INSTALL_FAILED_UPDATE_INCOMPATIBLE: Existing package signatures do not match
+        //
+        // obligando a `adb uninstall`, que **borra los datos de la app y el permiso** de
+        // almacenamiento. Con la clave fija de abajo, el APK se actualiza encima sin uninstall.
+        //
+        // MEDIDO que la clave es de **debug**, no de release: es para el port de desarrollo, y
+        // no protege nada. Se versiona en el repo a proposito, que es lo unico que garantiza que
+        // la firma sea la misma en todas las ejecuciones.
+        signingConfig signingConfigs.debug
 
         ndk {
             abiFilters 'arm64-v8a'

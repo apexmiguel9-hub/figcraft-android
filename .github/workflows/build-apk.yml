@@ -93,6 +93,23 @@ jobs:
           gradle wrapper --gradle-version 8.9 --distribution-type bin
           ./gradlew --version | head -3
 
+      - name: Clave de firma fija (debug)
+        working-directory: apps/figcraft-android/android
+        run: |
+          # MEDIDO, y es lo que hace que `adb install -r` funcione. Sin una clave **fija**, AGP
+          # genera una nueva en cada runner, cada APK sale firmado distinto y la actualizacion
+          # falla con INSTALL_FAILED_UPDATE_INCOMPATIBLE, obligando a desinstalar (que borra los
+          # datos y el permiso de almacenamiento).
+          #
+          # MEDIDO que el keystore se versiona en el repo: es una clave de debug, no protege
+          # nada, y es lo unico que hace que todos los builds firmen igual.
+          KS=app/figcraft-debug.keystore
+          if [ ! -f "$KS" ]; then
+            echo "::error::falta $KS en el repo: sin el, cada APK sale firmado con una clave distinta"
+            exit 1
+          fi
+          keytool -list -keystore "$KS" -storepass android -alias figcraftdebug | head -4
+
       - name: Construir con Gradle
         working-directory: apps/figcraft-android/android
         env:
