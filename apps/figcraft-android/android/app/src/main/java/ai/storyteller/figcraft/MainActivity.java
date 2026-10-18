@@ -53,9 +53,14 @@ public class MainActivity extends NativeActivity {
         if (activeConnection != null) {
             return activeConnection;
         }
-        // Delegado minimo: `BaseInputConnection` entrega el texto que teclea el usuario a traves
-        // de `commitText`, que es lo que hace falta para escribir en el lienzo.
-        return new android.view.inputmethod.BaseInputConnection(this, false) {
+        // MEDIDO: el constructor de `BaseInputConnection` que pide una `View` **no** vale aqui:
+        // `NativeActivity` de AOSP no es una `View`, y Gradle contesta
+        //
+        //     error: incompatible types: MainActivity cannot be converted to View
+        //
+        // El que si vale es el de un solo argumento (`BaseInputConnection(boolean fullEditor)`),
+        // que es justamente para cuando no hay vista.
+        activeConnection = new android.view.inputmethod.BaseInputConnection(false) {
             @Override
             public boolean commitText(CharSequence text, int newCursorPosition) {
                 if (text != null && text.length() > 0) {
@@ -64,6 +69,7 @@ public class MainActivity extends NativeActivity {
                 return true;
             }
         };
+        return activeConnection;
     }
 
     private static native void nativeTecla(String texto);
