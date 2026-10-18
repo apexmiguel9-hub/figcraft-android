@@ -6,8 +6,8 @@
 //! (`relativeTransform`, else `absoluteBoundingBox` + `rotation`), paints, strokes, effects,
 //! corners, constraints, auto layout, layout grids, export settings, text with styled runs,
 //! vectors from `fillGeometry` / `strokeGeometry`, components, component sets, instances and
-//! component properties are imported. Image fills keep their `imageRef` as the image key and
-//! show a grey placeholder unless an [`ImageResolver`] supplies the bytes (nothing is fetched).
+//! component properties (slots included) are imported. Image fills keep their `imageRef` as the
+//! image key and show a grey placeholder unless an [`ImageResolver`] supplies the bytes (nothing is fetched).
 //! Prototyping comes along: interactions (triggers, actions, transitions, easing), flows,
 //! scrolling and the prototype device. Variables come from the local variables response
 //! (`GET /v1/files/:key/variables/local`), embedded next to the file JSON or passed separately
@@ -16,7 +16,8 @@
 //!
 //! Instances come out with their own layers as the file lists them. Linking those layers to the
 //! main component's (`source`) and deriving overrides is left to the caller (the engine does it
-//! after loading), since that needs the component model.
+//! after loading), since that needs the component model. The private .fig entry point additionally
+//! preserves explicit GUID/expansion provenance before the engine derives overrides.
 
 #[cfg(test)]
 mod blur_tests;
@@ -24,12 +25,19 @@ mod blur_tests;
 mod conditional_tests;
 #[cfg(test)]
 mod effects_tests;
+mod fig_sources;
 #[cfg(test)]
 mod gamepad_tests;
+#[cfg(test)]
+mod grid_track_tests;
+#[cfg(test)]
+mod import_regression_tests;
 pub(crate) mod props;
 pub(crate) mod proto;
 #[cfg(test)]
 mod proto_variable_tests;
+#[cfg(test)]
+pub(crate) mod slot_tests;
 #[cfg(test)]
 mod tests;
 mod text;
@@ -49,16 +57,20 @@ use crate::FormatError;
 use props::{MAX_COORD, MAX_SIZE, clip_str, flag, list, num, text};
 pub use variables::export as export_variables;
 
-/// Most layers imported from one file.
+/// Most layers imported from one file. The `.fig` import sets its own, from the file's size.
 pub const MAX_NODES: usize = 200_000;
 /// Deepest layer nesting followed.
 const MAX_DEPTH: usize = 256;
+/// Private .fig provenance, consumed only by the `.fig` import ([`import_with_networks`]).
+pub(crate) const FIG_SOURCE_FIELD: &str = "_figSource";
+/// Hidden .fig library context; accepted only by the `.fig` import ([`import_with_networks`]).
+pub(crate) const FIG_LIBRARY_CONTEXTS_FIELD: &str = "_figLibraryContexts";
 /// Longest SVG path string read from one geometry entry.
 const MAX_PATH_BYTES: usize = 4 << 20;
 /// Most path elements in one vector.
 const MAX_PATH_ELEMENTS: usize = 200_000;
 /// Most distinct warnings reported.
-const MAX_WARNINGS: usize = 200;
+pub(crate) const MAX_WARNINGS: usize = 200;
 /// Most shared style definitions read.
 const MAX_STYLES: usize = 10_000;
 /// Image key used for image fills without an `imageRef`.
@@ -96,12 +108,25 @@ pub fn is_variables_json(v: &Value) -> bool {
 }
 
 /// The collections and variables of a local variables response (or its `meta`), checked like a
-/// file's, with the warnings about what was skipped; None when `v` isn't one.
+/// file's, with the warnings about what was skipped (and when it holds no variables at all, or
+/// fewer than its collections list); None when `v` isn't one.
 pub fn read_variables(v: &Value) -> Option<(figcraft_doc::Variables, Vec<String>)> {
-    let src = variables::source(v)?;
+    variables::source(v)?;
     let mut cx = Ctx::new(Document::new("Variables"), &no_images);
-    cx.variables(src);
-    Some((std::mem::take(&mut cx.doc.variables), cx.warnings.finish()))
+    cx.variables(v);
+    let vars = std::mem::take(&mut cx.doc.variables);
+    let mut warnings = cx.warnings.finish();
+    if vars.variables.is_empty() {
+        warnings.push("no variables found: expected `meta.variables` (an object of variables by id, next to `meta.variableCollections`)".into());
+    } else {
+        let listed = variables::listed_ids(v);
+        let read: BTreeSet<&str> = vars.variables.iter().map(|x| x.id.as_str()).collect();
+        let missing = listed.difference(&read).count();
+        if missing > 0 {
+            warnings.push(format!("{missing} of the {} variables the collections list in `variableIds` weren't imported", listed.len()));
+        }
+    }
+    Some((vars, warnings))
 }
 
 /// Import `bytes` when they are REST API file JSON; `None` when they are something else (the
@@ -138,25 +163,58 @@ pub fn import(v: &Value, images: ImageResolver) -> Result<(Document, Vec<String>
 /// in the file JSON (a `meta` with `variableCollections`, or `variableCollections` and
 /// `variables` at the top level) are read too; the first definition of an id wins.
 pub fn import_with(v: &Value, variables: Option<&Value>, images: ImageResolver) -> Result<(Document, Vec<String>), FormatError> {
+    import_parts(v, variables, images, Vec::new(), MAX_NODES, false)
+}
+
+/// Internal .fig JSON path: GUID provenance is not part of the public REST import contract.
+/// The `.fig` import itself goes through [`import_with_networks`].
+#[cfg(test)]
+pub(crate) fn import_fig(v: &Value, images: ImageResolver) -> Result<(Document, Vec<String>), FormatError> {
+    import_with_networks(v, images, Vec::new(), MAX_NODES)
+}
+
+/// [`import_fig`] for the `.fig` import's JSON, whose vectors name their networks by
+/// `vectorNetworkRef`, an index in `networks` (built once each, and far smaller than as JSON).
+/// `max_nodes`: the layer cap, set by the `.fig` import in place of [`MAX_NODES`].
+pub(crate) fn import_with_networks(
+    v: &Value,
+    images: ImageResolver,
+    networks: Vec<Option<VectorNetwork>>,
+    max_nodes: usize,
+) -> Result<(Document, Vec<String>), FormatError> {
+    import_parts(v, None, images, networks, max_nodes, true)
+}
+
+fn import_parts(
+    v: &Value,
+    variables: Option<&Value>,
+    images: ImageResolver,
+    networks: Vec<Option<VectorNetwork>>,
+    max_nodes: usize,
+    fig_sources: bool,
+) -> Result<(Document, Vec<String>), FormatError> {
     let entries: Vec<&Value> = if is_document(v) { vec![v] } else { nodes_entries(v).collect() };
     if entries.is_empty() {
         return Err(FormatError::Corrupt("not a REST API file JSON (no `document`)".into()));
     }
     let name = text(v, "name").filter(|n| !n.trim().is_empty()).map_or("Imported file", clip_str);
     let mut cx = Ctx::new(Document::new(name), images);
+    cx.fig_sources = fig_sources.then(|| fig_sources::Sources::new(max_nodes));
     let blank = cx.doc.first_page();
     let mut loose: Option<NodeId> = None;
     for e in &entries {
         cx.collect_meta(e);
     }
     // Variables first: layers link to them as they are built.
-    for src in [variables::source(v), variables.and_then(variables::source)].into_iter().flatten() {
+    for src in [Some(v), variables].into_iter().flatten() {
         cx.variables(src);
     }
     if variables.is_some_and(|x| variables::source(x).is_none()) {
         cx.warn("the variables JSON has no `variableCollections` (expected the local variables response) and was ignored");
     }
     cx.style_definitions(v);
+    cx.networks = networks;
+    cx.max_nodes = max_nodes;
     for e in entries {
         let Some(root) = e.get("document") else { continue };
         match text(root, "type") {
@@ -176,6 +234,12 @@ pub fn import_with(v: &Value, variables: Option<&Value>, images: ImageResolver) 
                 cx.build(root, page, Space::default(), None, 0, true);
             }
             None => cx.warn("entries without a node type were skipped"),
+        }
+    }
+    if fig_sources {
+        for context in v.get(FIG_LIBRARY_CONTEXTS_FIELD).and_then(Value::as_array).into_iter().flatten() {
+            let store = cx.doc.ensure_library_store();
+            cx.build(context, store, Space::default(), None, 0, false);
         }
     }
     // Drop the empty page the new document started with once real pages exist.
@@ -210,7 +274,7 @@ fn style_binding(slot: &str, key: &str) -> Option<String> {
 /// Put back the shape a layer was before the `.fig` export wrote it as the outline of its stroke
 /// (`outlinedStroke`: `{kind, fills, strokes, stroke}` as the document holds them). Anything that
 /// isn't such a shape is ignored.
-fn restore_stroke(n: &mut Node, original: &Value) {
+fn restore_stroke(n: &mut Node, original: &Value) -> bool {
     #[derive(serde::Deserialize)]
     struct Original {
         kind: NodeKind,
@@ -218,16 +282,16 @@ fn restore_stroke(n: &mut Node, original: &Value) {
         strokes: Vec<figcraft_doc::color::Paint>,
         stroke: figcraft_doc::StrokeProps,
     }
-    let Ok(mut o) = serde_json::from_value::<Original>(original.clone()) else { return };
+    let Ok(mut o) = serde_json::from_value::<Original>(original.clone()) else { return false };
     match &mut o.kind {
         NodeKind::Vector { network } => {
             if network.vertices.len() + network.segments.len() > MAX_PATH_ELEMENTS {
-                return;
+                return false;
             }
             network.sanitize();
         }
         NodeKind::Line | NodeKind::Ellipse { .. } | NodeKind::Polygon { .. } | NodeKind::Star { .. } | NodeKind::Rectangle => {}
-        _ => return,
+        _ => return false,
     }
     let sp = &mut o.stroke;
     sp.weight = sp.weight.clamp(0.0, props::MAX_SIZE);
@@ -237,6 +301,28 @@ fn restore_stroke(n: &mut Node, original: &Value) {
     o.fills.truncate(64);
     o.strokes.truncate(64);
     (n.kind, n.fills, n.strokes, n.stroke) = (o.kind, o.fills, o.strokes, o.stroke);
+    true
+}
+
+/// A stroke-only vector imported as the outline of its stroke: the stroke paints fill the
+/// outline, and the stroke's shared style and colour variables move with them. The hidden fills
+/// it replaces go, with their style and bindings.
+fn outline_stroke(n: &mut Node) {
+    n.fills = std::mem::take(&mut n.strokes);
+    n.styles.fill = n.styles.stroke.take();
+    let bound = std::mem::take(&mut n.bound);
+    for (key, var) in bound {
+        let moved = match key.as_str() {
+            "fill" => continue,
+            k if k.starts_with("fills/") => continue,
+            "stroke" => "fill".to_string(),
+            k => match k.strip_prefix("strokes/") {
+                Some(rest) => format!("fills/{rest}"),
+                None => key,
+            },
+        };
+        n.bound.insert(moved, var);
+    }
 }
 
 fn children(v: &Value) -> &[Value] {
@@ -291,11 +377,16 @@ pub(crate) struct Ctx<'a> {
     count: usize,
     /// REST node id → imported node.
     ids: BTreeMap<String, NodeId>,
+    fig_sources: Option<fig_sources::Sources<'a>>,
     component_meta: BTreeMap<&'a str, &'a Value>,
     set_meta: BTreeMap<&'a str, &'a Value>,
     style_meta: BTreeMap<&'a str, &'a Value>,
     /// Instances (imported as frames until their main is resolved) with their JSON.
     instances: Vec<(NodeId, &'a Value)>,
+    /// `SLOT` layers (imported as frames until their slot property is resolved) with their JSON.
+    slots: Vec<(NodeId, &'a Value)>,
+    /// Slot property defaults (the main's slot content id): (component or set, property) → value.
+    slot_defaults: BTreeMap<(NodeId, String), &'a Value>,
     /// Instance-swap property defaults: (component or set, property, REST id of the default).
     swap_defaults: Vec<(NodeId, String, String)>,
     /// Property definitions of component sets, shared by their variants.
@@ -309,6 +400,10 @@ pub(crate) struct Ctx<'a> {
     /// Imported variables by id, and the mode ids of imported collections (default first).
     var_kinds: BTreeMap<String, VariableType>,
     var_modes: BTreeMap<String, Vec<String>>,
+    /// Vector networks built by the `.fig` import, named by layers' `vectorNetworkRef`.
+    networks: Vec<Option<VectorNetwork>>,
+    /// Most layers imported: [`MAX_NODES`], or the `.fig` import's own cap.
+    max_nodes: usize,
 }
 
 impl<'a> Ctx<'a> {
@@ -321,10 +416,13 @@ impl<'a> Ctx<'a> {
             warnings: Warnings::default(),
             count: 0,
             ids: BTreeMap::new(),
+            fig_sources: None,
             component_meta: BTreeMap::new(),
             set_meta: BTreeMap::new(),
             style_meta: BTreeMap::new(),
             instances: Vec::new(),
+            slots: Vec::new(),
+            slot_defaults: BTreeMap::new(),
             swap_defaults: Vec::new(),
             set_defs: BTreeMap::new(),
             flows: Vec::new(),
@@ -332,6 +430,8 @@ impl<'a> Ctx<'a> {
             overlay_meta: BTreeMap::new(),
             var_kinds: BTreeMap::new(),
             var_modes: BTreeMap::new(),
+            networks: Vec::new(),
+            max_nodes: MAX_NODES,
         }
     }
 
@@ -387,8 +487,9 @@ impl<'a> Ctx<'a> {
             self.warn(format!("layers nested deeper than {MAX_DEPTH} levels were skipped"));
             return;
         }
-        if self.count >= MAX_NODES {
-            self.warn(format!("the file has more than {MAX_NODES} layers; the rest were skipped"));
+        if self.count >= self.max_nodes {
+            let max = self.max_nodes;
+            self.warn(format!("the file has more than {max} layers; the rest were skipped"));
             return;
         }
         let Some(ty) = text(j, "type") else {
@@ -403,6 +504,12 @@ impl<'a> Ctx<'a> {
         let id = self.doc.alloc_id();
         let label = kind.label();
         let mut n = Node::new(id, kind, text(j, "name").map_or(label, clip_str), w, h);
+        // Overrides the .fig names explicitly (the rest are found by comparing with the main).
+        for (flag, group) in [("slotOverride", "slot"), ("sizeOverride", "size")] {
+            if self.fig_sources.is_some() && j.get(FIG_SOURCE_FIELD).and_then(|source| source.get(flag)).and_then(Value::as_bool) == Some(true) {
+                n.overrides.insert(group.into());
+            }
+        }
         n.transform = local(space.world, world);
         self.common(&mut n, j, parent_mode);
         let (container, follows, mode) = (n.kind.is_container(), n.kind.bounds_follow_children(), n.layout.as_ref().map(|l| l.mode));
@@ -411,10 +518,15 @@ impl<'a> Ctx<'a> {
         }
         self.count += 1;
         if let Some(rid) = text(j, "id") {
-            self.ids.entry(rid.to_string()).or_insert(id);
+            let primary = *self.ids.entry(rid.to_string()).or_insert(id) == id;
+            if let Some(sources) = &mut self.fig_sources {
+                sources.record(id, j, primary);
+            }
         }
-        if ty == "INSTANCE" {
-            self.instances.push((id, j));
+        match ty {
+            "INSTANCE" => self.instances.push((id, j)),
+            "SLOT" => self.slots.push((id, j)),
+            _ => {}
         }
         let kids = children(j);
         if kids.is_empty() {
@@ -437,8 +549,8 @@ impl<'a> Ctx<'a> {
         let point_count = || num(j, "pointCount").filter(|c| *c >= 3.0).map(|c| c.min(1000.0) as u32);
         let has_geometry = !list(j, "fillGeometry").is_empty() || !list(j, "strokeGeometry").is_empty();
         Some(match ty {
-            // Instances start as frames; `finish` links them to their main.
-            "FRAME" | "INSTANCE" => NodeKind::Frame,
+            // Instances and slots start as frames; `finish` links them to their main and property.
+            "FRAME" | "INSTANCE" | "SLOT" => NodeKind::Frame,
             "GROUP" => NodeKind::Group,
             "SECTION" => NodeKind::Section { contents_hidden: flag(j, "sectionContentsHidden").unwrap_or(false) },
             "RECTANGLE" => NodeKind::Rectangle,
@@ -548,19 +660,18 @@ impl<'a> Ctx<'a> {
             if let Some(c) = flag(j, "clipsContent") {
                 n.clip = c;
             }
-            n.layout = props::auto_layout(j);
+            n.layout = props::auto_layout(j, self.fig_sources.is_some());
             n.grids = props::layout_grids(j);
         }
         n.child_layout = props::child_layout(j, n.layout.as_ref().map(|l| l.mode), parent_mode);
         n.exports = props::export_settings(j);
         for (field, prop) in j.get("componentPropertyReferences").and_then(Value::as_object).into_iter().flatten() {
-            if let (Some(p), true) = (prop.as_str(), matches!(field.as_str(), "visible" | "characters" | "mainComponent")) {
+            let supported = matches!(field.as_str(), "visible" | "characters" | "mainComponent") || (field == "slot" && self.fig_sources.is_some());
+            if let (Some(p), true) = (prop.as_str(), supported) {
                 n.prop_refs.insert(field.clone(), p.to_string());
             }
         }
-        if matches!(n.kind, NodeKind::Vector { .. }) {
-            self.vector(n, j);
-        }
+        let outlined = matches!(n.kind, NodeKind::Vector { .. }) && self.vector(n, j);
         if matches!(n.kind, NodeKind::Component { .. } | NodeKind::ComponentSet { .. }) {
             let defs = self.prop_defs(n.id, j);
             match &mut n.kind {
@@ -581,20 +692,28 @@ impl<'a> Ctx<'a> {
             self.overlay_meta.entry(rid).or_insert(j);
         }
         self.bindings(n, j);
-        if let Some(original) = j.get("outlinedStroke") {
-            restore_stroke(n, original);
+        let restored = j.get("outlinedStroke").is_some_and(|original| restore_stroke(n, original));
+        // Styles and bindings were read against the stroke: they follow its paints to the fill.
+        if outlined && !restored {
+            outline_stroke(n);
         }
     }
 
-    /// A vector's network: the editable one when the JSON carries it (`vectorNetwork`, our
-    /// extension, written by the `.fig` import), else from its geometry. A stroke-only vector
-    /// uses the stroke outline, painted with the stroke paints (exact look, editable as a shape).
-    fn vector(&mut self, n: &mut Node, j: &Value) {
-        if let Some(net) = j.get("vectorNetwork") {
-            match network(net) {
+    /// A vector's network: the editable one when the JSON carries it (`vectorNetwork`, or
+    /// `vectorNetworkRef` naming one built by the `.fig` import: our extensions), else from its
+    /// geometry. A stroke-only vector uses the stroke outline, painted with the stroke paints
+    /// (exact look, editable as a shape): returns whether it does, and the caller moves the paints
+    /// with [`outline_stroke`] once the styles and variables of the stroke are read.
+    fn vector(&mut self, n: &mut Node, j: &Value) -> bool {
+        let net = match j.get("vectorNetworkRef") {
+            Some(r) => Some(r.as_u64().and_then(|i| self.networks.get(usize::try_from(i).ok()?).cloned().flatten())),
+            None => j.get("vectorNetwork").map(network),
+        };
+        if let Some(net) = net {
+            match net {
                 Some(network) => {
                     n.kind = NodeKind::Vector { network };
-                    return;
+                    return false;
                 }
                 None => self.warn("invalid or oversized vector networks import as outlines"),
             }
@@ -609,17 +728,15 @@ impl<'a> Ctx<'a> {
             (None, Some(s)) => (s, true),
             (None, None) => {
                 self.warn("vectors without geometry are empty (export the file JSON with geometry=paths)");
-                return;
+                return false;
             }
         };
         let mut network = VectorNetwork::from_path(&path);
         for r in &mut network.regions {
             r.winding = winding;
         }
-        if outline {
-            n.fills = std::mem::take(&mut n.strokes);
-        }
         n.kind = NodeKind::Vector { network };
+        outline
     }
 
     /// The paths of a `fillGeometry` / `strokeGeometry` list (node-local SVG path data).
@@ -644,7 +761,7 @@ impl<'a> Ctx<'a> {
     }
 
     /// Component property definitions (variant ones are implied by the variant names).
-    fn prop_defs(&mut self, owner: NodeId, j: &Value) -> BTreeMap<String, PropDef> {
+    fn prop_defs(&mut self, owner: NodeId, j: &'a Value) -> BTreeMap<String, PropDef> {
         let mut out = BTreeMap::new();
         for (name, d) in j.get("componentPropertyDefinitions").and_then(Value::as_object).into_iter().flatten().take(256) {
             let default = d.get("defaultValue");
@@ -658,6 +775,13 @@ impl<'a> Ctx<'a> {
                     continue;
                 }
                 Some("VARIANT") => continue,
+                Some("SLOT") => {
+                    if let Some(d) = default {
+                        self.slot_defaults.insert((owner, name.clone()), d);
+                    }
+                    self.slot_notes(d);
+                    PropDef::Slot { preferred: Vec::new() }
+                }
                 _ => {
                     self.warn("unknown component property types were skipped");
                     continue;
@@ -666,6 +790,20 @@ impl<'a> Ctx<'a> {
             out.insert(name.clone(), def);
         }
         out
+    }
+
+    /// Notes on what a slot property sets that the editor doesn't keep: preferred components (keys
+    /// of library components, not layers of the file) and limits on its content.
+    fn slot_notes(&mut self, d: &Value) {
+        if !list(d, "preferredValues").is_empty() {
+            self.warn("preferred slot component keys cannot be resolved to file nodes and were skipped");
+        }
+        // Insertion and empty-slot display only change editing aids, not what the file shows.
+        let s = d.get("slotSettings");
+        let limit = |k: &str| s.and_then(|s| num(s, k)).is_some_and(|n| n != 0.0);
+        if limit("minChildren") || limit("maxChildren") || s.and_then(|s| flag(s, "allowPreferredValuesOnly")) == Some(true) {
+            self.warn("non-default slot settings are not represented and were skipped");
+        }
     }
 
     /// Shared styles with their values (`styleDefinitions`, written by the `.fig` import: a list of
@@ -822,6 +960,12 @@ impl<'a> Ctx<'a> {
             }
         }
         self.resolve_instances();
+        if let Some(sources) = self.fig_sources.take() {
+            let missing = sources.apply(&mut self.doc, &self.ids);
+            if missing > 0 {
+                self.warn(format!("{missing} .fig instance source link(s) could not be resolved and were left unlinked"));
+            }
+        }
         self.rename_props();
         for (id, j) in std::mem::take(&mut self.protos) {
             let list = self.interactions(j);
@@ -870,6 +1014,7 @@ impl<'a> Ctx<'a> {
     /// outside components, and instances that would nest a component inside itself (directly or
     /// through other components), stay frames.
     fn resolve_instances(&mut self) {
+        let frames: BTreeSet<NodeId> = self.instances.iter().map(|(i, _)| *i).collect();
         let mut links: Vec<(NodeId, NodeId, &'a Value)> = Vec::new();
         for (inst, j) in std::mem::take(&mut self.instances) {
             match text(j, "componentId").and_then(|r| self.component(r)) {
@@ -899,6 +1044,7 @@ impl<'a> Ctx<'a> {
                 linked.push((inst, j));
             }
         }
+        self.resolve_slots(&frames, &linked);
         // Overridden fields the file lists, on the instance and its layers.
         for (inst, j) in linked {
             for o in list(j, "overrides") {
@@ -910,6 +1056,70 @@ impl<'a> Ctx<'a> {
                 if let Some(n) = self.doc.node_mut(id) {
                     n.overrides.extend(groups.into_iter().map(str::to_string));
                 }
+            }
+        }
+    }
+
+    /// `SLOT` layers. In a main component a slot is bound to its slot property: the one the layer
+    /// references, else the one named like it, else the main's only slot property left. In an
+    /// instance it follows its main's slot, and holds the instance's own content (kept across syncs)
+    /// unless the instance's value of the property is the main's default content (without the
+    /// values to compare, a slot holding layers keeps them as its own). A slot without a property
+    /// stays a frame. `frames`: every instance
+    /// layer of the file, `linked`: those that became instances.
+    fn resolve_slots(&mut self, frames: &BTreeSet<NodeId>, linked: &[(NodeId, &'a Value)]) {
+        let linked: BTreeMap<NodeId, &Value> = linked.iter().copied().collect();
+        let mut bound: BTreeSet<(NodeId, String)> = BTreeSet::new();
+        for (id, j) in std::mem::take(&mut self.slots) {
+            // The nearest main component or instance above the slot owns it; in an instance whose
+            // main isn't in the file (a frame), the slot stays a frame too.
+            let owner = self.doc.ancestors(id).into_iter().find_map(|a| match self.doc.node(a).map(|n| &n.kind) {
+                Some(NodeKind::Instance { component, .. }) => Some(linked.get(&a).map(|j| (*component, Some(*j)))),
+                Some(NodeKind::Component { .. }) => Some(Some((a, None))),
+                _ => frames.contains(&a).then_some(None),
+            });
+            let Some(owner) = owner else {
+                self.warn("slot layers without a matching slot property were imported as frames");
+                continue;
+            };
+            let Some((main, inst)) = owner else { continue };
+            let Some(NodeKind::Component { props, .. }) = self.doc.node(main).map(|n| &n.kind) else { continue };
+            let defs: Vec<&String> = props.iter().filter(|(_, d)| matches!(d, PropDef::Slot { .. })).map(|(k, _)| k).collect();
+            let layer = text(j, "name").unwrap_or_default();
+            let refs: Vec<&str> =
+                j.get("componentPropertyReferences").and_then(Value::as_object).into_iter().flatten().filter_map(|(_, v)| v.as_str()).collect();
+            // An instance's slot is matched against all of its main's slot properties.
+            let free: Vec<&&String> = defs.iter().filter(|d| inst.is_some() || !bound.contains(&(main, (**d).clone()))).collect();
+            let name = defs
+                .iter()
+                .find(|d| refs.contains(&d.as_str()))
+                .or_else(|| defs.iter().find(|d| short_prop_name(d) == layer))
+                .or_else(|| if free.len() == 1 { free.first().copied() } else { None })
+                .map(|d| (*d).clone());
+            let Some(n) = self.doc.node(id) else { continue };
+            let has_content = !n.children.is_empty();
+            let Some(inst) = inst else {
+                match name.filter(|p| bound.insert((main, p.clone()))) {
+                    Some(p) => {
+                        if let Some(n) = self.doc.node_mut(id) {
+                            n.prop_refs.insert("slot".into(), p);
+                        }
+                    }
+                    None => self.warn("slot layers without a matching slot property were imported as frames"),
+                }
+                continue;
+            };
+            let set = self.doc.node(main).and_then(|n| n.parent);
+            let default =
+                name.as_ref().and_then(|p| [Some(main), set].into_iter().flatten().find_map(|o| self.slot_defaults.get(&(o, p.clone())).copied()));
+            let value = name.as_ref().and_then(|p| inst.get("componentProperties")?.get(p)?.get("value"));
+            let own = name.is_some()
+                && match (value, default) {
+                    (Some(v), Some(d)) => v != d,
+                    _ => has_content,
+                };
+            if own && let Some(n) = self.doc.node_mut(id) {
+                n.overrides.insert("slot".into());
             }
         }
     }
@@ -1055,6 +1265,16 @@ fn override_group(field: &str) -> Option<&'static str> {
         | "textDecorationSkipInk"
         | "textDecorationColor" => "textStyle",
         "width" | "height" | "size" => "size",
+        "layoutSizingHorizontal"
+        | "layoutSizingVertical"
+        | "layoutGrow"
+        | "layoutAlign"
+        | "primaryAxisSizingMode"
+        | "counterAxisSizingMode"
+        | "minWidth"
+        | "maxWidth"
+        | "minHeight"
+        | "maxHeight" => "resizing",
         "paddingLeft" | "paddingRight" | "paddingTop" | "paddingBottom" | "horizontalPadding" | "verticalPadding" => "padding",
         "itemSpacing" | "counterAxisSpacing" => "gap",
         "primaryAxisAlignItems" | "counterAxisAlignItems" => "alignment",
@@ -1110,7 +1330,7 @@ fn local(parent: Affine, world: Affine) -> Affine {
 
 /// Finite path data within the coordinate cap.
 /// A vector network in our own JSON shape, when it's within bounds and refers only to what it has.
-fn network(v: &Value) -> Option<VectorNetwork> {
+pub(crate) fn network(v: &Value) -> Option<VectorNetwork> {
     use serde::Deserialize;
     let mut net = VectorNetwork::deserialize(v).ok()?;
     let entries: usize = net.regions.iter().flat_map(|r| &r.loops).map(Vec::len).sum();

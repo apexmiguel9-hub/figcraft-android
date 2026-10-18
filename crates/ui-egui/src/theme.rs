@@ -273,7 +273,9 @@ pub fn install_fonts(ctx: &Context, system: bool, cjk: u8) {
                 .filter_map(|f| figcraft_text::find_face(f, "Regular"))
                 .any(|x| x.has_char(c))
         };
-        extra.extend(crate::bidi::script_fallbacks(&embedded));
+        let mut taken = Vec::new();
+        extra.extend(crate::bidi::script_fallbacks(&embedded, &mut taken));
+        extra.extend(key_symbol_fallbacks(&embedded, &mut taken));
         extra.extend(crate::cjk::faces(cjk, lang, &embedded).iter().map(|f| (format!("system-{}-{}", f.family, f.style), font_data(f))));
     }
     extra.extend(craft(true));
@@ -286,6 +288,38 @@ pub fn install_fonts(ctx: &Context, system: bool, cjk: u8) {
         }
     }
     ctx.set_fonts(fonts);
+}
+
+/// The glyphs macOS shortcuts are written with ([`figcraft_engine::keymap::display`]).
+const KEY_SYMBOLS: &str = "⌃⌥⇧⌘⌫↵⇥⇞⇟←→↑↓";
+/// System families that have them, in order of preference.
+const KEY_FAMILIES: [&str; 6] = ["Lucida Grande", "Apple Symbols", "Segoe UI Symbol", "DejaVu Sans", "Noto Sans Symbols 2", "FreeSans"];
+
+/// System faces for the shortcut glyphs the UI's own fonts lack (egui's default face has ⌘ but
+/// not ⌥ or ↵); `taken` as for [`system_fallbacks`].
+fn key_symbol_fallbacks(have: &dyn Fn(char) -> bool, taken: &mut Vec<Arc<figcraft_text::Face>>) -> Vec<(String, FontData)> {
+    system_fallbacks(KEY_SYMBOLS.chars(), &KEY_FAMILIES, have, taken)
+}
+
+/// System faces, the first of `families` that has each, for the `samples` neither the UI's own
+/// fonts (`have`) nor the faces already `taken` draw. Each face found joins `taken`, so a face that
+/// several lists name is added once.
+pub(crate) fn system_fallbacks(
+    samples: impl IntoIterator<Item = char>,
+    families: &[&str],
+    have: &dyn Fn(char) -> bool,
+    taken: &mut Vec<Arc<figcraft_text::Face>>,
+) -> Vec<(String, FontData)> {
+    let mut out = Vec::new();
+    for c in samples {
+        if have(c) || taken.iter().any(|f| f.has_char(c)) {
+            continue;
+        }
+        let Some(face) = figcraft_text::face_with_char(c, families) else { continue };
+        out.push((format!("system-{}-{}", face.family, face.style), font_data(&face)));
+        taken.push(face);
+    }
+    out
 }
 
 /// egui font data over a face's bytes, without copying them (CJK faces are 10–20 MB). Font
@@ -330,4 +364,31 @@ pub fn set_doc_profile(ctx: &Context, profile: figcraft_color::ColorProfile) {
 pub fn doc_c32(ctx: &Context, c: figcraft_color::Color) -> Color32 {
     let conv = ctx.data(|d| d.get_temp::<figcraft_color::ProfileConversion>(screen_conversion_id()));
     c32(conv.map_or(c, |k| k.apply(c)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ui_font_draws_every_mac_shortcut_glyph() {
+        figcraft_text::scan_system_fonts();
+        let lacking: String = KEY_SYMBOLS.chars().filter(|c| figcraft_text::face_with_char(*c, &KEY_FAMILIES).is_none()).collect();
+        if !lacking.is_empty() {
+            eprintln!("no system face here draws {lacking}; skipping");
+            return;
+        }
+        let ctx = Context::default();
+        install_fonts(&ctx, true, 0);
+        let input =
+            egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(100.0, 100.0))), ..Default::default() };
+        ctx.run_ui(input, |_| {}).textures_delta.clear();
+        ctx.fonts_mut(|f| {
+            for c in KEY_SYMBOLS.chars() {
+                for font in [regular(11.0), semibold(11.0)] {
+                    assert!(f.has_glyphs(&font, &c.to_string()), "UI font draws {c:?}");
+                }
+            }
+        });
+    }
 }

@@ -6,6 +6,8 @@
 //! change is one undo step. Pointer tools ([`tools`]) and text editing reduce to the same document
 //! edits and are journaled the same way.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
+// Tests make and inspect files directly; shipped code goes through `file_access` (clippy.toml).
+#![cfg_attr(test, allow(clippy::disallowed_methods))]
 
 pub mod al_keys;
 pub mod annotations;
@@ -24,7 +26,10 @@ pub mod dev_resources;
 pub mod devcompare;
 pub mod devinspect;
 pub mod distance;
+pub mod doc_urls;
 pub mod drop;
+pub mod file_access;
+pub mod fonts;
 pub mod guard;
 pub mod guides;
 pub mod inspect;
@@ -43,6 +48,8 @@ pub mod plugins;
 pub mod proto_run;
 pub mod rename;
 pub mod rotation_origin;
+pub mod selection_colors;
+pub mod selection_spacing;
 pub mod shape_handles;
 pub mod shapebuilder;
 pub mod snap;
@@ -357,8 +364,8 @@ pub struct DocState {
     versions_changed: bool,
     /// A version shown in place of the document (read-only).
     pub preview: Option<VersionPreview>,
-    /// The document under a live text preview (a hovered text style or font instance, a dragged
-    /// axis slider): `doc` shows the preview until [`textpreview::end`] puts this back.
+    /// The document under a live text preview (a hovered font family or style, text style or
+    /// font instance, a dragged axis slider): `doc` shows the preview until [`textpreview::end`] puts this back.
     pub text_preview: Option<Arc<Document>>,
     /// The document as of the last version saved or restored (none yet): autosaves, restores and
     /// merges only add a checkpoint for changes since.
@@ -369,6 +376,8 @@ pub struct DocState {
     pub guide: Option<(NodeId, usize)>,
     /// The selection's rotation origin, when moved or shown (see [`rotation_origin`]; not saved).
     pub(crate) rotation_origin: Option<rotation_origin::RotationOrigin>,
+    /// The View toggles the preferences keep were applied ([`Session::apply_view_prefs`]).
+    view_from_prefs: bool,
     /// The last duplicate while its copies are the selection: Duplicate repeats its offset (see
     /// [`cmd::edit::Duplicated`]; not saved).
     pub(crate) last_duplicate: Option<cmd::edit::Duplicated>,
@@ -390,7 +399,8 @@ pub struct VersionPreview {
 /// Why edits are refused while a version is shown.
 pub const PREVIEW_READ_ONLY: &str = "you're viewing an earlier version: restore it or go back to the current version to edit";
 
-/// Commands that first end a version preview: they act on the document itself.
+/// Commands that first end a version preview: they act on the document itself. Saving does so
+/// only with a native destination; export copies and pending format choices keep the preview.
 const ENDS_PREVIEW: &[&str] = &["file.save", "file.saveAs", "file.close", "file.revert", "file.saveVersion", "file.duplicate", "version.restore"];
 
 static NEXT_UID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -401,6 +411,8 @@ impl DocState {
             doc.repair();
         }
         doc.link_layer_text_styles();
+        cmd::styles::apply_paint_bindings_on_load(&mut doc);
+        // Initial import settlement belongs to the saved baseline, not the user's first edit.
         let page = doc.current_page.filter(|p| doc.pages.contains(p)).or_else(|| doc.first_page()).unwrap_or(NodeId(0));
         let doc = Arc::new(doc);
         let mut st = Self {
@@ -427,6 +439,7 @@ impl DocState {
             focus: None,
             guide: None,
             rotation_origin: None,
+            view_from_prefs: false,
             last_duplicate: None,
         };
         st.zoom_to_fit();
@@ -606,6 +619,9 @@ pub struct Prefs {
     /// The widths of the main window's left and right panels (the interface keeps them within its
     /// limits; other windows have their own while they are open).
     pub panel_widths: (f32, f32),
+    /// The height asked for the main window's pages list, dragged at its lower edge (`None`: a
+    /// share of the panel; the interface keeps it within its limits).
+    pub pages_height: Option<f32>,
     /// The interface language: a language code ("en", "es", "pt-BR") or "system" (the OS or browser
     /// language). Languages without a catalog show English.
     pub language: String,
@@ -652,7 +668,19 @@ pub struct Prefs {
     pub home_sort: String,
     /// Which way: `"desc"` (newest first, Z to A) or `"asc"`.
     pub home_order: String,
+    /// The View menu's toggles turned on or off (rulers, pixel grid, snapping…), by command id:
+    /// files opened or made later start with them. Missing: the toggle's default.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub view: BTreeMap<String, bool>,
+    /// Recently run actions (the Actions palette's Recents), newest first, at most
+    /// [`MAX_RECENT_ACTIONS`]. Entries are `command:<id>`, `plugin:<plugin>/<command>` or
+    /// `widget:<plugin>`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub recent_actions: Vec<String>,
 }
+
+/// Recently run actions kept for the Actions palette (newest first).
+pub const MAX_RECENT_ACTIONS: usize = 5;
 
 impl Default for Prefs {
     fn default() -> Self {
@@ -666,6 +694,7 @@ impl Default for Prefs {
             show_dimensions: true,
             theme: "system".into(),
             panel_widths: (240.0, 240.0),
+            pages_height: None,
             language: "system".into(),
             user_name: cmd::comment::DEFAULT_AUTHOR.into(),
             reduce_motion: false,
@@ -681,6 +710,8 @@ impl Default for Prefs {
             home_views: BTreeMap::new(),
             home_sort: "modified".into(),
             home_order: "desc".into(),
+            view: BTreeMap::new(),
+            recent_actions: Vec::new(),
         }
     }
 }
@@ -721,7 +752,8 @@ pub struct Session {
     /// dark page colour while it is dark (added pages take the current page's). Headless sessions (CLI, MCP, exports) have no
     /// theme, so what scripts make is the same everywhere.
     pub ui_dark: Option<bool>,
-    /// Command log (id + params) for actions/automation.
+    /// Command log (id + params) for actions/automation. File imports that carry the file bytes
+    /// (`file.import` with `data`) are not logged, so the log never holds a copy of a pasted file.
     pub journal: Vec<(String, Value)>,
     /// Recently used colours.
     pub recent_colors: Vec<figcraft_color::Color>,
@@ -743,6 +775,19 @@ pub struct Session {
 impl Default for Session {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Whether a command, or a batch wrapping one, imports a file passed as Base64 `data`.
+fn command_carries_import_bytes(id: &str, params: &Value) -> bool {
+    match id {
+        "file.import" => params::get(params, "data").is_some(),
+        "command.batch" => params.get("commands").and_then(Value::as_array).is_some_and(|commands| {
+            commands.iter().any(|c| {
+                c.get("command").and_then(Value::as_str).zip(c.get("params")).is_some_and(|(id, params)| command_carries_import_bytes(id, params))
+            })
+        }),
+        _ => false,
     }
 }
 
@@ -818,6 +863,14 @@ impl Session {
         s
     }
 
+    /// Files new to the session start with the View toggles the preferences keep.
+    pub fn apply_view_prefs(&mut self) {
+        for ds in self.docs.iter_mut().filter(|d| !d.view_from_prefs) {
+            cmd::view::apply_kept(&self.prefs, &mut ds.view);
+            ds.view_from_prefs = true;
+        }
+    }
+
     pub fn ds(&self) -> Result<&DocState> {
         self.docs.get(self.active).ok_or(EngineError::NoDocument)
     }
@@ -859,6 +912,7 @@ impl Session {
             return Err(EngineError::Disabled(id.into(), "leave the live session before reverting to the saved file".into()));
         }
         branches::sync(self);
+        self.apply_view_prefs();
         if textpreview::COMMANDS.contains(&id) {
             // A live preview is no edit: no undo step, normalisation or rollback here.
             let r = guard::run(id, || (spec.run)(self, params));
@@ -870,6 +924,7 @@ impl Session {
         // Every other command acts on the document itself, not on a live text preview.
         textpreview::end(self);
         if ENDS_PREVIEW.contains(&id)
+            && (!matches!(id, "file.save" | "file.saveAs") || cmd::file::save_ends_preview(self, id, params))
             && let Ok(ds) = self.ds_mut()
         {
             ds.end_preview();
@@ -878,16 +933,22 @@ impl Session {
         let result = guard::run(id, || (spec.run)(self, params))
             .and_then(|v| self.check_instance_structure(id, &before).map(|()| v))
             .and_then(|v| self.check_preview(id, &before).map(|()| v))
-            .and_then(|v| self.check_live_access(id, &before).map(|()| v));
+            .and_then(|v| self.check_live_access(id, &before).map(|()| v))
+            .and_then(|v| self.check_finite_geometry(id, &before).map(|()| v));
         match &result {
             Ok(_) => {
                 self.after_command(spec, before);
+                self.apply_view_prefs();
                 if spec.history && id != "edit.repeat" {
                     self.last_command = Some((id.to_string(), params.clone()));
                 }
-                self.journal.push((id.to_string(), params.clone()));
-                if self.journal.len() > 5000 {
-                    self.journal.drain(..1000);
+                // Imported bytes already live in the document: a Base64 copy in the log would stay
+                // for the whole session.
+                if !command_carries_import_bytes(id, params) {
+                    self.journal.push((id.to_string(), params.clone()));
+                    if self.journal.len() > 5000 {
+                        self.journal.drain(..1000);
+                    }
                 }
             }
             Err(_) => {
@@ -914,6 +975,22 @@ impl Session {
             return Ok(());
         }
         Err(EngineError::Disabled(id.to_string(), PREVIEW_READ_ONLY.into()))
+    }
+
+    /// A layer's position and size stay finite: infinity and NaN are written as `null`, so a file
+    /// holding them saves but can't be reopened. Refuse such an edit (it is rolled back).
+    fn check_finite_geometry(&self, id: &str, before: &Option<(Arc<Document>, Vec<NodeId>, NodeId, u64)>) -> Result<()> {
+        let Some((bdoc, _, _, uid)) = before else { return Ok(()) };
+        let Some(ds) = self.docs.iter().find(|d| d.uid == *uid) else { return Ok(()) };
+        if Arc::ptr_eq(&ds.doc, bdoc) {
+            return Ok(());
+        }
+        let broken = |n: &Node| !(n.transform.as_coeffs().iter().all(|c| c.is_finite()) && n.width.is_finite() && n.height.is_finite());
+        let untouched = |n: &Node| bdoc.node_arc(n.id).zip(ds.doc.node_arc(n.id)).is_some_and(|(a, b)| Arc::ptr_eq(a, b));
+        match ds.doc.nodes().find(|n| broken(n) && !untouched(n)) {
+            Some(n) => Err(bad(id, format!("\"{}\" would get a position or size beyond the number range", n.name))),
+            None => Ok(()),
+        }
     }
 
     /// A live session's document you may only view (or that is on its way to a server) is
@@ -1135,11 +1212,20 @@ impl Session {
         self.grouped(label, |s| {
             let mut results: Vec<Value> = Vec::with_capacity(cmds.len());
             for (step, (id, p)) in cmds.iter().enumerate() {
-                let p = if id == "command.batch" { p.clone() } else { resolve_step_refs(p, &results, step, 0)? };
-                results.push(s.execute(id, &p)?);
+                let v = s.batch_step(&results, step, id, p)?;
+                results.push(v);
             }
             Ok(results)
         })
+    }
+
+    /// One step of a batch: `{"$step": n}` in `params` resolves against `results` (the results of
+    /// the steps before it), then the command runs. [`Session::batch`] runs a list of these as one
+    /// undo step; a caller with its own list — the CLI's script runner — uses this so its steps
+    /// resolve `$step` the same way, inside its own [`Session::grouped`].
+    pub fn batch_step(&mut self, results: &[Value], step: usize, cmd: &str, params: &Value) -> Result<Value> {
+        let p = if cmd == "command.batch" { params.clone() } else { resolve_step_refs(params, results, step, 0)? };
+        self.execute(cmd, &p)
     }
 
     /// Run `f` as one undo step called `label`: the commands it executes push no steps of their
@@ -1468,6 +1554,8 @@ mod binding_lists_tests;
 #[cfg(test)]
 mod booleans_tests;
 #[cfg(test)]
+mod bound_alpha_tests;
+#[cfg(test)]
 mod branch_tests;
 #[cfg(test)]
 mod branch_versions_tests;
@@ -1500,6 +1588,8 @@ mod cursor_tests;
 #[cfg(test)]
 mod dark_page_text_tests;
 #[cfg(test)]
+mod design_paste_tests;
+#[cfg(test)]
 mod dev_resources_tests;
 #[cfg(test)]
 mod devcompare_tests;
@@ -1507,6 +1597,8 @@ mod devcompare_tests;
 mod devfocus_tests;
 #[cfg(test)]
 mod devinspect_tests;
+#[cfg(test)]
+mod doc_urls_tests;
 #[cfg(test)]
 mod double_click_tests;
 #[cfg(test)]
@@ -1528,6 +1620,8 @@ mod fig_export_tests;
 #[cfg(test)]
 mod fig_import_tests;
 #[cfg(test)]
+mod finite_geometry_tests;
+#[cfg(test)]
 mod frame_guides_tests;
 #[cfg(test)]
 mod frame_label_tests;
@@ -1548,15 +1642,25 @@ mod history_behaviour_tests;
 #[cfg(test)]
 mod html_codegen_tests;
 #[cfg(test)]
+mod huge_stroke_tests;
+#[cfg(test)]
+mod id_params_behaviour_tests;
+#[cfg(test)]
 mod import_export_tests;
 #[cfg(test)]
+mod import_journal_tests;
+#[cfg(test)]
 mod inspect_behaviour_tests;
+#[cfg(test)]
+mod instance_resizing_tests;
 #[cfg(test)]
 mod interaction_rollback_tests;
 #[cfg(test)]
 mod invite_links_tests;
 #[cfg(test)]
 mod keymap_tests;
+#[cfg(test)]
+mod library_path_tests;
 #[cfg(test)]
 mod library_range_styles_tests;
 #[cfg(test)]
@@ -1584,15 +1688,21 @@ mod menu_gaps_tests;
 #[cfg(test)]
 mod nested_override_tests;
 #[cfg(test)]
+mod node_set_refusals_tests;
+#[cfg(test)]
 mod online_tests;
 #[cfg(test)]
 mod open_issues_tests;
 #[cfg(test)]
 mod outline_options_tests;
 #[cfg(test)]
+mod page_clipboard_tests;
+#[cfg(test)]
 mod page_copy_navigation_tests;
 #[cfg(test)]
 mod page_target_tests;
+#[cfg(test)]
+mod paint_index_tests;
 #[cfg(test)]
 mod paint_reorder_tests;
 #[cfg(test)]
@@ -1601,6 +1711,8 @@ mod paint_tests;
 mod panels_behaviour_tests;
 #[cfg(test)]
 mod pdf_print_tests;
+#[cfg(test)]
+mod pen_end_tests;
 #[cfg(test)]
 mod pen_overlay_tests;
 #[cfg(test)]
@@ -1634,6 +1746,8 @@ mod proto_run_tests;
 #[cfg(test)]
 mod proto_tail_tests;
 #[cfg(test)]
+mod rest_slot_tests;
+#[cfg(test)]
 mod retained_walk_tests;
 #[cfg(test)]
 mod rotated_guides_tests;
@@ -1641,6 +1755,8 @@ mod rotated_guides_tests;
 mod rotated_select_tests;
 #[cfg(test)]
 mod rotation_origin_tests;
+#[cfg(test)]
+mod save_format_tests;
 #[cfg(test)]
 mod scale_tool_tests;
 #[cfg(test)]
@@ -1704,11 +1820,15 @@ mod variables_behaviour_tests;
 #[cfg(test)]
 mod variables_editor_tests;
 #[cfg(test)]
+mod variables_import_shapes_tests;
+#[cfg(test)]
 mod variables_io_tests;
 #[cfg(test)]
 mod vector_behaviour_tests;
 #[cfg(test)]
 mod vector_multi_behaviour_tests;
+#[cfg(test)]
+mod vector_offset_tests;
 #[cfg(test)]
 mod version_preview_tests;
 #[cfg(test)]
@@ -1717,3 +1837,6 @@ mod version_tests;
 mod view_behaviour_tests;
 #[cfg(test)]
 mod widgets_tests;
+
+#[cfg(test)]
+mod selection_spacing_tests;

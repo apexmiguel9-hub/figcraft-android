@@ -44,3 +44,15 @@ sync_github_name = true
 
 [people.volkovskey]
 real_name = "Andrii Volkov"
+
+[people.marcoarnulfo]
+real_name = "Marco Arnulfo"
+display_name = "Marco Arnulfo"
+sync_github_name = false
+
+[people.krinry]
+display_name = "krinry"
+sync_github_name = true
+
+[people.pechnikov2026-star]
+sync_github_name = true

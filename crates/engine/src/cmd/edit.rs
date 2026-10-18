@@ -25,6 +25,13 @@ pub fn specs() -> Vec<CommandSpec> {
         spec!("edit.copy", "Copy", "{ids?}", false, copy),
         spec!("edit.cut", "Cut", "{ids?}", true, cut),
         spec!("edit.paste", "Paste", "{parent?, x?, y? (page coordinates of the pasted top-left)}", true, paste),
+        spec!(
+            "edit.pasteDesignLayers",
+            "Paste design layers",
+            "{html (the clipboard's HTML) | data (base64 of the clipboard's design data, at most 256 MB), parent?, x?, y?}  layers copied from another design app (a .fig canvas in the clipboard's HTML), read like a .fig file (best effort, with `warnings`), pasted as edit.paste pastes",
+            true,
+            paste_design_layers
+        ),
         spec!("edit.pasteOver", "Paste over selection", "{}", true, paste_over),
         spec!("edit.pasteReplace", "Paste to replace", "{ids?}", true, paste_replace),
         spec!("edit.copyProperties", "Copy properties", "{id?}", false, copy_props),
@@ -496,9 +503,27 @@ fn bump_name(n: &str) -> String {
 }
 
 /// The copied form of the selection.
-pub fn copy_to_clipboard(s: &mut Session, ids: &[NodeId]) -> Result<()> {
+pub fn copy_to_clipboard(s: &mut Session, cmd: &str, ids: &[NodeId]) -> Result<()> {
     let ds = s.ds()?;
-    let doc = &ds.doc;
+    // Pages are not layers: they can't be pasted anywhere.
+    let layers: Vec<NodeId> = ids.iter().copied().filter(|i| !ds.doc.node(*i).is_some_and(Node::is_page)).collect();
+    if layers.is_empty() && !ids.is_empty() {
+        return Err(EngineError::Disabled(cmd.into(), "pages can't be copied; use page.duplicate".into()));
+    }
+    let (nodes, images, bounds) = copied(&ds.doc, &layers);
+    let (source, source_path, uid) = (ds.doc.clone(), ds.path.clone(), ds.uid);
+    s.clipboard.source = Some(source);
+    s.clipboard.source_path = source_path;
+    s.clipboard.source_doc = uid;
+    s.clipboard.nodes = nodes;
+    s.clipboard.images = images;
+    s.clipboard.bounds = bounds;
+    Ok(())
+}
+
+type Copied = (Vec<(NodeId, Vec<Node>)>, BTreeMap<String, ImageData>, Option<figcraft_geom::Rect>);
+
+fn copied(doc: &Document, ids: &[NodeId]) -> Copied {
     let ids = z_sorted(doc, &roots(doc, ids));
     let mut nodes = Vec::new();
     let mut images = BTreeMap::new();
@@ -521,28 +546,73 @@ pub fn copy_to_clipboard(s: &mut Session, ids: &[NodeId]) -> Result<()> {
         nodes.push((*i, sub));
     }
     let bounds = doc.bounds_of(&ids);
-    let uid = ds.uid;
-    let source = Some(ds.doc.clone());
-    let source_path = ds.path.clone();
-    s.clipboard.source = source;
-    s.clipboard.source_path = source_path;
-    s.clipboard.nodes = nodes;
-    s.clipboard.images = images;
-    s.clipboard.bounds = bounds;
-    s.clipboard.source_doc = uid;
-    Ok(())
+    (nodes, images, bounds)
+}
+
+/// The markers around the copied layers in the clipboard's HTML, spelt as that format spells them.
+pub const CLIP_OPEN: &str = "(figma)";
+pub const CLIP_CLOSE: &str = "(/figma)";
+/// Largest design data read from the clipboard: the `.fig` import's own canvas cap (256 MB). Its
+/// base64 is checked first, so neither the text nor the decoded bytes can pass it.
+const MAX_CLIP_DATA: usize = 256 * 1024 * 1024;
+const MAX_CLIP_BASE64: usize = MAX_CLIP_DATA.div_ceil(3) * 4;
+
+/// Base64 `text` (whitespace ignored, padding optional) when it fits [`MAX_CLIP_DATA`].
+fn clip_base64(text: &str) -> Option<Vec<u8>> {
+    use base64::Engine as _;
+    if text.bytes().filter(|b| !b.is_ascii_whitespace()).count() > MAX_CLIP_BASE64 {
+        return None;
+    }
+    let b64: String = text.chars().filter(|c| !c.is_ascii_whitespace()).collect();
+    base64::engine::general_purpose::STANDARD.decode(&b64).or_else(|_| base64::engine::general_purpose::STANDARD_NO_PAD.decode(&b64)).ok()
+}
+
+/// Layers copied from another design app travel in the clipboard's HTML as a `.fig` canvas in
+/// base64 between [`CLIP_OPEN`] and [`CLIP_CLOSE`]. This gives those bytes, or `None` when the HTML
+/// holds no readable design data (it may just mention the marker).
+pub fn design_clipboard_buffer(html: &str) -> Option<Vec<u8>> {
+    let start = html.find(CLIP_OPEN)? + CLIP_OPEN.len();
+    let len = html.get(start..)?.find(CLIP_CLOSE)?;
+    let bytes = clip_base64(html.get(start..start + len)?)?;
+    figcraft_format::fig::is_fig(&bytes).then_some(bytes)
+}
+
+fn paste_design_layers(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "edit.pasteDesignLayers";
+    let bytes = match (string(p, "html"), string(p, "data")) {
+        (Some(html), _) => design_clipboard_buffer(&html).ok_or_else(|| bad(CMD, "the HTML holds no copied design layers"))?,
+        (None, Some(d)) => clip_base64(&d).ok_or_else(|| bad(CMD, "`data` is not base64 of at most 256 MB"))?,
+        (None, None) => return Err(bad(CMD, "pass `html` or `data`")),
+    };
+    let other = super::file::load_fig(&bytes, "Pasted layers").ok_or_else(|| bad(CMD, "the data is not copied design layers"))??;
+    let doc = std::sync::Arc::new(other.doc);
+    let tops: Vec<NodeId> = doc.pages.iter().filter_map(|pg| doc.node(*pg)).flat_map(|pg| pg.children.iter().copied()).collect();
+    if tops.is_empty() {
+        return Err(EngineError::Disabled(CMD.into(), "the copied layers came in empty".into()));
+    }
+    let (nodes, images, bounds) = copied(&doc, &tops);
+    let props = s.clipboard.props.take();
+    // No open file has id 0. So paste treats this copy as a copy from a different file.
+    s.clipboard = crate::Clipboard { nodes, images, props, bounds, source_doc: 0, source: Some(doc), source_path: None };
+    let mut out = paste(s, p)?;
+    if !other.issues.is_empty() {
+        out["warnings"] = json!(other.issues);
+    }
+    Ok(out)
 }
 
 fn copy(s: &mut Session, p: &Value) -> Result<Value> {
     let ids = req_targets("edit.copy", s, p)?;
-    copy_to_clipboard(s, &ids)?;
+    copy_to_clipboard(s, "edit.copy", &ids)?;
     Ok(json!({"copied": s.clipboard.nodes.len()}))
 }
 
 fn cut(s: &mut Session, p: &Value) -> Result<Value> {
     let ids = req_targets("edit.cut", s, p)?;
-    copy_to_clipboard(s, &ids)?;
-    delete(s, &json!({"ids": ids}))
+    copy_to_clipboard(s, "edit.cut", &ids)?;
+    let doc = s.doc()?;
+    let layers: Vec<NodeId> = ids.into_iter().filter(|i| !doc.node(*i).is_some_and(Node::is_page)).collect();
+    delete(s, &json!({"ids": layers}))
 }
 
 /// Paste the clipboard under `parent` with the copied top-left moved to `at` (page coords).
@@ -1086,9 +1156,34 @@ fn set(s: &mut Session, p: &Value) -> Result<Value> {
             .collect(),
         None => Vec::new(),
     };
+    let mut warnings = font_style_warnings(&s.ds()?.doc, &ids, &props);
+    // Auto layout keys go to the layers that can have auto layout; with none among the targets,
+    // the first refuses them (`props::layout_mut`).
+    let layout_keys: Vec<&str> = props.keys().map(String::as_str).filter(|k| super::props::LAYOUT_KEYS.contains(k)).collect();
+    let mut without_layout = props.clone();
+    let mut skipped = BTreeSet::new();
+    if !layout_keys.is_empty() {
+        let doc = &s.ds()?.doc;
+        let frame_like = |i: &NodeId| doc.node(*i).is_some_and(|n| n.kind.is_frame_like());
+        if ids.iter().any(frame_like) {
+            skipped = ids.iter().copied().filter(|i| !frame_like(i)).collect();
+            without_layout.retain(|k, _| !layout_keys.contains(&k.as_str()));
+        }
+        if !skipped.is_empty() {
+            let names: Vec<String> =
+                skipped.iter().take(10).filter_map(|i| doc.node(*i)).map(|n| format!("{} “{}” ({})", n.id, n.name, n.kind.type_name())).collect();
+            let more = if skipped.len() > names.len() { format!(" and {} more", skipped.len() - names.len()) } else { String::new() };
+            warnings.push(format!(
+                "{} skipped on {}{more}: only frames, components and instances have auto layout",
+                layout_keys.iter().map(|k| format!("`{k}`")).collect::<Vec<_>>().join(", "),
+                names.join(", ")
+            ));
+        }
+    }
     let doc = s.doc_mut()?;
     for i in ids {
-        super::props::apply("node.set", doc, i, &props)?;
+        let props = if skipped.contains(&i) { &without_layout } else { &props };
+        super::props::apply("node.set", doc, i, props)?;
     }
     if let Some(o) = pivot {
         for (i, q) in pinned {
@@ -1098,7 +1193,43 @@ fn set(s: &mut Session, p: &Value) -> Result<Value> {
             }
         }
     }
-    ok()
+    if warnings.is_empty() { ok() } else { Ok(json!({"ok": true, "warnings": warnings})) }
+}
+
+/// A `fontStyle` draws in the family's face nearest to it, as a text layer resolves it. When that
+/// face has another weight or slant than the name asks for ("Black" on a family whose heaviest is
+/// Bold), say which face it is. Families that aren't installed, and names that match a style or a
+/// named instance (spelled any way: "SemiBold", "Semi Bold"), say nothing.
+fn font_style_warnings(doc: &figcraft_doc::Document, ids: &[NodeId], props: &serde_json::Map<String, Value>) -> Vec<String> {
+    let Some(style) = props.get("fontStyle").and_then(Value::as_str) else { return Vec::new() };
+    let mut families: Vec<String> = match props.get("fontFamily").and_then(Value::as_str) {
+        Some(f) => vec![f.to_string()],
+        None => ids
+            .iter()
+            .filter_map(|i| doc.node(*i))
+            .filter_map(|n| n.kind.text())
+            .flat_map(|t| t.spans().into_iter().map(|(_, _, st)| st.font_family.clone()).collect::<Vec<_>>())
+            .collect(),
+    };
+    families.sort();
+    families.dedup();
+    let norm = |s: &str| s.to_lowercase().replace([' ', '-', '_'], "");
+    let (want_w, want_i) = (i32::from(figcraft_doc::style_weight(style)), style.to_lowercase().contains("italic"));
+    families
+        .into_iter()
+        .filter_map(|family| {
+            let styles = figcraft_text::family_styles(&family);
+            if styles.is_empty() || styles.iter().any(|x| norm(x) == norm(style)) {
+                return None;
+            }
+            let face = figcraft_text::find_face(&family, style).filter(|f| f.family.eq_ignore_ascii_case(&family))?;
+            let w = face.axis("wght").map_or(i32::from(face.weight), |a| a.clamp(f64::from(want_w)).round() as i32);
+            if face.instance(style).is_some() || (w == want_w && face.italic == want_i) {
+                return None;
+            }
+            Some(format!("{family} has no `{style}` style: it draws in {}, the nearest (it has: {})", face.style, styles.join(", ")))
+        })
+        .collect()
 }
 
 /// `stroke.widthProfile`: a preset or points (through `node.set`'s `widthProfile`, so instances
@@ -1177,7 +1308,7 @@ fn paint_list(s: &mut Session, p: &Value, fills: bool, add: bool) -> Result<Valu
 fn paint_set(s: &mut Session, p: &Value, fills: bool) -> Result<Value> {
     let cmd = if fills { "fill.set" } else { "stroke.set" };
     let ids = req_targets(cmd, s, p)?;
-    let idx = num(p, "index").map(|x| x.max(0.0) as usize);
+    let idx = opt_index(cmd, p, "index")?;
     let new_paint = match get(p, "paint") {
         Some(v) => Some(paint_of(v).ok_or_else(|| bad(cmd, "invalid paint"))?),
         None => None,
@@ -1225,7 +1356,7 @@ fn pattern_fill(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "fill.pattern";
     let src = req_id(CMD, p, "source")?;
     let doc = s.doc()?;
-    if !doc.node(src).is_some_and(|n| !n.is_page()) {
+    if doc.node(src).is_none_or(|n| n.is_page()) {
         return Err(bad(CMD, "`source` must be a layer"));
     }
     if req_targets(CMD, s, p)?.iter().any(|t| doc.is_ancestor(*t, src)) {

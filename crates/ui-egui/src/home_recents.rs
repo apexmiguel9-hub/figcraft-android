@@ -506,7 +506,7 @@ impl Recents {
 
     /// For `ui.inspect`: each file listed, whether it is there and whether its picture is in.
     pub fn inspect(&self, prefs: &Prefs) -> Value {
-        let paths: Vec<String> = prefs.recent_files.iter().take(SHOWN).cloned().collect();
+        let paths: Vec<String> = listed(&prefs.recent_files).take(SHOWN).cloned().collect();
         let files: Vec<Value> = sorted(self.shown(&paths), Sort::of(prefs))
             .iter()
             .map(|f| {
@@ -523,6 +523,12 @@ impl Recents {
             .collect();
         json!(files)
     }
+}
+
+/// The recent files that may be listed: all of them, or, when the app runs confined to automation
+/// roots, those inside them (no name or picture of another file is shown).
+pub(crate) fn listed(recents: &[String]) -> impl Iterator<Item = &String> {
+    recents.iter().filter(|p| figcraft_engine::file_access::allowed(p, figcraft_engine::file_access::Access::Read))
 }
 
 /// The recent files for `ui.inspect`: `{view, sort, order, files: [{path, name, exists, picture,
@@ -548,16 +554,27 @@ enum Action {
     View(View),
 }
 
-/// The Recent files heading, its toolbar and the files as cards or a table.
-pub fn section(app: &mut FigApp, ui: &mut Ui, t: &Tokens) {
-    let paths: Vec<String> = app.session.prefs.recent_files.iter().take(SHOWN).cloned().collect();
+/// The Recent files heading, its toolbar and the files as cards or a table. With a `query` (lower
+/// case, from the Home search) only the files not open whose path has it, from every recent file;
+/// nothing at all when none has it. How many files are shown.
+pub fn section(app: &mut FigApp, ui: &mut Ui, t: &Tokens, query: &str) -> usize {
+    let searching = !query.is_empty();
+    // A search reaches every recent file; the files shown without one stay known through it.
+    let paths: Vec<String> = listed(&app.session.prefs.recent_files).take(if searching { usize::MAX } else { SHOWN }).cloned().collect();
     let time = ui.input(|i| i.time);
     let now = figcraft_engine::cmd::comment::now_secs();
     let reduce_motion = app.reduce_motion();
     let (view, sort) = (View::of(&app.session.prefs), Sort::of(&app.session.prefs));
     let state = &mut app.ui.home_view.recents;
     state.refresh(ui.ctx(), &paths, time);
-    let files = sorted(state.shown(&paths), sort);
+    let mut files = sorted(state.shown(&paths), sort);
+    if searching {
+        let docs = &app.session.docs;
+        files.retain(|f| f.path.to_lowercase().contains(query) && !docs.iter().any(|d| d.path.as_deref() == Some(f.path.as_str())));
+        if files.is_empty() {
+            return 0;
+        }
+    }
     let with_created = files.iter().any(|f| f.stat.is_some_and(|s| s.created.is_some()));
     let mut action = toolbar(ui, t, view, sort, with_created);
     ui.add_space(16.0);
@@ -568,7 +585,7 @@ pub fn section(app: &mut FigApp, ui: &mut Ui, t: &Tokens) {
     action = action.or(chosen);
     match action {
         Some(Action::Open(path)) => {
-            if app.run("file.open", json!({"path": path})).is_some() {
+            if app.run_user("file.open", json!({"path": path})).is_some() {
                 app.ui.home = false;
             }
         }
@@ -587,6 +604,7 @@ pub fn section(app: &mut FigApp, ui: &mut Ui, t: &Tokens) {
         }
         None => {}
     }
+    files.len()
 }
 
 /// "Recent files", and at the right the sort menu and the grid and list buttons.

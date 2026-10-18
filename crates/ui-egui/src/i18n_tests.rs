@@ -160,15 +160,39 @@ fn used_keys() -> BTreeSet<String> {
         if !name.ends_with(".rs") || name.ends_with("_tests.rs") || name == "i18n.rs" {
             continue;
         }
-        keys.extend(literals(&std::fs::read_to_string(&path).unwrap()));
+        keys.extend(literals(&std::fs::read_to_string(&path).unwrap(), LOOKUPS));
     }
     keys
 }
 
-/// The first-argument string literals of the lookup functions in `src`.
-fn literals(src: &str) -> Vec<String> {
+/// The importers' fixed notes: the string literals passed to `warn` in the `.fig` and REST import
+/// sources. The import report shows a note translated when the catalog has it, so each one is a key
+/// `en.toml` (and every complete language) must have, and an entry for a note the importers no
+/// longer give shows up as unused.
+fn importer_notes() -> BTreeSet<String> {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../format/src");
+    let mut keys = BTreeSet::new();
+    for dir in ["fig", "rest"] {
+        for entry in std::fs::read_dir(src.join(dir)).unwrap().flatten() {
+            let path = entry.path();
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            // export.rs warns about what a `.fig` export leaves out, not about an import.
+            if !name.ends_with(".rs") || name.contains("tests") || name == "export.rs" {
+                continue;
+            }
+            keys.extend(literals(&std::fs::read_to_string(&path).unwrap(), &["warn("]));
+        }
+    }
+    keys
+}
+
+/// The lookup functions whose first argument is a catalog key.
+const LOOKUPS: &[&str] = &["tr(", "trf(", "trn(", "tr_noop("];
+
+/// The first-argument string literals of the functions `fns` (each with its `(`) in `src`.
+fn literals(src: &str, fns: &[&str]) -> Vec<String> {
     let mut out = Vec::new();
-    for f in ["tr(", "trf(", "trn(", "tr_noop("] {
+    for f in fns {
         let mut from = 0;
         while let Some(i) = src.get(from..).and_then(|s| s.find(f)) {
             let at = from + i;
@@ -226,7 +250,7 @@ fn english() -> &'static Lang {
 
 #[test]
 fn every_key_in_the_code_is_in_the_english_catalog_and_no_other() {
-    let used: BTreeSet<String> = used_keys().into_iter().chain(dynamic_keys()).collect();
+    let used: BTreeSet<String> = used_keys().into_iter().chain(dynamic_keys()).chain(importer_notes()).collect();
     let en: BTreeSet<String> = english().ui.iter().map(|(k, _)| k.to_string()).collect();
     let missing: Vec<_> = used.difference(&en).collect();
     let unused: Vec<_> = en.difference(&used).collect();
@@ -319,11 +343,12 @@ fn system_languages_pick_the_first_one_with_a_catalog() {
     // Portugal's Portuguese and a bare "pt" read the Brazilian catalog.
     assert_eq!(code("system", Some("pt-PT")), "pt-BR");
     assert_eq!(code("pt", None), "pt-BR");
-    // An OS list: the first language there is a catalog for (English counts).
-    assert_eq!(code("system", Some("nl-NL,de-DE,en-US")), "de");
-    assert_eq!(code("system", Some("nl-NL, en-US,fr-FR")), "en");
-    assert_eq!(code("system", Some("nl,da")), "en");
-    assert_eq!(code("system", Some("nl,sv")), "sv");
+    // An OS list: the first language there is a catalog for (English counts). Hindi has no
+    // catalog (Dutch gained one; `hi` keeps exercising the no-catalog path).
+    assert_eq!(code("system", Some("hi-IN,de-DE,en-US")), "de");
+    assert_eq!(code("system", Some("hi-IN, en-US,fr-FR")), "en");
+    assert_eq!(code("system", Some("hi,da")), "en");
+    assert_eq!(code("system", Some("hi,sv")), "sv");
     assert_eq!(code("fr", Some("de-DE")), "fr", "a chosen language beats the system's");
 }
 
@@ -416,7 +441,8 @@ fn the_key_scanner_reads_rust_literals() {
     let src = r#"x(tr("A \"b\"")); trf(
         "C {n}", &[]); attr("no"); tr_noop("D\
           E"); tr(label);"#;
-    assert_eq!(literals(src), vec!["A \"b\"", "C {n}", "DE"]);
+    assert_eq!(literals(src, LOOKUPS), vec!["A \"b\"", "C {n}", "DE"]);
+    assert_eq!(literals(r#"self.warn("a note"); s.warn(format!("{n}")); forewarn("no")"#, &["warn("]), vec!["a note"]);
 }
 
 #[test]
@@ -447,7 +473,7 @@ fn russian_language_tags_and_integer_plurals() {
         assert_eq!(resolve(tag, None), ru, "{tag}");
         assert_eq!(resolve("system", Some(tag)), ru, "{tag}");
     }
-    assert_eq!(resolve("system", Some("nl,ru-RU,en-US")), ru);
+    assert_eq!(resolve("system", Some("hi,ru-RU,en-US")), ru);
     for n in [1, 21, 31, 101, 1_001] {
         assert_eq!(plural("ru", n), Plural::One, "{n}");
         assert_eq!(fill(counted(ru, "{n} layers", n), &[("n", &n)]), format!("{n} слой"));

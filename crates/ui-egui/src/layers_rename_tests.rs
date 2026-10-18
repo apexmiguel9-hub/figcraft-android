@@ -170,3 +170,28 @@ fn a_rename_scrolled_out_of_view_goes_on() {
     press(&mut u, Key::Enter, Modifiers::NONE);
     assert_eq!(name(&u, top), "Far");
 }
+
+#[test]
+fn a_key_typed_in_the_frame_a_rename_starts_replaces_the_name() {
+    // The app draws no frame between the double-click's last release (or F2, or File ▸ Rename) and
+    // the first key, so the name field first shows in the frame that types into it.
+    let (mut u, a, _, _, c) = setup();
+    let p = u.row_at(c);
+    for _ in 0..2 {
+        u.button(p, true);
+        u.button(p, false);
+    }
+    type_text(&mut u, "Hero");
+    press(&mut u, Key::Enter, Modifiers::NONE);
+    assert_eq!(name(&u, c), "Hero", "a double-click rename");
+    u.app.session.execute("select.set", &json!({"ids": [a]})).unwrap();
+    u.frame(vec![]);
+    press(&mut u, Key::F2, Modifiers::NONE);
+    type_text(&mut u, "Base");
+    press(&mut u, Key::Enter, Modifiers::NONE);
+    assert_eq!(name(&u, a), "Base", "an F2 rename");
+    crate::menus::invoke(&mut u.app, "file.rename");
+    type_text(&mut u, "Brand kit");
+    press(&mut u, Key::Enter, Modifiers::NONE);
+    assert_eq!(u.app.session.doc().unwrap().name, "Brand kit", "File ▸ Rename");
+}

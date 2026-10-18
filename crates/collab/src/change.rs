@@ -87,8 +87,9 @@ macro_rules! node_props {
     ($($variant:ident => $field:ident),* $(,)?) => {
         /// A node property: the tree position (`parent`, `position`) or one saved field of
         /// [`Node`]. List-valued fields (fills, text runs, vector networks…) are one property each,
-        /// replaced whole (three-way merges line fills, strokes and effects up item by item, see
-        /// [`merge`](crate::merge)). New properties go at the end (the binary form numbers them).
+        /// replaced whole (three-way merges line the lists whose items stand on their own, such as
+        /// fills, up item by item, see [`merge`](crate::merge)). New properties go at the end (the
+        /// binary form numbers them).
         #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
         #[serde(rename_all = "camelCase")]
         pub enum Prop {

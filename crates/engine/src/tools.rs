@@ -344,6 +344,9 @@ pub(crate) enum Gesture {
         targets: Targets,
         duplicate: bool,
         moved: bool,
+        /// A Shift-press on this selected layer: it leaves the selection on release, unless the
+        /// press became a drag.
+        deselect: Option<NodeId>,
     },
     Resize {
         start: Point,
@@ -657,6 +660,9 @@ fn on_corner_square(doc: &Document, sel: &[NodeId], p: Point, zoom: f64) -> bool
 /// A box whose sides are both shorter than this on screen (pixels) would be covered by its
 /// handles: the canvas draws just its outline (the handles still answer just outside it).
 pub const SMALL_BOX_PX: f64 = 16.0;
+
+/// The stroke the Pencil draws: its colour and weight (the canvas previews it the same).
+pub const PENCIL_STROKE: (figcraft_color::Color, f64) = (figcraft_color::Color::BLACK, 2.0);
 
 /// The shorter and longer sides, in screen pixels, of the box with `corners` (tl, tr, br, bl).
 pub fn box_sides_px(corners: &[Point; 4], zoom: f64) -> (f64, f64) {
@@ -1194,15 +1200,15 @@ impl Session {
             Some(target) => {
                 // Clicking inside the current selection's box keeps it (drag them all).
                 let in_sel_box = sel.len() > 1 && doc.bounds_of(&sel).is_some_and(|b| b.contains(ev.p())) && !ev.shift;
+                // Shift on a selected layer takes it out on release if the press doesn't become a
+                // drag; a drag moves the selection with it. Where no drag can start, it goes now.
+                let deselect = (ev.shift && sel.contains(&target)).then_some(target);
+                let without_target = || sel.iter().copied().filter(|x| *x != target).collect::<Vec<_>>();
                 let new_sel = if in_sel_box && (sel.contains(&target) || sel.iter().any(|s| doc.is_ancestor(*s, target))) {
                     sel.clone()
-                } else if ev.shift {
+                } else if ev.shift && deselect.is_none() {
                     let mut s2 = sel.clone();
-                    if let Some(pos) = s2.iter().position(|x| *x == target) {
-                        s2.remove(pos);
-                    } else {
-                        s2.push(target);
-                    }
+                    s2.push(target);
                     s2
                 } else if sel.contains(&target) {
                     sel.clone()
@@ -1210,12 +1216,12 @@ impl Session {
                     vec![target]
                 };
                 self.set_selection(new_sel.clone());
-                if new_sel.is_empty() || doc.node(target).is_some_and(|n| n.locked) {
-                    return Ok(());
-                }
                 // Locked layers selected in the layers panel stay put.
                 let ids: Vec<NodeId> = roots(&doc, &new_sel).into_iter().filter(|i| !locked_in(&doc, *i)).collect();
-                if ids.is_empty() {
+                if new_sel.is_empty() || doc.node(target).is_some_and(|n| n.locked) || ids.is_empty() {
+                    if deselect.is_some() {
+                        self.set_selection(without_target());
+                    }
                     return Ok(());
                 }
                 let mut targets = Targets::gather(&doc, page, &ids);
@@ -1225,8 +1231,13 @@ impl Session {
                 {
                     targets.add_box(b);
                 }
-                self.begin_interaction(if ev.alt { "Duplicate" } else { "Move" })?;
-                self.tool.gesture = Gesture::Move { start: ev.p(), ids, targets, duplicate: ev.alt, moved: false };
+                if let Err(e) = self.begin_interaction(if ev.alt { "Duplicate" } else { "Move" }) {
+                    if deselect.is_some() {
+                        self.set_selection(without_target());
+                    }
+                    return Err(e);
+                }
+                self.tool.gesture = Gesture::Move { start: ev.p(), ids, targets, duplicate: ev.alt, moved: false, deselect };
                 self.tool.overlay.cursor = if ev.alt { Cursor::Copy } else { Cursor::Default };
             }
             None => {
@@ -1735,7 +1746,7 @@ impl Session {
         self.tool.overlay.drop_cell = None;
         let drop_target = self.tool.overlay.drop_target.take();
         match g {
-            Gesture::Move { ids, moved, duplicate, start, .. } => {
+            Gesture::Move { ids, moved, duplicate, start, deselect, .. } => {
                 if moved {
                     // A free move lands in the frame under the pointer (or the page) where it was
                     // dropped; layers in an auto layout frame already sit in their slot.
@@ -1777,7 +1788,11 @@ impl Session {
                     }
                 } else {
                     self.cancel_interaction()?;
-                    if !(ev.shift || ev.cmd || duplicate) {
+                    if let Some(d) = deselect {
+                        let sel = self.selection().into_iter().filter(|x| *x != d).collect();
+                        self.set_selection(sel);
+                    }
+                    if deselect.is_none() && !(ev.shift || ev.cmd || duplicate) {
                         self.widget_click(start, ev.tol() * 2.0)?;
                     }
                 }
@@ -1846,6 +1861,20 @@ impl Session {
         let (doc, sel, page) = (ds.doc.clone(), ds.selection.clone(), ds.page);
         if self.tool.tool == ToolId::Pen {
             return self.pen_finish();
+        }
+        // A frame's or section's name label: rename it there (the canvas puts a field over it).
+        // Labels come before widgets, as on a press; the second press began a move: undo it.
+        if matches!(self.tool.tool, ToolId::Move | ToolId::Scale)
+            && !(ev.shift || ev.cmd || ev.alt)
+            && let Some(id) = label_at(&doc, page, &self.tool.labels, ev.p())
+        {
+            self.tool.gesture = Gesture::None;
+            self.cancel_interaction()?;
+            if sel != [id] {
+                self.set_selection(vec![id]);
+            }
+            self.request_ui("canvas.renameLabel", serde_json::json!({"id": id}));
+            return Ok(());
         }
         // Quick clicks on a widget's clickable part are clicks, one by one.
         if matches!(self.tool.tool, ToolId::Move | ToolId::Scale)
@@ -2039,13 +2068,7 @@ impl Session {
         if self.tool.pen.is_none()
             && let Some((id, v)) = selected_end_at(&doc, &self.selection(), ev.p(), 8.0 / ev.zoom.max(1e-6))
         {
-            self.set_tool(ToolId::Move);
-            crate::vectoredit::begin(self, id)?;
-            crate::vectoredit::set_tool(self, crate::vectoredit::VTool::Pen)?;
-            return crate::vectoredit::set_state(self, |e| {
-                e.anchor = Some(v);
-                e.vertices = vec![v];
-            });
+            return self.pen_edit(id, Some(v));
         }
         let pen = self.tool.pen.get_or_insert_with(PenPath::default);
         // Clicking the first anchor closes the path.
@@ -2163,7 +2186,30 @@ impl Session {
         Ok(())
     }
 
-    /// Finish the pen path (Enter/Escape/double-click).
+    /// Edit `id` as a vector with the pen, going on from point `anchor` (or, without one, starting
+    /// a new path in the same layer at the next click).
+    fn pen_edit(&mut self, id: NodeId, anchor: Option<usize>) -> Result<()> {
+        self.set_tool(ToolId::Move);
+        crate::vectoredit::begin(self, id)?;
+        crate::vectoredit::set_tool(self, crate::vectoredit::VTool::Pen)?;
+        crate::vectoredit::set_state(self, |e| {
+            e.anchor = anchor;
+            e.vertices = anchor.into_iter().collect();
+        })
+    }
+
+    /// Enter/Escape while the pen draws: the path ends but its layer stays in edit mode with the
+    /// pen, so the next path joins the same vector (another Escape leaves edit mode).
+    pub fn pen_end(&mut self) -> Result<()> {
+        let id = self.tool.pen.as_ref().and_then(|p| p.id);
+        self.pen_finish()?;
+        match id {
+            Some(id) if self.doc()?.contains(id) => self.pen_edit(id, None),
+            _ => Ok(()),
+        }
+    }
+
+    /// Finish the pen path (and keep the pen tool: double-click, Delete, a tool switch).
     pub fn pen_finish(&mut self) -> Result<()> {
         let pen = self.tool.pen.take();
         self.tool.overlay.pen.clear();
@@ -2198,8 +2244,8 @@ impl Session {
         let mut local = fitted.clone();
         local.apply_affine(pw.inverse());
         let _ = d;
-        let mut props =
-            json!({"fills": [], "strokes": ["#000000"], "strokeWeight": 2, "strokeCap": "round", "strokeJoin": "round", "strokeAlign": "center"});
+        let (color, weight) = PENCIL_STROKE;
+        let mut props = json!({"fills": [], "strokes": [color.to_css_hex()], "strokeWeight": weight, "strokeCap": "round", "strokeJoin": "round", "strokeAlign": "center"});
         // Pen pressure becomes the stroke's width profile (brushes follow it too).
         if let Some(points) = pressure_profile(points, pressure) {
             props["widthProfile"] = json!(points);
@@ -2308,7 +2354,7 @@ impl Session {
             return Ok(());
         }
         if self.tool.pen.is_some() {
-            return self.pen_finish();
+            return self.pen_end();
         }
         if self.tool.busy() {
             self.tool.gesture = Gesture::None;

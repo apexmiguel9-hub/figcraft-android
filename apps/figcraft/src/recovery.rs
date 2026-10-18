@@ -120,8 +120,7 @@ impl Recovery {
         (0..10).find_map(|n| {
             let dir = root.join(if n == 0 { pid.to_string() } else { format!("{pid}-{n}") });
             std::fs::create_dir_all(&dir).ok()?;
-            let lock = File::options().write(true).create(true).truncate(false).open(dir.join(LOCK)).ok()?;
-            lock.try_lock().ok()?;
+            let lock = lock_folder(&dir).ok()?;
             Some(Self { dir, _lock: lock, written: HashMap::new(), next: 0.0, waiting: Vec::new() })
         })
     }
@@ -250,6 +249,17 @@ impl Recovery {
         self.written.insert(uid, Copy { done: None, flight: Some((vec![revision], writer)) });
     }
 
+    /// Quitting: a normal quit ([`finish`](Self::finish)) when the unsaved-changes question was
+    /// `asked` or nothing is unsaved. Otherwise (macOS's Quit menu ends the app without asking) the
+    /// unsaved documents are copied and the copies stay for the next start, as after a crash.
+    pub fn quit(mut self, s: &Session, asked: bool) {
+        if asked || !s.docs.iter().any(|d| needs_copy(s, d)) {
+            return self.finish();
+        }
+        self.write(s, true);
+        self.settle(s);
+    }
+
     /// A normal quit: the documents were saved or their changes discarded on purpose. (Earlier
     /// runs' copies still waiting for their outcome stay for the next start.)
     pub fn finish(self) {
@@ -281,6 +291,17 @@ fn remove_kept(w: Waiting) {
 
 /// The extension of the note beside the copy of a document that is one of your online files.
 const ONLINE: &str = "online";
+
+/// How long the startup waits, once, for folder locks that may free themselves (#334).
+#[cfg(unix)]
+const LOCK_WAIT: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Lock the folder `dir` (`WouldBlock` while another process holds it).
+fn lock_folder(dir: &Path) -> Result<File, std::fs::TryLockError> {
+    let lock = File::options().write(true).create(true).truncate(false).open(dir.join(LOCK)).map_err(std::fs::TryLockError::Error)?;
+    lock.try_lock()?;
+    Ok(lock)
+}
 
 /// The copy at `file` is of one of your online files: join that file again as its owner, keeping
 /// the copy to compare with what arrives. The session, or `None` when the copy isn't one (or its
@@ -351,6 +372,7 @@ pub fn recover_all(root: &Path, s: &mut Session) -> Recovered {
             }
         }
     };
+    let (mut free, mut held) = (Vec::new(), Vec::new());
     for e in entries.flatten() {
         let path = e.path();
         if !path.is_dir() {
@@ -358,10 +380,22 @@ pub fn recover_all(root: &Path, s: &mut Session) -> Recovered {
             continue;
         }
         // Still running (another window of the app), or not ours to take.
-        let Ok(lock) = File::options().write(true).create(true).truncate(false).open(path.join(LOCK)) else { continue };
-        if lock.try_lock().is_err() {
-            continue;
+        match lock_folder(&path) {
+            Ok(lock) => free.push((path, lock)),
+            Err(std::fs::TryLockError::WouldBlock) => held.push(path),
+            Err(_) => {}
         }
+    }
+    // A child between its `fork` and its `exec` shares the run's open descriptors, and a `flock`
+    // lasts while any of them is open, so an ended run's folder can look held for a moment. Wait
+    // once, however many folders are held, and try those again (#334). Windows doesn't pass the
+    // lock to child processes.
+    #[cfg(unix)]
+    if !held.is_empty() {
+        std::thread::sleep(LOCK_WAIT);
+        free.extend(held.into_iter().filter_map(|path| lock_folder(&path).ok().map(|lock| (path, lock))));
+    }
+    for (path, lock) in free {
         let lock = Arc::new(lock);
         let files: Vec<PathBuf> = std::fs::read_dir(&path).into_iter().flatten().flatten().map(|f| f.path()).collect();
         for f in &files {

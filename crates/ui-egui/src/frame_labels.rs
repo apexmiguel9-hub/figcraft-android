@@ -151,6 +151,28 @@ pub fn draw(app: &FigApp, painter: &Painter, t: &Tokens, doc: &Document, id: Nod
     Some([area.left_top(), area.right_top(), area.right_bottom(), area.left_bottom()].map(|p| tl + rot * (p - tl)))
 }
 
+/// The field over a frame's or section's name label being renamed (`UiState::rename_label`, from a
+/// double-click on the label): Enter or a click elsewhere renames the layer, Escape keeps the name.
+/// The rename ends when the field lets go of the keyboard or the label is gone.
+pub fn rename_field(app: &mut FigApp, ui: &mut egui::Ui) {
+    let Some(r) = app.ui.rename_label else { return };
+    let quad = app.session.tool.labels.iter().find(|(i, _)| *i == r.id).map(|(_, q)| q.map(|p| app.to_screen(p.x, p.y)));
+    let name = app.session.doc().ok().and_then(|d| d.node(r.id)).map(|n| n.name.clone());
+    let (Some(quad), Some(name)) = (quad, name) else {
+        app.ui.rename_label = None;
+        return;
+    };
+    let area = Rect::from_points(&quad);
+    let font = regular(11.0);
+    let text_w = ui.painter().layout_no_wrap(name.clone(), font.clone(), Color32::WHITE).size().x;
+    let rect = Rect::from_min_size(pos2(area.min.x, area.max.y - 16.0), vec2((text_w + 24.0).max(area.width()).clamp(80.0, 480.0), 16.0));
+    let (done, open) = crate::widgets::rename_field(ui, egui::Id::new(("frame_label_rename", r.id)), &name, rect, font, r.start);
+    app.ui.rename_label = open.then_some(crate::layers::Rename { id: r.id, start: false });
+    if let Some(new) = done {
+        app.run("object.rename", serde_json::json!({"ids": [r.id], "name": new}));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

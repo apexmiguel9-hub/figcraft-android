@@ -32,6 +32,7 @@ pub mod home;
 pub mod home_recents;
 pub mod i18n;
 pub mod icons;
+pub mod import_report;
 pub mod layers;
 pub mod layout_panel;
 pub mod list_drag;
@@ -39,6 +40,7 @@ pub mod live;
 pub mod live_text;
 pub mod measure_overlay;
 pub mod menus;
+pub mod missing_fonts;
 pub mod online;
 pub mod pending_open;
 pub mod plugins_ui;
@@ -50,6 +52,8 @@ pub mod render_worker;
 pub mod right;
 pub mod scale_panel;
 pub mod section_panel;
+pub mod selection_colors;
+mod selection_spacing;
 pub mod shortcuts;
 pub mod shortcuts_panel;
 pub mod style_picker;
@@ -80,11 +84,17 @@ mod canvas_drag_tests;
 #[cfg(test)]
 mod canvas_fixes_tests;
 #[cfg(test)]
+mod canvas_image_rect_tests;
+#[cfg(test)]
 mod colorpicker_selection_tests;
 #[cfg(test)]
 mod comments_tests;
 #[cfg(test)]
+mod component_props_reorder_tests;
+#[cfg(test)]
 mod cursors_tests;
+#[cfg(test)]
+mod design_paste_tests;
 #[cfg(test)]
 mod dev_mode_tests;
 #[cfg(test)]
@@ -107,6 +117,10 @@ mod home_recents_tests;
 mod home_tests;
 #[cfg(test)]
 mod idle_tests;
+#[cfg(test)]
+mod ime_tests;
+#[cfg(test)]
+mod import_report_tests;
 #[cfg(test)]
 mod layers_behaviour_tests;
 #[cfg(test)]
@@ -132,15 +146,25 @@ mod live_tests;
 #[cfg(test)]
 mod live_text_tests;
 #[cfg(test)]
+mod menu_aim_tests;
+#[cfg(test)]
+mod menu_input_tests;
+#[cfg(test)]
+mod missing_fonts_tests;
+#[cfg(test)]
 mod online_tests;
 #[cfg(test)]
 mod open_issues_tests;
+#[cfg(test)]
+mod palette_tests;
 #[cfg(test)]
 mod panel_remove_tests;
 #[cfg(test)]
 mod panel_reorder_tests;
 #[cfg(test)]
 mod panel_width_tests;
+#[cfg(test)]
+mod paste_image_tests;
 #[cfg(test)]
 mod pen_mode_tests;
 #[cfg(test)]
@@ -152,6 +176,8 @@ mod plugins_browse_tests;
 #[cfg(test)]
 mod popup_width_tests;
 #[cfg(test)]
+mod present_links_tests;
+#[cfg(test)]
 mod present_tests;
 #[cfg(test)]
 mod present_view_tests;
@@ -161,6 +187,10 @@ mod proto_editor_tests;
 mod proto_reorder_tests;
 #[cfg(test)]
 mod proto_responsive_tests;
+#[cfg(test)]
+mod resources_tests;
+#[cfg(test)]
+mod save_as_tests;
 #[cfg(test)]
 mod select_all_tests;
 #[cfg(test)]
@@ -224,6 +254,9 @@ pub trait Services {
     }
     fn clipboard_set_text(&mut self, _s: &str) {}
     fn clipboard_get_text(&mut self) -> Option<String> {
+        None
+    }
+    fn clipboard_get_html(&mut self) -> Option<String> {
         None
     }
     fn clipboard_set_png(&mut self, _w: u32, _h: u32, _rgba: &[u8]) {}
@@ -398,13 +431,27 @@ pub struct UiState {
     pub last_right_tab: RightTab,
     pub left_tab: LeftTab,
     pub pages_open: bool,
+    /// The height asked for the pages list (`None`: a share of the panel).
+    pub pages_height: Option<f32>,
     pub expanded: BTreeSet<NodeId>,
     /// The layer being renamed in the layers panel.
     pub rename: Option<layers::Rename>,
     pub rename_page: Option<(NodeId, String)>,
+    /// The frame or section whose name label on the canvas is being renamed (a double-click on it).
+    pub rename_label: Option<layers::Rename>,
     pub main_menu: bool,
     pub palette: Option<String>,
-    /// Pedir el foco al TextEdit de la paleta una sola vez al abrirla (evita parpadeo del teclado en Android).
+/// The Actions palette's tab.
+    pub palette_tab: menus::PaletteTab,
+    /// The palette row Up and Down are on (Enter runs it).
+    pub palette_hi: usize,
+    /// The palette ignores one outside click after opening (the click that opened it).
+    pub palette_armed: bool,
+    /// This frame's Actions toolbar button rect: presses on it toggle, never dismiss.
+    pub actions_rect: Option<egui::Rect>,
+    /// MEDIDO en Android: pedir el foco al `TextEdit` de la paleta **una sola vez** al abrirla.
+    /// Pedirlo en cada frame hace que el teclado blando se active y desactive repetidamente, que es
+    /// el parpadeo. Ver `menus.rs` (`palette`).
     pub palette_focus_pending: bool,
     /// The Variables editor, when open.
     pub variables: Option<variables_panel::Editor>,
@@ -412,6 +459,10 @@ pub struct UiState {
     /// The tab the About window shows.
     pub about_tab: dialogs::AboutTab,
     pub preferences: bool,
+    /// A menu command that needs a value before the engine can run it.
+    pub menu_input: Option<dialogs::MenuInput>,
+    /// File ▸ Rename: the file name in the left panel starts its inline rename on the next frame.
+    pub rename_file: bool,
     pub shortcuts_panel: bool,
     /// The Keyboard shortcuts panel's tab and search text.
     pub shortcuts_tab: figcraft_engine::keymap::Group,
@@ -428,6 +479,10 @@ pub struct UiState {
     /// A message at the bottom of the window and how long it has been showing.
     pub toast: Option<(String, ToastClock)>,
     pub present: Option<present::Presenter>,
+    /// A presentation kept alive while its design tab or Home is in front.
+    pub paused_present: Option<present::Presenter>,
+    /// The file that owns the presentation tab.
+    pub present_uid: Option<u64>,
     /// The full-window presenter's options (how it sizes the prototype), kept between
     /// presentations.
     pub present_view: present::PresentView,
@@ -458,6 +513,11 @@ pub struct UiState {
     /// ([`pending_open::pending_opens`]), and the frames it has been drawn.
     pub pending_opens: Vec<pending_open::PendingOpen>,
     pub pending_open_frames: u8,
+    /// The latest successful file import's summary and compatibility notes.
+    pub import_report: Option<import_report::Report>,
+    /// Files the user opened whose fonts are yet to be checked (by document uid).
+    pub font_checks: Vec<u64>,
+    pub missing_fonts: Option<missing_fonts::Shown>,
     pub screenshot_requests: Vec<(u64, String)>,
     pub frame_ms: f64,
     pub render_ms: f64,
@@ -496,6 +556,15 @@ pub struct UiState {
     /// What FigCraft last put on the system clipboard: when the clipboard still holds it, a paste
     /// uses our copied layers; anything else there (an image, SVG, text) came from another app.
     pub last_copy: Option<String>,
+    /// Since the last V key release: whether its press arrived, and whether a paste event did
+    /// (`shortcuts::swallowed_paste`).
+    pub v_pressed: bool,
+    pub paste_event: bool,
+    /// The window got the focus back since the last V release.
+    pub refocused: bool,
+    /// The modifiers held, as of the last modifier change in the raw events: a paste event doesn't
+    /// carry them.
+    pub held: egui::Modifiers,
     /// When (UI clock, seconds) open documents next get an autosave checkpoint.
     pub next_autosave: f64,
     /// With auto-save on: when (UI clock, seconds) files with unsaved changes are next saved, and
@@ -530,16 +599,24 @@ impl Default for UiState {
             last_right_tab: RightTab::Design,
             left_tab: LeftTab::File,
             pages_open: true,
+            pages_height: None,
             expanded: BTreeSet::new(),
             rename: None,
             rename_page: None,
+            rename_label: None,
             main_menu: false,
             palette: None,
+palette_tab: menus::PaletteTab::All,
+            palette_hi: 0,
+            palette_armed: false,
+            actions_rect: None,
             palette_focus_pending: false,
             variables: None,
             about: false,
             about_tab: dialogs::AboutTab::About,
             preferences: false,
+            menu_input: None,
+            rename_file: false,
             shortcuts_panel: false,
             shortcuts_tab: figcraft_engine::keymap::Group::Essential,
             shortcuts_query: String::new(),
@@ -550,6 +627,8 @@ impl Default for UiState {
             icon_gallery: false,
             toast: None,
             present: None,
+            paused_present: None,
+            present_uid: None,
             present_view: present::PresentView::default(),
             preview: None,
             picker: None,
@@ -567,6 +646,9 @@ impl Default for UiState {
             last_error: None,
             pending_opens: Vec::new(),
             pending_open_frames: 0,
+            import_report: None,
+            font_checks: Vec::new(),
+            missing_fonts: None,
             screenshot_requests: Vec::new(),
             frame_ms: 0.0,
             render_ms: 0.0,
@@ -590,6 +672,10 @@ impl Default for UiState {
             dev: dev_mode::DevUi::default(),
 
             last_copy: None,
+            v_pressed: false,
+            paste_event: false,
+            refocused: false,
+            held: egui::Modifiers::NONE,
             next_autosave: 0.0,
             auto_save_at: None,
             auto_saving: Vec::new(),
@@ -640,6 +726,9 @@ pub struct FigApp {
     pending_dialog: Option<PendingDialog>,
     /// The latest UI context schedules the first poll and wakes the app when a dialog completes.
     ui_context: Option<egui::Context>,
+    /// The automation roots the app was started with: every frame and control request runs
+    /// confined to them ([`windows::guard`]).
+    pub automation_roots: Option<Arc<figcraft_engine::file_access::Roots>>,
 }
 
 /// What to do with the result of a command run in the background.
@@ -649,8 +738,9 @@ impl FigApp {
     pub fn new(session: Session, services: Box<dyn Services>) -> Self {
         // The main window's panels open as wide as they were left.
         let (left_width, right_width) = session.prefs.panel_widths;
+        let pages_height = session.prefs.pages_height;
         Self {
-            ui: UiState { left_width, right_width, ..UiState::default() },
+            ui: UiState { left_width, right_width, pages_height, ..UiState::default() },
             session,
             canvas: canvas::CanvasState::default(),
             services,
@@ -669,6 +759,7 @@ impl FigApp {
             waiting: Vec::new(),
             pending_dialog: None,
             ui_context: None,
+            automation_roots: None,
         }
     }
 
@@ -677,6 +768,17 @@ impl FigApp {
         let r = self.session.execute(id, &params);
         self.handle_ui_requests();
         r.map_err(|e| self.failed(id, &e)).ok()
+    }
+
+    /// [`run`](Self::run) for something the user did (a dialog, a drop, a paste, a recent file):
+    /// a file it imports shows its import report. Programmatic calls use `run` and never open one.
+    pub fn run_user(&mut self, id: &str, params: Value) -> Option<Value> {
+        let result = self.run(id, params.clone());
+        if let Some(result) = &result {
+            import_report::capture(self, id, &params, result);
+        }
+        missing_fonts::check_later(self, id, result.as_ref());
+        result
     }
 
     /// Show command `id`'s error.
@@ -722,7 +824,7 @@ impl FigApp {
     }
 
     /// Show what `command params` would do on the canvas as a live preview (`text.preview`) while
-    /// a text style, a named instance or an axis slider is hovered or dragged. Call it every frame
+    /// a font family, font style, text style, named instance or axis slider is hovered or dragged. Call it every frame
     /// the preview should stay: it ends on the first frame nothing asks for it.
     pub fn preview_text(&mut self, ctx: &egui::Context, command: &str, params: Value) {
         self.ui.text_preview_wanted = true;
@@ -790,9 +892,12 @@ impl FigApp {
                     self.ui.about_tab = dialogs::AboutTab::About;
                 }
                 "dialog.preferences" => self.ui.preferences = true,
+                "dialog.missingFonts" => missing_fonts::request(self),
                 "panel.shortcuts" => self.ui.shortcuts_panel = !self.ui.shortcuts_panel,
+// MEDIDO en Android: el toggle es de upstream, y el foco se pide a mano o el teclado
+                // blando parpadea (`palette_focus_pending`).
                 "palette.actions" => {
-                    self.ui.palette = Some(String::new());
+                    menus::toggle_palette(&mut self.ui);
                     self.ui.palette_focus_pending = true;
                 }
                 "panel.design" => self.ui.right_tab = RightTab::Design,
@@ -816,7 +921,11 @@ impl FigApp {
                 }
                 "focus.region" => self.ui.nav.step(r.data.get("step").and_then(Value::as_i64).unwrap_or(1).clamp(-4, 4) as i32),
                 "panel.layers" => self.ui.left_tab = LeftTab::File,
-                "panel.assets" => self.ui.left_tab = LeftTab::Assets,
+                "panel.assets" => {
+                    self.ui.left_tab = LeftTab::Assets;
+                    self.ui.left_collapsed = false;
+                    self.ui.versions = Default::default();
+                }
                 "panel.versionHistory" => versions::open(self),
                 "view.devCompare" => {
                     self.ui.dev.compare = r.data.get("id").and_then(figcraft_engine::params::id_of).map(dev_compare::CompareView::new);
@@ -843,6 +952,9 @@ impl FigApp {
                         let mut p = present::Presenter::new(start);
                         p.view = self.ui.present_view;
                         self.ui.present = Some(p);
+                        self.ui.paused_present = None;
+                        self.ui.present_uid = self.session.docs.get(self.session.active).map(|d| d.uid);
+                        self.ui.home = false;
                     }
                 }
                 "present.options" => {
@@ -876,6 +988,9 @@ impl FigApp {
                 "layers.collapseAll" => layers::collapse_all(self),
                 "contextMenu" => self.ui.key_menu = true,
                 "selectArea" => self.start_key_box(),
+                "canvas.renameLabel" => {
+                    self.ui.rename_label = r.data.get("id").and_then(figcraft_engine::params::id_of).map(|id| layers::Rename { id, start: true });
+                }
                 "layers.rename" => {
                     let ids: Vec<NodeId> =
                         r.data.get("ids").and_then(Value::as_array).into_iter().flatten().filter_map(figcraft_engine::params::id_of).collect();
@@ -944,11 +1059,31 @@ impl FigApp {
     }
 
     pub fn save_as_dialog(&mut self) {
-        let name = self.session.doc().map(|d| d.name.clone()).unwrap_or_else(|_| "Untitled".into());
-        self.pick_save(i18n::tr("Save as"), &format!("{name}.figcraft"), &["figcraft"], |app, p| {
-            let ps = p.to_string_lossy().to_string();
-            if app.run("file.saveAs", json!({"path": ps})).is_some() {
-                app.toast(i18n::trf("Saved {name}", &[("name", &p.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default())]));
+        let Ok(name) = self.session.doc().map(|d| d.name.clone()) else { return };
+        self.pick_save(i18n::tr("Save as"), &format!("{name}.figcraft"), &["figcraft", "fig"], |app, mut p| {
+            if p.extension().is_none_or(|e| e.is_empty()) {
+                if !p.set_extension("figcraft") {
+                    app.toast(i18n::tr("Use the .figcraft or .fig extension."));
+                    return;
+                }
+                // This name wasn't confirmed by the system dialog: don't replace an existing file.
+                match p.try_exists() {
+                    Ok(false) => {}
+                    Ok(true) => {
+                        app.toast(i18n::tr("A .figcraft file with this name already exists. Choose its full name to confirm replacement."));
+                        return;
+                    }
+                    Err(e) => {
+                        app.toast(e.to_string());
+                        return;
+                    }
+                }
+            } else if !p.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("figcraft") || e.eq_ignore_ascii_case("fig")) {
+                app.toast(i18n::tr("Use the .figcraft or .fig extension."));
+                return;
+            }
+            if let Some(r) = app.run("file.saveAs", json!({"path": p.to_string_lossy()})) {
+                dialogs::file_saved(app, &r);
             }
         });
     }
@@ -956,7 +1091,14 @@ impl FigApp {
     pub fn save(&mut self) {
         // A branch tab saves its main file.
         let tab = figcraft_engine::branches::file_tab(&self.session);
-        if self.session.docs.get(tab).is_some_and(|d| d.path.is_some()) {
+        // A path ending in .fig is never saved over silently: a .fig destination is an export copy.
+        let native_path = self
+            .session
+            .docs
+            .get(tab)
+            .and_then(|d| d.path.as_deref())
+            .is_some_and(|path| !Path::new(path).extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("fig")));
+        if native_path {
             if self.run("file.save", json!({})).is_some() {
                 self.toast(i18n::tr("Saved"));
             }
@@ -972,7 +1114,7 @@ impl FigApp {
             false,
             |app, p| {
                 let ps = p.to_string_lossy().to_string();
-                if app.run("file.open", json!({"path": ps})).is_some() {
+                if app.run_user("file.open", json!({"path": ps})).is_some() {
                     app.ui.home = false;
                 }
             },
@@ -988,7 +1130,7 @@ impl FigApp {
         let title = if place { i18n::tr("Place image") } else { i18n::tr("Import") };
         self.pick_open(title, exts, move |app, p| {
             let ps = p.to_string_lossy().to_string();
-            app.run("file.import", json!({"path": ps}));
+            app.run_user("file.import", json!({"path": ps}));
         });
     }
 
@@ -1262,6 +1404,8 @@ impl FigApp {
             }
             self.background_done(&ctx);
         }
+        // Files that arrived without a command (joined, recovered) take the kept View toggles too.
+        self.session.apply_view_prefs();
         windows::begin(self, &ctx);
         let (files, prefs) = (self.session.docs.len(), self.session.prefs.clone());
         self.frame(ui);
@@ -1289,11 +1433,13 @@ impl FigApp {
         // even if it lets go during the frame (Enter commits it), or as it began (egui drops the
         // focus on Escape before the frame, which cancels the field's edit and nothing else).
         let typing = std::mem::take(&mut self.field_focus) || a11y::field_focused(&ctx);
+        let swallowed = shortcuts::swallowed_paste(self, &ctx);
         // A dialog that closed acts first, in the window it was opened from.
         self.poll_dialog(&ctx);
         // Control requests run first so their results reflect this frame.
         control::drain(self, &ctx);
         windows::requests(self, &ctx);
+        selection_spacing::sync(self, &ctx);
         // Before any widget: the navigation keys (F6, Tab, arrows, Escape) move the keyboard.
         a11y::begin(self, &ctx);
         if self.ui.title_bar == TitleBar::Custom {
@@ -1307,15 +1453,23 @@ impl FigApp {
         // The Inspect tab measures on hover without Alt.
         self.session.tool.redlines = self.ui.right_tab == RightTab::Inspect;
         self.end_pen_outside_design();
+        tabs::tab_bar(self, ui);
         if self.ui.present.is_some() {
+            // A close request can arrive while the presenter fills the window. Let its unsaved
+            // changes dialog take Escape and draw above the player just as it does in the editor.
+            dialogs::keys(self, &ctx);
             present::show(self, ui);
+            dialogs::show(self, &ctx);
             // What went wrong while presenting (a widget's plugin failing) shows over it.
             self.toast_ui(&ctx);
+            windows::requests(self, &ctx);
             return;
         }
         if !self.has_files() || self.ui.home {
-            tabs::tab_bar(self, ui);
             home::show(self, ui);
+            // The shortcuts panel belongs to the canvas; it doesn't hang over the home screen
+            // (cleared after the home widgets, which may have just asked for it).
+            self.ui.shortcuts_panel = false;
             dialogs::keys(self, &ctx);
             dialogs::show(self, &ctx);
             self.toast_ui(&ctx);
@@ -1323,7 +1477,6 @@ impl FigApp {
             return;
         }
         let hidden = self.session.ds().map(|d| d.view.ui_hidden).unwrap_or(false);
-        tabs::tab_bar(self, ui);
         if !hidden {
             egui::Panel::left("left_rail")
                 .exact_size(56.0)
@@ -1404,7 +1557,7 @@ impl FigApp {
         branch_ui::keys(self, &ctx);
         live::dialog_keys(self, &ctx);
         dialogs::keys(self, &ctx);
-        shortcuts::handle(self, &ctx, typing);
+        shortcuts::handle(self, &ctx, typing, swallowed);
         menus::popups(self, &ctx);
         variable_ui::picker(self, &ctx);
         style_picker::show(self, &ctx);
@@ -1486,7 +1639,7 @@ impl FigApp {
             "focus": {"region": self.ui.nav.region.id(), "keyboard": self.ui.nav.keyboard},
             "reduceMotion": self.reduce_motion(),
             "presenting": self.ui.present.is_some(),
-            "presenter": self.ui.present.as_ref().map(present::Presenter::inspect),
+            "presenter": self.ui.present.as_ref().or(self.ui.paused_present.as_ref()).map(present::Presenter::inspect),
             "presentOptions": {"scale": self.ui.present_view.scale.id(), "deviceFrame": self.ui.present_view.device_frame, "comments": self.ui.present_view.comments, "hotspotHints": self.ui.present_view.hotspot_hints, "inspect": self.ui.present_view.inspect},
             "preview": self.ui.preview.as_ref().map(|p| p.player.inspect()),
             "mainMenu": self.ui.main_menu,
@@ -1533,8 +1686,11 @@ impl FigApp {
             "panels": {"left": self.ui.left_width, "right": self.ui.right_width, "leftCollapsed": self.ui.left_collapsed},
             "status": self.session.status(),
             "lastError": self.ui.last_error,
+            "importReport": self.ui.import_report.as_ref().map(import_report::Report::inspect),
         });
+        state["homeSearch"] = json!(self.ui.home_view.file_query);
         state["pendingOpens"] = json!(self.ui.pending_opens.len());
+        state["missingFonts"] = json!(self.ui.missing_fonts.as_ref().map(missing_fonts::Shown::inspect));
         state
     }
 }
@@ -1579,6 +1735,9 @@ pub(crate) fn drop_overlay(ctx: &egui::Context, rect: egui::Rect, label: &str) {
     // Hovering sends no pointer events on every platform: keep the overlay current.
     ctx.request_repaint();
 }
+
+#[cfg(test)]
+mod selection_spacing_tests;
 
 #[cfg(test)]
 mod typography_scrub_tests;

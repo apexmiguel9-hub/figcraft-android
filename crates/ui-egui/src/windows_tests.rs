@@ -46,6 +46,25 @@ fn names(app: &FigApp) -> Vec<String> {
 }
 
 #[test]
+fn closing_a_window_in_the_presenter_shows_the_unsaved_changes_dialog() {
+    let mut session = Session::new();
+    let frame_id = session.execute("node.create", &json!({"type": "frame", "width": 402, "height": 874})).unwrap()["id"].clone();
+    let ctx = egui::Context::default();
+    let mut app = FigApp::new(session, Box::new(NoServices));
+    frame(&ctx, &mut app, false);
+    app.session.execute("proto.present", &json!({"start": frame_id})).unwrap();
+    app.handle_ui_requests();
+    frame(&ctx, &mut app, false);
+    assert!(app.ui.present.is_some());
+
+    frame(&ctx, &mut app, true);
+    assert!(app.ui.confirm_close);
+    assert!(ctx.memory(|memory| memory.area_rect(egui::Id::new(Some(crate::i18n::tr("Unsaved changes")))).is_some()), "dialog must be on screen");
+    frame(&ctx, &mut app, false);
+    assert!(app.ui.present.is_some(), "asking to close does not dismiss the preview");
+}
+
+#[test]
 fn windows_hold_tabs_and_close_with_their_files() {
     let mut s = Session::empty();
     for n in ["A", "B", "C"] {
@@ -116,13 +135,14 @@ fn another_hidden_window_answers_requests_that_need_no_frame_in_its_own_file() {
     assert_eq!(inspect.try_recv().expect("answered").result.unwrap()["name"], json!("A"));
     assert_eq!(app.session.ds().unwrap().doc.name, "B");
 
-    // What needs a frame keeps waiting for the other window; an unknown window is an error at once.
-    let ui = request(&mut app, "ui.inspect", json!({"window": w}));
+    // What needs a frame, and an unknown window, are errors at once: nothing waits for a window
+    // that may stay hidden.
+    let shot = request(&mut app, "ui.screenshot", json!({"window": w, "path": "unused.png"}));
     let unknown = request(&mut app, "window.list", json!({"window": 99}));
     logic(&ctx, &mut app, &[ViewportId::ROOT, other]);
-    assert!(ui.try_recv().is_err(), "waits for the window to show");
+    assert!(shot.try_recv().expect("answered").result.unwrap_err().contains(&format!("window {w} is minimised or hidden")));
     assert!(unknown.try_recv().expect("answered").result.unwrap_err().contains("no window 99"));
-    assert_eq!(app.control_queue.len(), 1);
+    assert!(app.control_queue.is_empty());
 }
 
 #[test]

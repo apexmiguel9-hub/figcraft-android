@@ -91,7 +91,9 @@ pub fn with_app<R>(f: impl FnOnce(&mut FigApp) -> R) -> Option<R> {
 /// Last-resort guard around a frame: a panic becomes a message and recovery copies of unsaved
 /// files, not a lost document.
 pub fn guard(app: &mut FigApp, ctx: &Context, f: impl FnOnce(&mut FigApp)) {
-    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&mut *app)));
+    // Started with automation roots, everything the window and the control channel do is confined.
+    let roots = app.automation_roots.clone();
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| figcraft_engine::file_access::confined(roots.as_ref(), || f(&mut *app))));
     if let Err(e) = res {
         let msg = e.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| e.downcast_ref::<String>().cloned()).unwrap_or_else(|| "panic".into());
         log::error!("UI panic: {msg}");
@@ -208,13 +210,15 @@ pub fn open(app: &mut FigApp, ctx: &Context, index: Option<usize>, path: Option<
         docs: vec![uid],
         active: Some(uid),
         pane: Pane {
-            // A new window opens like the one it comes from: the same tabs and panel widths.
+            // A new window opens like the one it comes from: the same tabs, panel widths and pages
+            // list height.
             ui: UiState {
                 title_bar: app.ui.title_bar,
                 right_tab: app.ui.right_tab,
                 left_tab: app.ui.left_tab,
                 left_width: app.ui.left_width,
                 right_width: app.ui.right_width,
+                pages_height: app.ui.pages_height,
                 ..UiState::default()
             },
             ..Pane::default()
@@ -300,7 +304,12 @@ pub fn on_close_request(app: &mut FigApp, ctx: &Context) {
     if app.windows.current == 0 && (unsaved || !app.windows.list.is_empty()) {
         ctx.send_viewport_cmd(ViewportCommand::CancelClose);
     }
-    if unsaved {
+    request_close(app, ctx);
+}
+
+/// The custom title bar's Close button uses the same unsaved-file check as a system close event.
+pub(crate) fn request_close(app: &mut FigApp, ctx: &Context) {
+    if !app.unsaved().is_empty() {
         app.ui.confirm_close = true;
         ctx.request_repaint();
     } else {
@@ -325,7 +334,7 @@ pub(crate) fn confirm_close(app: &mut FigApp, ctx: &Context) {
     }
     let t = crate::theme::Tokens::get(ctx);
     let (mut open, mut discard, mut cancel) = (true, false, false);
-    crate::dialogs::window(tr("Unsaved changes"), ctx).open(&mut open).show(ctx, |ui| {
+    crate::dialogs::window(tr("Unsaved changes"), ctx).order(egui::Order::Foreground).open(&mut open).show(ctx, |ui| {
         ui.set_width(340.0);
         crate::widgets::label(ui, &trf("Unsaved changes in {names}. Close the window and lose them?", &[("names", &names.join(", "))]), t.text);
         ui.add_space(12.0);

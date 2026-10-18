@@ -168,6 +168,23 @@ fn a_normal_quit_removes_the_recovered_copies_it_took_over() {
 }
 
 #[test]
+fn quitting_without_the_unsaved_question_keeps_copies_for_the_next_start() {
+    let root = root("quitunasked");
+    // macOS's Quit menu: nothing asked, so the unsaved document comes back next time.
+    let s = edited();
+    Recovery::start(&root).unwrap().quit(&s, false);
+    let mut next = Session::empty();
+    assert_eq!(recover(&root, &mut next), 1);
+    let _ = std::fs::remove_dir_all(&root);
+    // Asked (saved or discarded on purpose), or nothing unsaved: nothing is left.
+    for (s, asked) in [(edited(), true), (Session::new(), false)] {
+        Recovery::start(&root).unwrap().quit(&s, asked);
+        assert!(std::fs::read_dir(&root).unwrap().next().is_none(), "asked: {asked}");
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn a_run_whose_folder_name_is_still_held_takes_another() {
     let root = root("pidreuse");
     // A crashed run with this process's id whose folder the start still holds (its copy waits).
@@ -183,6 +200,29 @@ fn a_run_whose_folder_name_is_still_held_takes_another() {
     assert_eq!(dirs, 1);
     r.finish();
     drop(lock);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// #334: a lock that frees itself is not a run that is still going. A child between its `fork` and
+/// its `exec` inherits the run's open descriptors and a `flock` lasts while any descriptor for the
+/// file is open, so a crashed run's copies must still come back once that child has exec'd.
+#[cfg(unix)]
+#[test]
+fn a_lock_freed_a_moment_later_is_not_a_run_that_is_still_going() {
+    let root = root("fork-window");
+    crashed(&edited(), &root);
+    // Hold the crashed run's folder lock on a second descriptor, the way a child forked before its
+    // exec holds it, and free it shortly after.
+    let lock = std::fs::File::options().write(true).create(true).truncate(false).open(root.join("crashed").join("lock")).unwrap();
+    lock.try_lock().unwrap();
+    let freed = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        drop(lock);
+    });
+    // The next start waits for that lock rather than reading the run as still going.
+    let mut next = Session::empty();
+    assert_eq!(recover(&root, &mut next), 1, "the copies come back once the lock frees itself");
+    freed.join().unwrap();
     let _ = std::fs::remove_dir_all(&root);
 }
 
