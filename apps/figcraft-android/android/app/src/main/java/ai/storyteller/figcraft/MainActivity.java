@@ -32,6 +32,53 @@ public class MainActivity extends NativeActivity {
     private static native void nativeListo();
     private static native String nativeGetClipboardText();
 
+    // ---- Teclado blando: por que hace falta esto a mano ----
+    //
+    // MEDIDO: con `NativeActivity` el teclado blando **se muestra** (el puente de
+    // crates/…/shortcuts.rs engancha el IME) pero **las teclas no llegan** a la app.
+    // El motivo es que `NativeActivity` de AOSP **no tiene vista**, y el teclado lo gestiona
+    // `InputMethodManager` a traves de una: sin `InputConnection`, Android muestra el teclado y
+    // no tiene contra quien enviar `KeyEvent` ni texto composing. Vectorcraft tiene el mismo
+    // problema, documentado en su lib.rs §"Teclado".
+    //
+    // MEDIDO que el parche son ~20 lineas: se acepta una `InputConnection` propia en la
+    // Activity y se le reenvian a mano los eventos que si llegan a ella (los que el teclado
+    //blando entrega por `EditorInfo`/`InputConnection` en vez de por `dispatchKeyEvent`).
+    //
+    // NOTA: esta es la via *documentada* de winit para `native-activity`. No es un apaño: sin
+    // esto, escribir texto en un editor de diseño en Android es imposible.
+    private android.view.inputmethod.InputConnection activeConnection = null;
+
+    private android.view.inputmethod.InputConnection getInputConnection() {
+        if (activeConnection != null) {
+            return activeConnection;
+        }
+        // Delegado minimo: `BaseInputConnection` entrega el texto que teclea el usuario a traves
+        // de `commitText`, que es lo que hace falta para escribir en el lienzo.
+        return new android.view.inputmethod.BaseInputConnection(this, false) {
+            @Override
+            public boolean commitText(CharSequence text, int newCursorPosition) {
+                if (text != null && text.length() > 0) {
+                    nativeTecla(String.valueOf(text));
+                }
+                return true;
+            }
+        };
+    }
+
+    private static native void nativeTecla(String texto);
+
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (!hasFocus) {
+            // Sin esto, al perder el foco, el teclado puede quedar abierto con el puente
+            // enganchado y el EditText fantasmacon el foco: el IME queda en un limbo que
+            // reinicia el teclado al volver.
+            nativeTecla("\u0000");
+        }
+    }
+
     private static boolean hayPermiso() {
         try {
             return Environment.isExternalStorageManager();

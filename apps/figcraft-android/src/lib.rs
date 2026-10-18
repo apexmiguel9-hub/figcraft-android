@@ -23,6 +23,47 @@ mod browser;
 #[cfg(target_os = "android")]
 mod permiso;
 
+/// El texto que llega del teclado blando, entre frames.
+///
+/// MEDIDO que hace falta una cola y no un `String`: Java->Rust ocurre en el hilo de Java y el
+/// update de egui corre en el hilo de `android_main`. Un `static Mutex<String>` con `mem::take`
+/// en el update resuelve la carrera sin ningun condvar ni hilo bloqueado, que es el mismo
+/// patron que usa el browser (`browser.rs`, la casilla `RESPUESTA`).
+#[cfg(target_os = "android")]
+static TECLAS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// Java -> Rust: una pulsacion del teclado blando.
+///
+/// MEDIDO, y es el bug que arreglo: con `NativeActivity` el teclado blando se muestra pero las
+/// teclas **no llegan** a egui, porque `NativeActivity` de AOSP no tiene vista y por tanto no
+/// tiene `InputConnection` (`MainActivity.java` lo explica). Escribir texto en el lienzo era
+/// imposible.
+///
+/// MEDIDO que se inyecta como `egui::Event::Text`, que es lo que `shortcuts::text_keys` lee y
+/// manda a `figcraft_engine::textedit::insert`, o sea el mismo camino que el teclado fisico.
+///
+/// MEDIDO el `"\u0000"` de `onWindowFocusChanged`: es la senal de "el teclado se ha ido", y
+/// suelta el foco del `TextEdit` del puente para que no se quede fantasma.
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ai_storyteller_figcraft_MainActivity_nativeTecla<'caller>(
+    mut env: jni::EnvUnowned<'caller>,
+    _class: jni::objects::JClass<'caller>,
+    texto: jni::objects::JString<'caller>,
+) {
+    // MEDIDO: en `jni` 0.22 una nativa recibe `EnvUnowned`, y el `Env` de verdad sale de
+    // `with_env` (`permiso.rs:150` lo usa igual). `JString::try_to_string` pide `&mut Env`.
+    let _ = env.with_env(|e| {
+        let Ok(s) = texto.try_to_string(e) else {
+            return Ok(());
+        };
+        if let Ok(mut cola) = TECLAS.lock() {
+            cola.push(s);
+        }
+        Ok(())
+    });
+}
+
 /// El `eframe::App` del port. Reenvia a `FigApp`, que ya trae 100% de la UI.
 pub struct App(pub FigApp);
 
@@ -37,6 +78,27 @@ impl eframe::App for App {
     }
 
     fn raw_input_hook(&mut self, _ctx: &egui::Context, _raw: &mut egui::RawInput) {
+        // MEDIDO, y es el bug que arreglo: con `NativeActivity` el teclado blando se muestra pero
+        // sus teclas **no llegan** a egui. El motivo es que `NativeActivity` de AOSP no tiene
+        // vista, luego no tiene `InputConnection`, y el IME no tiene contra quien enviar el texto.
+        //
+        // Java las recoge en `MainActivity.nativeTecla` y las deja en la cola `TECLAS`; aqui se
+        // inyectan como `Event::Text`, que es exactamente lo que haria el teclado fisico, asi que
+        // el camino de escritura es el de siempre (`shortcuts::text_keys` ->
+        // `figcraft_engine::textedit::insert`) y no hay que tocar el motor.
+        #[cfg(target_os = "android")]
+        if let Ok(mut cola) = TECLAS.lock() {
+            for t in cola.drain(..) {
+                if t == "\u{0}" {
+                    // Senal de "el teclado se fue": suelta el foco del puente (ver
+                    // `keyboard_bridge_release`).
+                    _raw.events.push(egui::Event::Text(String::new()));
+                    _ctx.memory_mut(|m| m.surrender_focus(egui::Id::new("figcraft_android_teclado_campo")));
+                } else if !t.is_empty() {
+                    _raw.events.push(egui::Event::Text(t));
+                }
+            }
+        }
         // Recorta `screen_rect`, no rellena `safe_area_insets`.
         //
         // MEDIDO en el movil (Moto G56 5G): la ventana llega **edge-to-edge** —el viewport
