@@ -355,12 +355,11 @@ fn enter_text(app: &mut FigApp) -> bool {
 /// `menus.rs`): pedirlo cada frame hace que el teclado de Android se active y desactive
 /// repetidamente, que es el parpadeo.
 fn keyboard_bridge(ctx: &Context) {
-    // MEDIDO: `Id::new` no es `const` en egui 0.36, asi que el id se compone en cada frame a
-    // partir del id de la ventana; egui lo resuelve al mismo valor y el foco es estable.
-    let window_id = Id::new("figcraft_android_teclado");
-    let field_id = window_id.with("campo");
+    // MEDIDO: `Id::new` no es `const` en egui 0.36, asi que el id del campo se compone en cada
+    // frame; egui lo resuelve al mismo valor y el foco queda estable entre frames.
+    let field_id = Id::new("figcraft_android_teclado_campo");
     let mut buffer = String::new();
-    egui::Window::new(window_id)
+    egui::Window::new("figcraft_android_teclado")
         .title_bar(false)
         .collapsible(false)
         .resizable(false)
