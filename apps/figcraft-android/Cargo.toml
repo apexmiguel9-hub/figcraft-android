@@ -20,13 +20,13 @@ figcraft-format = { workspace = true }
 figcraft-text = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }
-eframe = { workspace = true, features = ["default_fonts", "wgpu", "android-game-activity"] }
+eframe = { workspace = true, features = ["default_fonts", "wgpu", "android-native-activity"] }
 egui = { workspace = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.22"
 winit = { workspace = true }
-android-activity = { version = "0.6", default-features = false, features = ["game-activity"] }
+android-activity = { version = "0.6", default-features = false, features = ["native-activity"] }
 android_logger = { workspace = true }
 # El browser de ficheros, dibujado DENTRO de la app.
 #
