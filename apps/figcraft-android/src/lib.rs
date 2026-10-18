@@ -53,7 +53,11 @@ pub extern "system" fn Java_ai_storyteller_figcraft_MainActivity_nativeTecla<'ca
 ) {
     // MEDIDO: en `jni` 0.22 una nativa recibe `EnvUnowned`, y el `Env` de verdad sale de
     // `with_env` (`permiso.rs:150` lo usa igual). `JString::try_to_string` pide `&mut Env`.
-    let _ = env.with_env(|e| {
+    // MEDIDO: el tipo de error hay que nombrarlo. `with_env` pide `E: From<jni::errors::Error>` y
+    // con `Ok(())` hay dos `impl` que encajan (`jni` y `android_activity`), asi que Rust dice
+    // "type annotations needed for `EnvOutcome<'_, (), _>`". Se anota la closure, que es lo que
+    // hace `permiso.rs`.
+    let _ = env.with_env(|e| -> jni::errors::Result<()> {
         let Ok(s) = texto.try_to_string(e) else {
             return Ok(());
         };
