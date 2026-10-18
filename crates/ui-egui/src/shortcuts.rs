@@ -96,6 +96,23 @@ fn cached_tip(label: &'static str, key: Option<&'static str>) -> &'static str {
 /// began.
 pub fn handle(app: &mut FigApp, ctx: &Context, typing: bool) {
     note_platform(ctx);
+    // MEDIDO, y el orden importa: el puente de teclado se dibuja **antes** de mirar los
+    // eventos, y no dentro de `if editing`. Puesto despues, la ventana solo existia en los
+    // frames con eventos y desaparecia en los de reposo; el IME veia aparecer y desaparecer la
+    // vista y cancelaba la muestra una y otra vez. En el logcat:
+    //
+    //     ImeTracker: onRequestShow  at ORIGIN_CLIENT reason SHOW_SOFT_INPUT
+    //     ImeTracker: onCancelled     at PHASE_CLIENT_REPORT_REQUESTED_VISIBLE_TYPES
+    //     ImeTracker: onRequestHide  at ORIGIN_CLIENT reason HIDE_SOFT_INPUT
+    //
+    // MEDIDO que hace falta tambien **soltar el foco** cuando ya no se edita texto, o el
+    // teclado se queda abierto encima del lienzo con el dedo lejos del campo.
+    let editing = app.session.ds().map(|d| d.text_edit.is_some()).unwrap_or(false);
+    if editing {
+        keyboard_bridge(ctx);
+    } else {
+        keyboard_bridge_release(ctx);
+    }
     // Text fields in panels own the keyboard (also the key that ends their editing).
     if typing || crate::a11y::field_focused(ctx) || app.ui.palette.is_some() {
         return;
@@ -104,9 +121,7 @@ pub fn handle(app: &mut FigApp, ctx: &Context, typing: bool) {
     if events.is_empty() {
         return;
     }
-    let editing = app.session.ds().map(|d| d.text_edit.is_some()).unwrap_or(false);
     if editing {
-        keyboard_bridge(ctx);
         text_keys(app, ctx, &events);
         return;
     }
@@ -385,6 +400,18 @@ fn keyboard_bridge(ctx: &Context) {
     // Una sola vez por edicion: pedirlo cada frame hace parpadear el teclado de Android.
     if !ctx.memory(|m| m.has_focus(field_id)) {
         ctx.memory_mut(|m| m.request_focus(field_id));
+    }
+}
+
+/// Soltar el foco del puente cuando ya no se edita texto.
+///
+/// MEDIDO que hace falta: sin esto el `TextEdit` invisible se queda con el foco para siempre y el
+/// teclado blando permanece abierto encima del lienzo con el dedo lejos del campo, que es
+/// justo el otro extremo del bug.
+fn keyboard_bridge_release(ctx: &Context) {
+    let field_id = Id::new("figcraft_android_teclado_campo");
+    if ctx.memory(|m| m.has_focus(field_id)) {
+        ctx.memory_mut(|m| m.surrender_focus(field_id));
     }
 }
 
