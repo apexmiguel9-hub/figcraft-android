@@ -372,7 +372,7 @@ fn keyboard_bridge(ctx: &Context) {
     //
     // MEDIDO que la ventana va **dentro** de la pantalla y minima (1x1 pt), pegada a una
     // esquina: dentro, la vista existe y el IME la acepta; diminuta, no se ve ni tapa nada.
-    let area = ctx.screen_rect().unwrap_or(egui::Rect::from_min_size(pos2(0.0, 0.0), vec2(1.0, 1.0)));
+    let area = ctx.input(|i| i.screen_rect().unwrap_or(egui::Rect::from_min_size(pos2(0.0, 0.0), vec2(1.0, 1.0))));
     egui::Window::new("figcraft_android_teclado")
         .title_bar(false)
         .collapsible(false)
