@@ -366,7 +366,7 @@ fn keyboard_bridge(ctx: &Context) {
         .fixed_pos(pos2(-10000.0, -10000.0))
         .fixed_size(vec2(1.0, 1.0))
         .show(ctx, |ui| {
-            ui.add(egui::TextEdit::singleline(&mut buffer).id(field_id).desired_width(1.0).frame(false));
+            ui.add(egui::TextEdit::singleline(&mut buffer).id(field_id).desired_width(1.0).frame(egui::Frame::NONE));
         });
     // Una sola vez por edicion: pedirlo cada frame hace parpadear el teclado de Android.
     if !ctx.memory(|m| m.has_focus(field_id)) {
