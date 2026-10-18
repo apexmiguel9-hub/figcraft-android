@@ -96,10 +96,23 @@ impl eframe::App for App {
                 if t == "\u{0}" {
                     // Senal de "el teclado se fue": suelta el foco del puente (ver
                     // `keyboard_bridge_release`).
-                    _raw.events.push(egui::Event::Text(String::new()));
                     _ctx.memory_mut(|m| m.surrender_focus(egui::Id::new("figcraft_android_teclado_campo")));
                 } else if !t.is_empty() {
-                    _raw.events.push(egui::Event::Text(t));
+                    // MEDIDO: `deleteSurroundingText` de Java llega como una cadena de `\b`, y en
+                    // egui el borrado es un `Key::Backspace`, no texto.
+                    if t.chars().all(|c| c == '\u{8}') {
+                        for _ in 0..t.chars().count() {
+                            _raw.events.push(egui::Event::Key {
+                                key: egui::Key::Backspace,
+                                physical_key: None,
+                                pressed: true,
+                                repeat: false,
+                                modifiers: egui::Modifiers::NONE,
+                            });
+                        }
+                    } else {
+                        _raw.events.push(egui::Event::Text(t));
+                    }
                 }
             }
         }

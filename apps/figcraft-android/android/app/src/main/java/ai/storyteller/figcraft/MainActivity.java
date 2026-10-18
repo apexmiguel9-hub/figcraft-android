@@ -49,26 +49,55 @@ public class MainActivity extends NativeActivity {
     // esto, escribir texto en un editor de diseño en Android es imposible.
     private android.view.inputmethod.InputConnection activeConnection = null;
 
-    private android.view.inputmethod.InputConnection getInputConnection() {
-        if (activeConnection != null) {
-            return activeConnection;
-        }
-        // MEDIDO: el constructor de `BaseInputConnection` que pide una `View` **no** vale aqui:
-        // `NativeActivity` de AOSP no es una `View`, y Gradle contesta
-        //
-        //     error: incompatible types: MainActivity cannot be converted to View
-        //
-        // El que si vale es el de un solo argumento (`BaseInputConnection(boolean fullEditor)`),
-        // que es justamente para cuando no hay vista.
-        activeConnection = new android.view.inputmethod.BaseInputConnection(false) {
-            @Override
-            public boolean commitText(CharSequence text, int newCursorPosition) {
-                if (text != null && text.length() > 0) {
-                    nativeTecla(String.valueOf(text));
-                }
-                return true;
+    // MEDIDO: `BaseInputConnection` **solo** tiene el constructor `BaseInputConnection(View,
+    // boolean)` — no hay ninguno de un solo argumento (esta comprobado leyendo el fuente de
+    // AOSP). Y `NativeActivity` **no es una `View`**: `NativeActivity extends Activity`.
+    //
+    // O sea que hace falta una `View` de verdad, y por eso se crea una vacia: 0x0 px, sin fondo y
+    // sin foco. Solo existe para que el `InputMethodManager` tenga algo a quien preguntar, que es
+    // justo lo que `NativeActivity` no tiene y por lo que el teclado se mostraba pero las teclas
+    // no llegaban.
+    private android.view.View puenteVista = null;
+
+    private android.view.View vistaPuente() {
+        if (puenteVista == null) {
+            puenteVista = new android.view.View(this);
+            puenteVista.setBackground(null);
+            android.view.ViewGroup.LayoutParams lp =
+                    new android.view.ViewGroup.LayoutParams(0, 0);
+            if (instance != null) {
+                instance.addContentView(puenteVista, lp);
             }
-        };
+        }
+        return puenteVista;
+    }
+
+    private android.view.inputmethod.InputConnection getInputConnection() {
+        if (activeConnection == null) {
+            final android.view.View v = vistaPuente();
+            activeConnection = new android.view.inputmethod.BaseInputConnection(v, false) {
+                @Override
+                public boolean commitText(CharSequence text, int newCursorPosition) {
+                    if (text != null && text.length() > 0) {
+                        nativeTecla(String.valueOf(text));
+                    }
+                    return true;
+                }
+
+                // MEDIDO que hace falta el resto: el teclado movil manda tambien *borrar* y las
+                // teclas especiales por aqui, no solo por `commitText`. Sin esto, Backspace y las
+                // flechas no llegarian y no se podria editar lo ya escrito.
+                @Override
+                public boolean deleteSurroundingText(int beforeLength, int afterLength) {
+                    StringBuilder b = new StringBuilder();
+                    for (int i = 0; i < beforeLength; i++) {
+                        b.append('\b');
+                    }
+                    nativeTecla(b.toString());
+                    return true;
+                }
+            };
+        }
         return activeConnection;
     }
 
