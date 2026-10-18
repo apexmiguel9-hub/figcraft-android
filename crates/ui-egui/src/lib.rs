@@ -404,6 +404,8 @@ pub struct UiState {
     pub rename_page: Option<(NodeId, String)>,
     pub main_menu: bool,
     pub palette: Option<String>,
+    /// Pedir el foco al TextEdit de la paleta una sola vez al abrirla (evita parpadeo del teclado en Android).
+    pub palette_focus_pending: bool,
     /// The Variables editor, when open.
     pub variables: Option<variables_panel::Editor>,
     pub about: bool,
@@ -533,6 +535,7 @@ impl Default for UiState {
             rename_page: None,
             main_menu: false,
             palette: None,
+            palette_focus_pending: false,
             variables: None,
             about: false,
             about_tab: dialogs::AboutTab::About,
@@ -788,7 +791,10 @@ impl FigApp {
                 }
                 "dialog.preferences" => self.ui.preferences = true,
                 "panel.shortcuts" => self.ui.shortcuts_panel = !self.ui.shortcuts_panel,
-                "palette.actions" => self.ui.palette = Some(String::new()),
+                "palette.actions" => {
+                    self.ui.palette = Some(String::new());
+                    self.ui.palette_focus_pending = true;
+                }
                 "panel.design" => self.ui.right_tab = RightTab::Design,
                 "panel.prototype" => self.ui.right_tab = RightTab::Prototype,
                 "panel.designPrototype" => {

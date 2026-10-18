@@ -136,6 +136,7 @@ pub fn show(app: &mut FigApp, ui: &mut Ui) {
         if resp.clicked() {
             if id == "actions" {
                 app.ui.palette = Some(String::new());
+                app.ui.palette_focus_pending = true;
             } else {
                 app.ui.left_tab = crate::LeftTab::Assets;
                 app.ui.left_collapsed = false;

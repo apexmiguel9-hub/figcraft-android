@@ -414,6 +414,7 @@ pub fn popups(app: &mut FigApp, ctx: &egui::Context) {
                 );
                 if resp.clicked() {
                     app.ui.palette = Some(String::new());
+                    app.ui.palette_focus_pending = true;
                     close = true;
                 }
                 ui.add_space(6.0);
@@ -637,7 +638,10 @@ fn palette(app: &mut FigApp, ctx: &egui::Context) {
                             .font(regular(14.0))
                             .frame(egui::Frame::NONE.inner_margin(egui::Margin::same(8))),
                     );
-                    r.request_focus();
+                    if app.ui.palette_focus_pending {
+                        r.request_focus();
+                        app.ui.palette_focus_pending = false;
+                    }
                     crate::widgets::select_all_on_focus(ui, &r, &q);
                     ui.add_space(4.0);
                     let ql = q.to_lowercase();
