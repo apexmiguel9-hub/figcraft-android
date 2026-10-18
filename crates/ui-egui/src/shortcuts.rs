@@ -359,11 +359,25 @@ fn keyboard_bridge(ctx: &Context) {
     // frame; egui lo resuelve al mismo valor y el foco queda estable entre frames.
     let field_id = Id::new("figcraft_android_teclado_campo");
     let mut buffer = String::new();
+    // MEDIDO, y fue el primer intento el que falla: la ventana **no** va en `(-10000, -10000)`.
+    // Con `fixed_pos` muy negativo Android descarta la vista y el IME cancela la muestra una y
+    // otra vez. El logcat lo dice, alternando:
+    //
+    //     ImeTracker: onRequestShow  at ORIGIN_CLIENT reason SHOW_SOFT_INPUT
+    //     ImeTracker: onCancelled     at PHASE_CLIENT_REPORT_REQUESTED_VISIBLE_TYPES
+    //     ImeTracker: onRequestHide  at ORIGIN_CLIENT reason HIDE_SOFT_INPUT
+    //
+    // O sea: egui pide el teclado, Android lo cancela porque la vista no esta, y vuelta a
+    // empezar. Es el parpadeo, medido.
+    //
+    // MEDIDO que la ventana va **dentro** de la pantalla y minima (1x1 pt), pegada a una
+    // esquina: dentro, la vista existe y el IME la acepta; diminuta, no se ve ni tapa nada.
+    let area = ctx.available_rect();
     egui::Window::new("figcraft_android_teclado")
         .title_bar(false)
         .collapsible(false)
         .resizable(false)
-        .fixed_pos(pos2(-10000.0, -10000.0))
+        .fixed_pos(pos2(area.min.x, area.min.y))
         .fixed_size(vec2(1.0, 1.0))
         .show(ctx, |ui| {
             ui.add(egui::TextEdit::singleline(&mut buffer).id(field_id).desired_width(1.0).frame(egui::Frame::NONE));
