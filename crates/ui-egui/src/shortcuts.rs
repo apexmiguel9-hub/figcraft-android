@@ -401,6 +401,29 @@ fn keyboard_bridge(ctx: &Context) {
     if !ctx.memory(|m| m.has_focus(field_id)) {
         ctx.memory_mut(|m| m.request_focus(field_id));
     }
+    // MEDIDO, y es el motivo de que el texto no llegara al documento: como este `TextEdit` tiene
+    // el foco, **egui se queda con el `Event::Text` y no lo deja pasar** a `ctx.input(..).events`,
+    // que es de donde lo lee `text_keys`. Con el buffer aqui descartado, lo tecleado se perdia.
+    //
+    // O sea: el puente no puede ser solo un "enganche" del teclado, tambien tiene que **devolver**
+    // lo escrito. Se guarda en `PUENTE` y `text_keys` lo consume antes de mirar los eventos.
+    let escrito = std::mem::take(&mut buffer);
+    if !escrito.is_empty() {
+        *PUENTE.lock().unwrap_or_else(|e| e.into_inner()) = escrito;
+    }
+}
+
+/// Lo tecleado en el puente, a la espera de que `text_keys` lo escriba en el documento.
+///
+/// MEDIDO que hace falta porque el `Event::Text` **no** llega a `ctx.input(..).events` cuando el
+/// `TextEdit` con foco lo consume (ver [`keyboard_bridge`]); el buffer del puente es la unica copia
+/// que existe mientras el frame dura.
+static PUENTE: Mutex<String> = Mutex::new(String::new());
+
+/// Saca lo tecleado en el puente desde su anterior fotograma, si hubo.
+fn toma_puente() -> Option<String> {
+    let t = std::mem::take(&mut *PUENTE.lock().unwrap_or_else(|e| e.into_inner()));
+    (!t.is_empty()).then_some(t)
 }
 
 /// Soltar el foco del puente cuando ya no se edita texto.
@@ -416,6 +439,14 @@ fn keyboard_bridge_release(ctx: &Context) {
 }
 
 fn text_keys(app: &mut FigApp, ctx: &Context, events: &[Event]) {
+    // MEDIDO, y el orden importa: primero lo tecleado que el puente del teclado se quedo (el
+    // `Event::Text` no pasa a `ctx.input(..).events` porque el `TextEdit` con foco lo consume), y
+    // despues los eventos que si llegaron (Enter, Backspace, flechas...).
+    if let Some(t) = toma_puente()
+        && let Err(e) = figcraft_engine::textedit::insert(&mut app.session, &t)
+    {
+        app.toast(e.to_string());
+    }
     // A key that ran a shortcut swallows the text it also produced (Alt+. types "≥" on macOS).
     let mut skip_text = false;
     for ev in events {
