@@ -4,7 +4,7 @@
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU8, Ordering};
 
-use egui::{Context, Event, Key, Modifiers};
+use egui::{Context, Event, Id, Key, Modifiers, pos2, vec2};
 use figcraft_engine::keymap::{self, Platform};
 use serde_json::json;
 
@@ -106,6 +106,7 @@ pub fn handle(app: &mut FigApp, ctx: &Context, typing: bool) {
     }
     let editing = app.session.ds().map(|d| d.text_edit.is_some()).unwrap_or(false);
     if editing {
+        keyboard_bridge(ctx);
         text_keys(app, ctx, &events);
         return;
     }
@@ -329,6 +330,46 @@ fn enter_text(app: &mut FigApp) -> bool {
             true
         }
         _ => false,
+    }
+}
+
+/// El `TextEdit` invisible que engancha el teclado blando mientras se edita texto en el canvas.
+///
+/// MEDIDO en Android (Moto G56 5G, Android 16): sin esto el teclado **no aparece** al editar
+/// texto en el lienzo, y cuando aparece parpadea. El motivo esta en como funciona el IME:
+///
+/// * El texto del lienzo **no** se edita con un `TextEdit` de egui: FigCraft lo dibuja a mano
+///   (el caret propio de `canvas.rs`), y la entrada llega por `text_keys` (`Event::Text`).
+/// * `winit`/`android-activity` **solo abren el teclado blando cuando egui marca
+///   `WantsTextInput`**, y eso solo lo hace un `TextEdit` real con el foco. Un lienzo que
+///   dibuja su propio texto no lo marca nunca.
+///
+/// O sea: sin un `TextEdit` con foco no hay teclado, y sin teclado no se puede escribir texto,
+/// que en un editor de diseño es justo lo que lo deja inutilizable.
+///
+/// MEDIDO que el texto **no se escribe aqui**: el buffer se vacia cada frame y la escritura de
+/// verdad la hace `text_keys` -> `figcraft_engine::textedit::insert`, que ya sabe del IME y del
+/// caret del documento. Este `TextEdit` existe solo para que el sistema muestre el teclado.
+///
+/// MEDIDO que el foco se pide **una sola vez** y no en cada frame (el bug del palette, en
+/// `menus.rs`): pedirlo cada frame hace que el teclado de Android se active y desactive
+/// repetidamente, que es el parpadeo.
+fn keyboard_bridge(ctx: &Context) {
+    const ID: Id = Id::new("figcraft_android_teclado_canvas");
+    let mut buffer = String::new();
+    let shown = egui::Window::new("figcraft_android_teclado")
+        .title_bar(false)
+        .collapsible(false)
+        .resizable(false)
+        .fixed_pos(pos2(-10000.0, -10000.0))
+        .fixed_size(vec2(1.0, 1.0))
+        .show(ctx, |ui| {
+            ui.add(egui::TextEdit::singleline(&mut buffer).id(ID).desired_width(1.0).frame(false));
+        });
+    if let Some(inner) = shown
+        && !ctx.memory(|m| m.has_focus(ID))
+    {
+        inner.inner.response.request_focus();
     }
 }
 
