@@ -1,6 +1,9 @@
 package ai.storyteller.figcraft;
 
-import android.app.NativeActivity;
+import androidx.games.activity.GameActivity;
+import android.content.ClipData;
+import android.content.ClipboardManager;
+import android.content.Context;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Bundle;
@@ -10,11 +13,13 @@ import android.util.Log;
 
 /**
  * La Activity del port (copiada de vectorcraft-android).
- * NativeActivity de AOSP + System.loadLibrary explicito (el load nativo
+ * GameActivity de androidx.games + System.loadLibrary explicito (el load nativo
  * de NativeActivity no lo ve ART y sin esto las nativas dan UnsatisfiedLinkError).
+ * GameActivity es necesaria para que el teclado blando aparezca en Android moderno
+ * (NativeActivity no tiene vista para el InputMethodManager).
  * SAF descartado: segunda Activity = ANR por el handshake de android-activity.
  */
-public class MainActivity extends NativeActivity {
+public class MainActivity extends GameActivity {
 
     private static final String TAG = "FigCraft";
     private static final String LIB = "figcraft_android";
@@ -25,6 +30,7 @@ public class MainActivity extends NativeActivity {
 
     private static MainActivity instance;
     private static native void nativeListo();
+    private static native String nativeGetClipboardText();
 
     private static boolean hayPermiso() {
         try {
@@ -62,6 +68,22 @@ public class MainActivity extends NativeActivity {
             Log.w(TAG, "nativeListo: " + t);
         }
         Log.i(TAG, "figcraft: Activity creada, permiso=" + hayPermiso());
+    }
+
+    private static String getClipboardText() {
+        try {
+            ClipboardManager cm = (ClipboardManager) instance.getSystemService(Context.CLIPBOARD_SERVICE);
+            if (cm == null) return null;
+            ClipData cd = cm.getPrimaryClip();
+            if (cd != null && cd.getItemCount() > 0) {
+                ClipData.Item item = cd.getItemAt(0);
+                CharSequence text = item.getText();
+                if (text != null) return text.toString();
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "getClipboardText: " + t);
+        }
+        return null;
     }
 
     private static String insets() {
@@ -105,5 +127,11 @@ public class MainActivity extends NativeActivity {
     protected void onDestroy() {
         instance = null;
         super.onDestroy();
+    }
+
+    // Registrado en Rust: Java_ai_storyteller_figcraft_MainActivity_nativeGetClipboardText
+    static {
+        // Los nativos se resuelven por nombre al cargar la libreria; no hace falta
+        // RegisterNatives aqui.
     }
 }

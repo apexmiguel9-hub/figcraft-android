@@ -43,8 +43,9 @@ android {
 }
 
 dependencies {
-    // Con native-activity NO hay dependencia Java: NativeActivity viene en el OS.
+    // Con game-activity sí hay dependencia Java: GameActivity viene de androidx.games.
     implementation 'androidx.annotation:annotation:1.7.1'
+    implementation 'androidx.games:games-activity:4.4.0'
 }
 
 // El .so lo compila cargo (build-android-so.yml), no Gradle.

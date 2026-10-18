@@ -571,3 +571,27 @@ pub fn directorio_privado() -> std::path::PathBuf {
         _ => std::path::PathBuf::from("/data/data/ai.storyteller.figcraft/documents"),
     }
 }
+
+/// Leer el portapapeles del sistema via JNI (`ClipboardManager`).
+///
+/// MEDIDO que hace falta JNI porque `egui` solo expone la escritura del portapapeles,
+/// no la lectura. En Android hay que usar `android.content.ClipboardManager`, cuyo
+/// metodo nativo esta expuesto en `MainActivity` como `nativeGetClipboardText`.
+pub fn clipboard_get_text() -> Option<String> {
+    let r = env(|e| {
+        let clase = clase(e)?;
+        let v = e.call_static_method(&clase, jni::jni_str!("nativeGetClipboardText"), jni::jni_sig!("()Ljava/lang/String;"), &[])?;
+        if let Some(x) = excepcion(e) {
+            return Ok(Err(x));
+        }
+        Ok(Ok(texto(e, v)?))
+    });
+    match r {
+        Ok(s) if !s.is_empty() => Some(s),
+        Ok(_) => None,
+        Err(e) => {
+            log::debug!("permiso: clipboard: {e}");
+            None
+        }
+    }
+}
