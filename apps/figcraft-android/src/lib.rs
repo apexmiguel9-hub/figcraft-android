@@ -81,7 +81,7 @@ impl eframe::App for App {
                 log::info!(
                     "DIAG teclado -> {} | quiere_teclado={} | campos_con_foco={}",
                     tec.join(" | "),
-                    _ctx.wants_keyboard_input(),
+                    _ctx.egui_wants_keyboard_input(),
                     _ctx.memory(|m| m.focused().is_some())
                 );
             }
