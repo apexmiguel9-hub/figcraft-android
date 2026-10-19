@@ -1,6 +1,22 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.FigCraft" parent="android:Theme.Material.NoActionBar">
+    <!--
+      MEDIDO, y el crash era exactamente este:
+
+          java.lang.IllegalStateException: You need to use a Theme.AppCompat theme (or
+          descendant) with this activity.
+            at androidx.appcompat.app.AppCompatDelegateImpl.createSubDecor(AppCompatDelegateImpl.java:902)
+            at com.google.androidgamesdk.GameActivity.onCreate(GameActivity.java:313)
+            at ai.storyteller.figcraft.MainActivity.onCreate(MainActivity.java:91)
+
+      `GameActivity` hereda de `androidx.appcompat.app.AppCompatActivity`, y esa comprueba el tema
+      en `createSubDecor` antes de dibujar. Con `android:Theme.Material.NoActionBar` (un tema del
+      framework, sin relacion con AppCompat) la app **moria al arrancar**.
+
+      El padre tiene que ser un tema de AppCompat, y `.NoActionBar` para no tener barra de titulo
+      (la UI es de egui, dibuja su propia barra de ventanas).
+    -->
+    <style name="Theme.FigCraft" parent="Theme.AppCompat.NoActionBar">
         <item name="android:windowBackground">#0f1115</item>
     </style>
 </resources>
