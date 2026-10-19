@@ -50,7 +50,7 @@ jobs:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
-          key: apk-gradle-${{ hashFiles('apps/figcraft-android/android/**/*.gradle') }}
+          key: apk-gradle-v2-${{ hashFiles('apps/figcraft-android/android/**/*.gradle') }}
           restore-keys: apk-gradle-
 
       - name: Traer la ultima .so que haya compilado bien
@@ -114,7 +114,7 @@ jobs:
         working-directory: apps/figcraft-android/android
         env:
           ANDROID_NDK_HOME: ${{ env.NDK_DIR }}
-        run: ./gradlew --no-daemon assembleDebug
+        run: ./gradlew --no-daemon --refresh-dependencies assembleDebug
 
       - name: Comprobar que el APK lleva el .so dentro
         run: |
