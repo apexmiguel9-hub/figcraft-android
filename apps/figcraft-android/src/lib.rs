@@ -43,6 +43,43 @@ mod permiso;
 /// El `eframe::App` del port. Reenvia a `FigApp`, que ya trae 100% de la UI.
 pub struct App(pub FigApp);
 
+impl App {
+/// PRUEBA: volca cada 3 s las metricas de rendimiento que `FigApp` ya mide.
+///
+/// MEDIDO que hace falta: en el movil de pruebas figcraft va a 33-65 fps y vectorcraft a
+/// 70-120 en el mismo aparato, asi que hay que ver donde se va el tiempo en vez de suponer.
+/// Los numeros salen de [`FigApp::inspect`], que ya los tenia todos: `frameMs`, `renderMs`,
+/// `framesDrawn`, `repaintCauses` y, del lienzo, si el render fue completo o parcial, si es
+/// preview o refinado, y las dos latencias.
+///
+/// `framesDrawn` es un acumulado, asi que el fps sale del delta entre muestras.
+fn diag_perf(&mut self) {
+    #[cfg(target_os = "android")]
+    {
+        use std::sync::OnceLock;
+        static INICIO: OnceLock<std::time::Instant> = OnceLock::new();
+        static PREV: OnceLock<std::sync::Mutex<(u64, f64)>> = OnceLock::new();
+
+        let t = INICIO.get_or_init(std::time::Instant::now).elapsed().as_secs_f64();
+        let prev = PREV.get_or_init(|| std::sync::Mutex::new((0, 0.0)));
+        let Ok(mut p) = prev.lock() else { return };
+        if t - p.1 < 3.0 {
+            return;
+        }
+        let i = self.0.inspect();
+        let frames = i["framesDrawn"].as_u64().unwrap_or(0);
+        let dt = t - p.1;
+        let fps = if frames > p.0 { (frames - p.0) as f64 / dt } else { 0.0 };
+        *p = (frames, t);
+        let c = &i["canvas"];
+        log::info!(
+            "PERF fps={fps:.1} frameMs={} renderMs={} calidad={} trabajo={} latPreview={} latRefine={} causas={}",
+            i["frameMs"], i["renderMs"], c["quality"], c["renderWork"], c["previewLatencyMs"], c["refineLatencyMs"], i["repaintCauses"]
+        );
+    }
+}
+}
+
 impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.diag_perf();
@@ -52,41 +89,6 @@ impl eframe::App for App {
         #[cfg(target_os = "android")]
         browser::logic(ctx);
         self.0.logic(ctx);
-    }
-
-    /// PRUEBA: volca cada 3 s las metricas de rendimiento que `FigApp` ya mide.
-    ///
-    /// MEDIDO que hace falta: en el movil de pruebas figcraft va a 33-65 fps y vectorcraft a
-    /// 70-120 en el mismo aparato, asi que hay que ver donde se va el tiempo en vez de suponer.
-    /// Los numeros salen de [`FigApp::inspect`], que ya los tenia todos: `frameMs`, `renderMs`,
-    /// `framesDrawn`, `repaintCauses` y, del lienzo, si el render fue completo o parcial, si es
-    /// preview o refinado, y las dos latencias.
-    ///
-    /// `framesDrawn` es un acumulado, asi que el fps sale del delta entre muestras.
-    fn diag_perf(&mut self) {
-        #[cfg(target_os = "android")]
-        {
-            use std::sync::OnceLock;
-            static INICIO: OnceLock<std::time::Instant> = OnceLock::new();
-            static PREV: OnceLock<std::sync::Mutex<(u64, f64)>> = OnceLock::new();
-
-            let t = INICIO.get_or_init(std::time::Instant::now).elapsed().as_secs_f64();
-            let prev = PREV.get_or_init(|| std::sync::Mutex::new((0, 0.0)));
-            let Ok(mut p) = prev.lock() else { return };
-            if t - p.1 < 3.0 {
-                return;
-            }
-            let i = self.0.inspect();
-            let frames = i["framesDrawn"].as_u64().unwrap_or(0);
-            let dt = t - p.1;
-            let fps = if frames > p.0 { (frames - p.0) as f64 / dt } else { 0.0 };
-            *p = (frames, t);
-            let c = &i["canvas"];
-            log::info!(
-                "PERF fps={fps:.1} frameMs={} renderMs={} calidad={} trabajo={} latPreview={} latRefine={} causas={}",
-                i["frameMs"], i["renderMs"], c["quality"], c["renderWork"], c["previewLatencyMs"], c["refineLatencyMs"], i["repaintCauses"]
-            );
-        }
     }
 
     fn raw_input_hook(&mut self, _ctx: &egui::Context, _raw: &mut egui::RawInput) {
