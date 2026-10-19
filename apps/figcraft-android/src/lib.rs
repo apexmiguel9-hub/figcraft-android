@@ -57,11 +57,11 @@ static TEXTO_YA_PUESTO: std::sync::Mutex<String> = std::sync::Mutex::new(String:
 
 /// Saca el texto nuevo del teclado y lo devuelve como eventos de egui.
 ///
-/// MEDIDO que `GameTextInput` acumula en un buffer y devuelve el **estado completo**, no un delta:
-```text
+/// MEDIDO que `GameTextInput` acumula en un buffer y devuelve el **estado completo**, no un delta.
+/// En el logcat se ve como va creciendo el buffer:
+///
 ///     D/gti.InputConnection: commitText: h, new pos = 1
 ///     D/gti.InputConnection: commitText: o, new pos = 1
-/// ```
 ///
 /// O sea que el buffer va "h", luego "ho"... y hay que quedarse con lo que se anade. Se compara
 /// con lo puesto antes y, si el buffer empieza por lo anterior, solo se emite lo nuevo; si no (el
