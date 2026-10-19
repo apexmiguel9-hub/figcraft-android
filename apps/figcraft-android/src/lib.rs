@@ -206,20 +206,18 @@ fn wgpu_solo_opengl() -> eframe::egui_wgpu::WgpuConfiguration {
     //    cual es el que mata a `FragmentShaderCompileState::CompileUF()`. Sin esto no hay mas que un
     //    `abort()` sin contexto.
     setup.device_descriptor = std::sync::Arc::new(|adapter: &eframe::egui_wgpu::wgpu::Adapter| {
+        log::info!("PRUEBA adapter: {:?}", adapter.get_info());
         log::info!(
-            "PRUEBA adapter: {:?} limits.max_fragment_bindings={:?} subgroup={:?}",
-            adapter.get_info(),
+            "PRUEBA limits: max_bindings_per_bind_group={:?} features={:?}",
             adapter.limits().max_bindings_per_bind_group,
-            adapter
-                .get_downlevel_capabilities()
-                .map(|c| (c.sub_group_size_features, c.max_textures_per_shader_stage))
+            adapter.features()
         );
         eframe::egui_wgpu::wgpu::DeviceDescriptor {
             label: None,
             required_features: eframe::egui_wgpu::wgpu::Features::empty(),
             required_limits: eframe::egui_wgpu::wgpu::Limits::downlevel_defaults(),
             memory_hints: eframe::egui_wgpu::wgpu::MemoryHints::Performance,
-            trace: eframe::egui_wgpu::wgpu::Trace::File(std::path::PathBuf::from("/sdcard/vk-trace.html")),
+            trace: eframe::egui_wgpu::wgpu::Trace::default(),
             experimental_features: eframe::egui_wgpu::wgpu::ExperimentalFeatures::disabled(),
         }
     });
@@ -271,6 +269,9 @@ pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidA
     unsafe {
         std::env::set_var("RUST_LOG", "info");
         std::env::set_var("WGPU_BACKEND", "vulkan");
+        // `wgpu` con la feature `trace` vuelca a este fichero los shaders WGSL que compila, que es
+        // justo lo que hace falta: el fallo es `CompileUF()` y sin ver el shader es adivinar.
+        std::env::set_var("WGPU_TRACE", "/sdcard/vk-trace.html");
     }
     android_logger::init_once(android_logger::Config::default().with_max_level(log::LevelFilter::Info));
     // MEDIDO que hace falta, y no es opcional: `log` **descarta todo en silencio hasta que se
