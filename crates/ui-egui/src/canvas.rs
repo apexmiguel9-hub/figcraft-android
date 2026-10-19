@@ -223,12 +223,12 @@ pub fn show(app: &mut FigApp, ui: &mut Ui, worker: &mut Worker) {
         let t_subida = std::time::Instant::now();
         let (px, w, h) = match &mut app.canvas.texture {
             Some(t) => {
-                let (w, h) = (done.image.width, done.image.height);
+                let (w, h) = (done.image.width(), done.image.height());
                 t.set(done.image, filter);
                 (t.options().mipmap_mode.is_some(), w, h)
             }
             None => {
-                let (w, h) = (done.image.width, done.image.height);
+                let (w, h) = (done.image.width(), done.image.height());
                 app.canvas.texture = Some(ctx.load_texture("figcraft-canvas", done.image, filter));
                 (false, w, h)
             }
