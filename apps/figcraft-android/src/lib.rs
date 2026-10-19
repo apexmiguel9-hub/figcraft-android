@@ -31,6 +31,67 @@ mod permiso;
 // workaround era reinyectar el texto a mano por JNI (`MainActivity.nativeTecla` -> `TECLAS` ->
 // `Event::Text`). Con `GameActivity` el teclado llega solo y todo eso sobra.
 
+/// El `AndroidApp` de `android-activity`, guardado para leer el texto del teclado.
+///
+/// MEDIDO, y este es el puente que faltaba. Con `GameActivity` el teclado blando **si** entrega el
+/// texto, pero lo deja en el `GameTextInput` de androidx.games, y ni `winit` 0.30 ni `winit`
+/// 0.31-beta.3 lo conectan a egui (`grep` del fuente: cero menciones a `GameTextInput` en
+/// `platform_impl/android/`). El PR de winit que lo arregla, el #4451 "Add basic IME support for
+/// Android", **sigue abierto** (marzo 2026), asi que no hay version publicada que lo haga.
+///
+/// La pieza existe, solo que enterrada: `android-activity` 0.6 expone
+/// `AndroidApp::text_input_state()`, que es exactamente `GameActivity_getTextInputState` de la
+/// documentacion de Google. Aqui se lee cada frame y lo que haya de nuevo se inyecta como
+/// `egui::Event::Text`, o sea el camino normal de escritura (`shortcuts::text_keys` ->
+/// `figcraft_engine::textedit::insert`), sin tocar el motor.
+///
+/// MEDIDO que hay que guardar el `AndroidApp`: `android_main` lo recibe como argumento y winit se
+/// queda con el, asi que el port se lo guarda para poder consultarlo en cada frame.
+#[cfg(target_os = "android")]
+static ANDROID_APP: std::sync::Mutex<Option<android_activity::AndroidApp>> = std::sync::Mutex::new(None);
+
+/// El texto ya inyectado, para no repetirlo: `GameTextInput` entrega el buffer **entero**, y solo
+/// lo nuevo es lo que se debe escribir.
+#[cfg(target_os = "android")]
+static TEXTO_YA_PUESTO: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+/// Saca el texto nuevo del teclado y lo devuelve como eventos de egui.
+///
+/// MEDIDO que `GameTextInput` acumula en un buffer y devuelve el **estado completo**, no un delta:
+```text
+///     D/gti.InputConnection: commitText: h, new pos = 1
+///     D/gti.InputConnection: commitText: o, new pos = 1
+/// ```
+///
+/// O sea que el buffer va "h", luego "ho"... y hay que quedarse con lo que se anade. Se compara
+/// con lo puesto antes y, si el buffer empieza por lo anterior, solo se emite lo nuevo; si no (el
+/// usuario borro algo, o cambio la seleccion), se emite el buffer entero y se re-sincroniza.
+#[cfg(target_os = "android")]
+fn teclado_a_eventos() -> Vec<egui::Event> {
+    let app_guard = ANDROID_APP.lock().ok().and_then(|mut g| g.take());
+    let Some(app) = app_guard else { return Vec::new() };
+    let estado = app.text_input_state();
+    // Se devuelve el `AndroidApp` al sitio: se lee bajo el cerrojo, no se queda fuera del bucle.
+    if let Ok(mut g) = ANDROID_APP.lock() {
+        *g = Some(app);
+    }
+
+    let actual = estado.text;
+    let ya = TEXTO_YA_PUESTO.lock().map(|mut s| std::mem::take(&mut *s)).unwrap_or_default();
+    if actual == ya {
+        return Vec::new();
+    }
+    let nuevo = if !ya.is_empty() && actual.starts_with(&ya) { actual[ya.len()..].to_string() } else { actual.clone() };
+    if let Ok(mut s) = TEXTO_YA_PUESTO.lock() {
+        *s = actual;
+    }
+    if nuevo.is_empty() {
+        return Vec::new();
+    }
+    log::info!("teclado: {nuevo:?} -> Event::Text");
+    vec![egui::Event::Text(nuevo)]
+}
+
 /// El `eframe::App` del port. Reenvia a `FigApp`, que ya trae 100% de la UI.
 pub struct App(pub FigApp);
 
@@ -45,8 +106,12 @@ impl eframe::App for App {
     }
 
     fn raw_input_hook(&mut self, _ctx: &egui::Context, _raw: &mut egui::RawInput) {
-        // MEDIDO: la inyeccion de texto por JNI que hubo aqui (`TECLAS` -> `Event::Text`) ya no
-        // hace falta con `GameActivity`: el teclado llega solo y por el camino normal de egui.
+        // MEDIDO: el texto del teclado blando llega por `GameTextInput`, que `winit` no conecta a
+        // egui (ver `teclado_a_eventos`). Se inyecta aqui como `Event::Text`, que es el camino
+        // normal: `shortcuts::text_keys` -> `figcraft_engine::textedit::insert`.
+        #[cfg(target_os = "android")]
+        _raw.events.extend(teclado_a_eventos());
+
         // Recorta `screen_rect`, no rellena `safe_area_insets`.
         //
         // MEDIDO en el movil (Moto G56 5G): la ventana llega **edge-to-edge** —el viewport
@@ -211,6 +276,11 @@ pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidA
     // consulta el permiso en cuanto el usuario abre un fichero, y `raw_input_hook` pide los
     // insets en el primer frame.
     permiso::registrar(&app);
+    // MEDIDO: winit se queda con el `AndroidApp`, asi que el port guarda una copia para poder leer
+    // el texto del teclado en cada frame (`teclado_a_eventos`).
+    if let Ok(mut g) = ANDROID_APP.lock() {
+        *g = Some(app.clone());
+    }
 
     // El `AndroidApp` va DENTRO de las opciones, no como argumento aparte: es lo que el
     // `EventLoop` de winit necesita para construirse, y sin el se queda sin bucle de eventos.
