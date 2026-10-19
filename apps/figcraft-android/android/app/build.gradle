@@ -96,6 +96,21 @@ dependencies {
     // error que costo tiempo en el port de vectorcraft. El paquete real es `androidx.games`.
     implementation 'androidx.annotation:annotation:1.7.1'
     implementation 'androidx.games:games-activity:4.4.0'
+    // MEDIDO, y sin esto salen **10 errores** que parecen 10 bugs distintos y son uno solo:
+    //
+    //     MainActivity.java:43: error: cannot access OnApplyWindowInsetsListener
+    //     MainActivity.java:79: error: cannot find symbol  method getPackageName()
+    //     MainActivity.java:81: error: cannot find symbol  method startActivity(Intent)
+    //     MainActivity.java:91: error: cannot find symbol  variable super
+    //     MainActivity.java:103: error: cannot find symbol method getSystemService(String)
+    //     ... (10 en total)
+    //
+    // Todos son metodos de `Activity`/`Context`. La causa es que `GameActivity` (androidx.games)
+    // hereda de `androidx.core.app.ComponentActivity` —o algo por el estilo—, y **androidx.core**
+    // no venia como dependencia transitiva de forma utilizable. Sin la libreria, el compilador no
+    // puede ni resolver la superclase, asi que `super`, `getPackageName`, `startActivity`,
+    // `onCreate` y `onDestroy` salen como simbolos inexistentes.
+    implementation 'androidx.core:core:1.13.1'
 }
 
 // El .so lo compila cargo (build-android-so.yml), no Gradle.
