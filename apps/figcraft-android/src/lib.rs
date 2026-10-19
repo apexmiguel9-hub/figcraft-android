@@ -59,6 +59,34 @@ impl eframe::App for App {
         // `NativeActivity` las teclas llegan por el `InputConnection` de AOSP y las entrega `winit`.
         // Ver el comentario de este modulo.
 
+        // MEDIDO, y es DIAGNOSTICO, no codigo de produccion: el teclado blando **y** el fisico no
+        // escriben nada en el lienzo, asi que hay que ver que llega de verdad. Se imprime lo que
+        // `winit` trae, una vez por frame y solo lo que sea de teclado.
+        #[cfg(target_os = "android")]
+        {
+            use egui::Event as E;
+            let tec: Vec<String> = _raw
+                .events
+                .iter()
+                .filter_map(|e| match e {
+                    E::Key { key, pressed, modifiers, .. } => Some(format!("Key({key:?},p={pressed},m={modifiers:?})")),
+                    E::Text(t) => Some(format!("Text({t:?})")),
+                    E::Ime(i) => Some(format!("Ime({i:?})")),
+                    E::Paste(t) => Some(format!("Paste({t:?})")),
+                    E::ModifiersChanged(m) => Some(format!("Mods({m:?})")),
+                    _ => None,
+                })
+                .collect();
+            if !tec.is_empty() {
+                log::info!(
+                    "DIAG teclado -> {} | quiere_teclado={} | campos_con_foco={}",
+                    tec.join(" | "),
+                    _ctx.wants_keyboard_input(),
+                    _ctx.memory(|m| m.focused().is_some())
+                );
+            }
+        }
+
         // Recorta `screen_rect`, no rellena `safe_area_insets`.
         //
         // MEDIDO en el movil (Moto G56 5G): la ventana llega **edge-to-edge** —el viewport
