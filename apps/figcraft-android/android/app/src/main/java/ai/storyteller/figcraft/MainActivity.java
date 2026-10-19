@@ -75,7 +75,28 @@ public class MainActivity extends NativeActivity {
     private android.view.inputmethod.InputConnection getInputConnection() {
         if (activeConnection == null) {
             final android.view.View v = vistaPuente();
-            activeConnection = new android.view.inputmethod.BaseInputConnection(v, false) {
+            activeConnection = new android.view.inputmethod.BaseInputConnection(v, true) {
+                // MEDIDO: con `fullEditor = false` el IME recibe un `EditorInfo` **vacio**, y el
+                // logcat lo delata:
+                //
+                //     onStartInput(EditorInfo{packageName=ai.storyteller.figcraft, inputType=0,
+                //                      inputTypeString=NULL, imeOptions=0, ...})
+                //
+                // `inputType=0` es `TYPE_NULL`: el teclado no sabe que es un campo de texto, no
+                // enseña ni el campo ni acepta bien la entrada. Con `true` se publica el
+                // `EditorInfo` completo y el teclado ya es usable.
+                @Override
+                public android.view.inputmethod.EditorInfo getEditorInfo() {
+                    android.view.inputmethod.EditorInfo ei = new android.view.inputmethod.EditorInfo();
+                    ei.packageName = "ai.storyteller.figcraft";
+                    ei.fieldId = 1;
+                    ei.inputType = android.text.InputType.TYPE_CLASS_TEXT
+                            | android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE
+                            | android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS;
+                    ei.imeOptions = android.view.inputmethod.EditorInfo.IME_FLAG_NO_FULLSCREEN;
+                    return ei;
+                }
+
                 @Override
                 public boolean commitText(CharSequence text, int newCursorPosition) {
                     if (text != null && text.length() > 0) {
