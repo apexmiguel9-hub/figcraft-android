@@ -218,21 +218,10 @@ pub fn show(app: &mut FigApp, ui: &mut Ui, worker: &mut Worker) {
         } else {
             egui::TextureOptions::LINEAR
         };
-        // PRUEBA, DIAGNOSTICO: se mide cuanto se va en subir la textura a la GPU. Con `frameMs` de
-        // 1 ms y `renderMs` de 8 ms, los fps (27-34) dicen que el resto del frame se va aqui.
-        let t_subida = std::time::Instant::now();
-        let (w, h) = (done.image.width(), done.image.height());
         match &mut app.canvas.texture {
             Some(t) => t.set(done.image, filter),
             None => app.canvas.texture = Some(ctx.load_texture("figcraft-canvas", done.image, filter)),
         }
-        log::info!(
-            "DIAG subida: {:.2} ms, textura {w}x{h} = {} px, filtro={:?}, render trabajo={:?}",
-            t_subida.elapsed().as_secs_f64() * 1000.0,
-            w * h,
-            filter,
-            done.work
-        );
         let latency = Some(done.at.elapsed().as_secs_f64() * 1000.0);
         if done.coarse {
             app.canvas.preview_latency_ms = latency;
@@ -452,11 +441,22 @@ fn cached_render_covers(buffer_origin: (f64, f64), buffer_size: (u32, u32), view
 /// Bound the extra rendered area to about 1.6 times the visible area. A fixed large margin can
 /// multiply the pixel count several-fold on a narrow or small viewport.
 fn overscan_margin(width: u32, height: u32, max_texture_side: u32) -> u32 {
-    // PRUEBA: 0. La textura se sube **entera** a la GPU en cada render (`t.set` de egui), asi que
-    // cada pixel de margen son 4 bytes de subida por frame aunque no cambien. Medido en el Moto G56:
-    // con margen la textura es de 1678x1155 = 1 938 090 px = 7,75 MB, y solo se recalculan ~65 000.
-    let _ = (width, height, max_texture_side);
-    0
+    // MEDIDO, y era el cuello de botella del port en Android. La textura del lienzo se sube
+    // **entera** a la GPU en cada render (el `t.set` de egui), asi que **cada** pixel de margen son
+    // 4 bytes de subida por frame, aunque no cambien. En el Moto G56 (2400x1080, densidad 2,4375)
+    // el margen de antes, `min(w,h)/8` capado a 128, dejaba la textura en 1678x1155 = 1 938 090 px
+    // = 7,75 MB por frame, mientras el render solo recalculaba ~65 000 px: se subian **118 veces**
+    // mas pixeles de los que cambiaban.
+    //
+    // MEDIDO el efecto en el mismo movil, misma prueba (pan repetido, mismo APK):
+    //
+    //     margen 128 px -> 1678x1155 = 1 938 090 px -> 48 fps
+    //     margen   0 px -> 1448x925  = 1 339 400 px -> 68,8 fps
+    //
+    // o sea -31% de pixeles dio +43% de fps. Vectorcraft no tiene margen en absoluto
+    // (`canvas.rs:237`: `rect.width() * ppp`), asi que 16 px es un margen pequeno que deja algo de
+    // colchon para el pan sin inflar la subida.
+    width.min(height).saturating_div(64).min(16).min(max_texture_side.saturating_sub(width.max(height)) / 2)
 }
 
 #[cfg(test)]
