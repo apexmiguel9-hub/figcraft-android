@@ -97,19 +97,26 @@ fn cached_tip(label: &'static str, key: Option<&'static str>) -> &'static str {
 /// `swallowed`: what this frame's Cmd/Ctrl+V chords the shell swallowed ask for ([`swallowed_paste`]).
 pub fn handle(app: &mut FigApp, ctx: &Context, typing: bool, swallowed: Swallowed) {
     note_platform(ctx);
-    // Text fields in panels own the keyboard (also the key that ends their editing).
-    if typing || crate::a11y::field_focused(ctx) || app.ui.palette.is_some() {
-        return;
-    }
     let events: Vec<Event> = ctx.input(|i| i.events.clone());
+
+    // MEDIDO, y el orden importa: la edicion de texto del lienzo se comprueba **antes** del corte de
+    // los campos de panel. Con el orden viejo (el corte primero), el texto del teclado blando se
+    // perdia en cuanto un campo de un panel tenia el foco, porque `handle` volvia antes de llegar a
+    // `text_keys`. En Android el teclado se muestra pero no se escribe nada.
+    //
+    // MEDIDO tambien que es lo que hace falta para que el `Event::Text` del `GameTextInput` llegue al
+    // documento: el port lo inyecta en `raw_input_hook`, y de ahi sale por aqui.
+    //
     // Every frame while editing, even one without input: a frame without the IME output turns the
     // platform's IME off, which drops the composition (macOS then types plain letters).
-    //
-    // MEDIDO: esto es lo que hacia tambien el puente de teclado del port de Android (ya retirado
-    // al migrar a `GameActivity`), y es el mismo bug: un frame sin salida del IME lo apaga.
     let editing = app.session.ds().map(|d| d.text_edit.is_some()).unwrap_or(false);
     if editing {
         text_keys(app, ctx, &events);
+        return;
+    }
+
+    // Text fields in panels own the keyboard (also the key that ends their editing).
+    if typing || crate::a11y::field_focused(ctx) || app.ui.palette.is_some() {
         return;
     }
     if events.is_empty() {
