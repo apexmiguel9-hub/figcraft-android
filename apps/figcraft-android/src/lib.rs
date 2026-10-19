@@ -50,61 +50,106 @@ mod permiso;
 #[cfg(target_os = "android")]
 static ANDROID_APP: std::sync::Mutex<Option<android_activity::AndroidApp>> = std::sync::Mutex::new(None);
 
-/// El texto ya inyectado, para no repetirlo: `GameTextInput` entrega el buffer **entero**, y solo
-/// lo nuevo es lo que se debe escribir.
+/// Texto composing ya inyectado, para sacar solo el delta mientras el IME compone.
+///
+/// Solo se usa **mientras hay composicion** (`compose_region` con contenido). En cuanto el IME
+/// confirma, el buffer se vacia y esto vuelve a "", asi que no sobrevive de un campo a otro.
 #[cfg(target_os = "android")]
 static TEXTO_YA_PUESTO: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 
+/// Estado vacio de `GameTextInput`, para vaciar su buffer tras consumir lo escrito.
+#[cfg(target_os = "android")]
+fn texto_vacio() -> android_activity::input::TextInputState {
+    android_activity::input::TextInputState {
+        text: String::new(),
+        selection: android_activity::input::TextSpan { start: 0, end: 0 },
+        compose_region: None,
+    }
+}
+
 /// Saca el texto nuevo del teclado y lo devuelve como eventos de egui.
 ///
-/// MEDIDO que `GameTextInput` acumula en un buffer y devuelve el **estado completo**, no un delta.
-/// En el logcat se ve como va creciendo el buffer:
+/// MEDIDO, y es la parte que no es intuitiva: `GameTextInput` **no** entrega un delta como el IME
+/// del escritorio, sino el **estado completo** del campo. En el logcat se ve como crece con cada
+/// tecla:
 ///
 ///     D/gti.InputConnection: commitText: h, new pos = 1
 ///     D/gti.InputConnection: commitText: o, new pos = 1
 ///
-/// O sea que el buffer va "h", luego "ho"... y hay que quedarse con lo que se anade. Se compara
-/// con lo puesto antes y, si el buffer empieza por lo anterior, solo se emite lo nuevo; si no (el
-/// usuario borro algo, o cambio la seleccion), se emite el buffer entero y se re-sincroniza.
+/// o sea el buffer va "h", luego "ho", y hay que quedarse con lo anadido.
+///
+/// MEDIDO que guardar el buffer anterior para restarlo **se rompe al cambiar de campo**: el
+/// baseline es global, asi que escribir "h" en el palette (Ctrl+K) y luego "h" en el texto del
+/// lienzo daba `actual == ya` y **la letra se tragaba**. En el telefono se veía como "escribo una
+/// letra y no pasa nada hasta que escribo otra".
+///
+/// Por eso aqui, en vez de comparar, se **vacia el buffer** (`set_text_input_state`) cada vez que el
+/// IME confirma: asi el buffer vuelve a contener solo lo recien escrito y no hay nada que restar ni
+/// que se contamine entre campos.
+///
+/// MEDIDO que vaciarlo durante una composicion (acentos, la `e` de "español") parte el texto
+/// marcado, asi que mientras `compose_region` traiga algo el buffer se deja intacto y ahi si se
+/// resta el baseline.
+///
+/// MEDIDO que el buffer vacio ya no revienta porque el crate va parcheado (ver
+/// `patches/android-activity`): el original hace `slice::from_raw_parts(text_UTF8, 0)` con
+/// `text_UTF8` nulo, que es comportamiento indefinido y abortaba el proceso al arrancar.
 #[cfg(target_os = "android")]
 fn teclado_a_eventos() -> Vec<egui::Event> {
     let app_guard = ANDROID_APP.lock().ok().and_then(|mut g| g.take());
     let Some(app) = app_guard else { return Vec::new() };
 
-    // MEDIDO que el buffer vacio ya no revienta porque el crate va parcheado (ver
-    // `patches/android-activity`): el original hace `slice::from_raw_parts(text_UTF8, 0)` con
-    // `text_UTF8` nulo, que es comportamiento indefinido y abortaba el proceso al arrancar.
-    let actual = app.text_input_state().text;
-    if let Ok(mut g) = ANDROID_APP.lock() {
-        *g = Some(app);
-    }
-
-    // MEDIDO que `GameTextInput` devuelve el buffer **entero**, no un delta. En el logcat se ve
-    // como crece con cada tecla:
-    //
-    //     D/gti.InputConnection: commitText: h, new pos = 1
-    //     D/gti.InputConnection: commitText: o, new pos = 1
-    //
-    // O sea: el buffer va "h", luego "ho"… y hay que quedarse con **lo que se anade**, que es lo
-    // unico que no esta ya escrito en el documento.
-    //
-    // MEDIDO que comparar con `mem::take` no vale (se repite el texto en cada frame): el buffer de
-    // `GameTextInput` lo gestiona Java y no se vacia cuando egui consume el evento, asi que hay que
-    // guardarlo **sin vaciarlo** y comparar contra el valor completo anterior.
+    let estado = app.text_input_state();
+    let composing = estado.compose_region.is_some();
     let ya = TEXTO_YA_PUESTO.lock().map(|s| s.clone()).unwrap_or_default();
-    if actual == ya {
+
+    // Sin cambios desde el frame anterior: no hay nada que inyectar. Se devuelve el `AndroidApp`
+    // **antes** de salir, porque `ANDROID_APP` es el unico sitio donde vive (si se saliera sin
+    // devolverlo, el handle se perderia para siempre y el teclado dejaria de funcionar).
+    if !composing && estado.text.is_empty() {
+        devolver_app(app);
         return Vec::new();
     }
-    let nuevo = if !ya.is_empty() && actual.starts_with(&ya) { actual[ya.len()..].to_string() } else { actual.clone() };
+
+    let nuevo = if composing {
+        // El IME sigue marcando texto: se emite solo lo anadido desde la ultima vez.
+        if estado.text == ya {
+            devolver_app(app);
+            return Vec::new();
+        }
+        if !ya.is_empty() && estado.text.starts_with(&ya) {
+            estado.text[ya.len()..].to_string()
+        } else {
+            estado.text.clone()
+        }
+    } else {
+        // IME confirmado: el buffer es exactamente lo nuevo. Se emite entero y se vacia.
+        let nuevo = estado.text.clone();
+        app.set_text_input_state(texto_vacio());
+        nuevo
+    };
+
     if let Ok(mut s) = TEXTO_YA_PUESTO.lock() {
-        *s = actual;
+        *s = if composing { estado.text.clone() } else { String::new() };
     }
+    devolver_app(app);
+
     if nuevo.is_empty() {
         return Vec::new();
     }
-    log::info!("teclado: {nuevo:?} -> Event::Text");
+    log::info!("teclado: {nuevo:?} -> Event::Text (comp={composing})");
     vec![egui::Event::Text(nuevo)]
+}
 
+/// Devuelve el `AndroidApp` al sitio donde `android_main` puede volver a tomarlo.
+///
+/// MEDIDO que esto no es opcional: el handle se saca con `take()` de este mutex, asi que cualquier
+/// salida que no lo devuelva lo deja en `None` para siempre y el teclado deja de llegar.
+#[cfg(target_os = "android")]
+fn devolver_app(app: android_activity::AndroidApp) {
+    if let Ok(mut g) = ANDROID_APP.lock() {
+        *g = Some(app);
+    }
 }
 
 /// El `eframe::App` del port. Reenvia a `FigApp`, que ya trae 100% de la UI.
