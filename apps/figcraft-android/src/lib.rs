@@ -90,9 +90,9 @@ fn teclado_a_eventos() -> Vec<egui::Event> {
     // MEDIDO que la solucion es **inicializar el buffer** con `set_text_input_state`, que si es
     // publico y no aborta: asi `text_UTF8` deja de ser null y la lectura ya no revienta. Un texto
     // vacio con la seleccion en 0 es un estado valido de `GameTextInput`.
-    let vacio = android_activity::TextInputState {
+    let vacio = android_activity::input::TextInputState {
         text: String::new(),
-        selection: android_activity::TextSpan { start: 0, end: 0 },
+        selection: android_activity::input::TextSpan { start: 0, end: 0 },
         compose_region: None,
     };
     app.set_text_input_state(vacio);
