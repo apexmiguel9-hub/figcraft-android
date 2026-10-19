@@ -55,12 +55,6 @@ static ANDROID_APP: std::sync::Mutex<Option<android_activity::AndroidApp>> = std
 #[cfg(target_os = "android")]
 static TEXTO_YA_PUESTO: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 
-/// Marca cuando el panic del buffer vacio esta en curso, para que el hook no lo grite.
-#[cfg(target_os = "android")]
-thread_local! {
-    static SILENCIADO: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
 /// Saca el texto nuevo del teclado y lo devuelve como eventos de egui.
 ///
 /// MEDIDO que `GameTextInput` acumula en un buffer y devuelve el **estado completo**, no un delta.
@@ -77,35 +71,46 @@ fn teclado_a_eventos() -> Vec<egui::Event> {
     let app_guard = ANDROID_APP.lock().ok().and_then(|mut g| g.take());
     let Some(app) = app_guard else { return Vec::new() };
 
-    // MEDIDO, y este `catch_unwind` es **imprescindible**, no una precaution. `text_input_state()`
-    // de `android-activity` 0.6.1 aborta el proceso si el buffer de `GameTextInput` esta vacio:
+    // MEDIDO, y esto va **antes** de leer porque sin el la app **muere al arrancar**.
+    // `text_input_state()` de `android-activity` 0.6.1 aborta el proceso si el buffer de
+    // `GameTextInput` esta vacio:
     //
     //     panicked at android-activity-0.6.1/src/game_activity/mod.rs:717
     //     unsafe precondition(s) violated: slice::from_raw_parts requires the pointer to be
     //     aligned and non-null
-    //     at figcraft_android::App::raw_input_hook
     //     Fatal signal 6 (SIGABRT) in tid ... (android_main)
     //
-    // El codigo es `slice::from_raw_parts(text_UTF8, text_length)`, y `text_UTF8` es null antes de
-    // que el usuario escriba nada (`mod.rs:715-717`). O sea: **la app muere al arrancar**, porque
-    // `raw_input_hook` corre desde el primer frame.
+    // El codigo ofensivo es `slice::from_raw_parts(text_UTF8, text_length)` (`mod.rs:715-717`) y
+    // `text_UTF8` es null hasta que hay texto. Como `raw_input_hook` corre desde el primer frame,
+    // el panic salta antes de que el usuario toque nada.
     //
-    // `android_main` es `extern "C"`, donde el unwind esta prohibido y un panic tumba el proceso
-    // entero, asi que hay que recuperar el estado a mano y devolver el `AndroidApp` al sitio
-    // pase lo pase.
-    let texto = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| app.text_input_state().text)).unwrap_or_else(|_| {
-        // MEDIDO: el panic del buffer vacio es **esperado** (pasa hasta que el usuario escribe), asi
-        // que se silencia el hook mientras ocurre o el logcat se llena de "PANIC de Rust" en cada
-        // frame sin texto.
-        SILENCIADO.with(|s| s.set(true));
-        String::new()
-    });
-    SILENCIADO.with(|s| s.set(false));
+    // MEDIDO que `catch_unwind` **no** vale: el panic cuelga de una `extern "C"` (sin unwind) y el
+    // proceso aborta igual con "thread caused non-unwinding panic".
+    //
+    // MEDIDO que la solucion es **inicializar el buffer** con `set_text_input_state`, que si es
+    // publico y no aborta: asi `text_UTF8` deja de ser null y la lectura ya no revienta. Un texto
+    // vacio con la seleccion en 0 es un estado valido de `GameTextInput`.
+    let vacio = android_activity::TextInputState {
+        text: String::new(),
+        selection: android_activity::TextSpan { start: 0, end: 0 },
+        compose_region: None,
+    };
+    app.set_text_input_state(vacio);
+
+    let actual = app.text_input_state().text;
     if let Ok(mut g) = ANDROID_APP.lock() {
         *g = Some(app);
     }
 
-    let actual = texto;
+    // MEDIDO que `GameTextInput` devuelve el buffer **entero**, no un delta. En el logcat se ve
+    // como crece:
+    //
+    //     D/gti.InputConnection: commitText: h, new pos = 1
+    //     D/gti.InputConnection: commitText: o, new pos = 1
+    //
+    // O sea: el buffer va "h", luego "ho"… y hay que quedarse con lo que se anade. Se compara con lo
+    // puesto antes y, si el buffer empieza por lo anterior, solo se emite lo nuevo; si no (el
+    // usuario borro, o movio el caret), se emite el buffer entero y se re-sincroniza.
     let ya = TEXTO_YA_PUESTO.lock().map(|mut s| std::mem::take(&mut *s)).unwrap_or_default();
     if actual == ya {
         return Vec::new();
@@ -296,12 +301,6 @@ pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidA
     // logcat. El sintoma es `Fatal signal 6 (SIGABRT) ... (android_main+428)`: se sabe que ha
     // panicado y no donde.
     std::panic::set_hook(Box::new(|info| {
-        // MEDIDO: el panic del buffer de `GameTextInput` vacio es esperado (ver
-        // `teclado_a_eventos`), asi que no se grita para no llenar el logcat en cada frame.
-        #[cfg(target_os = "android")]
-        if SILENCIADO.with(|s| s.get()) {
-            return;
-        }
         log::error!("PANIC de Rust: {info}");
         eprintln!("PANIC de Rust: {info}");
     }));

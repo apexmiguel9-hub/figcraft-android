@@ -44,7 +44,12 @@ egui = { workspace = true }
 jni = "0.22"
 winit = { workspace = true }
 # MEDIDO: `game-activity` es la feature que da la `GameActivity` de androidx.games, que si tiene
-# vista (y por tanto `InputConnection`) — ver el comentario de `eframe` mas arriba.
+# vista (y por tanto teclado blando) — ver el comentario de `eframe` mas arriba.
+#
+# MEDIDO que `android-activity` queda como dependencia **directa** y no solo transitiva de winit:
+# `AndroidApp::text_input_state()` y `set_text_input_state()` son la pieza que conecta el teclado
+# con egui (winit no expone el texto del `GameTextInput`), y `TextInputState`/`TextSpan` son los
+# tipos que hay que construir para inicializar ese buffer. Ver `src/lib.rs`, `teclado_a_eventos`.
 android-activity = { version = "0.6", default-features = false, features = ["game-activity"] }
 android_logger = { workspace = true }
 # El browser de ficheros, dibujado DENTRO de la app.
