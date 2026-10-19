@@ -452,7 +452,11 @@ fn cached_render_covers(buffer_origin: (f64, f64), buffer_size: (u32, u32), view
 /// Bound the extra rendered area to about 1.6 times the visible area. A fixed large margin can
 /// multiply the pixel count several-fold on a narrow or small viewport.
 fn overscan_margin(width: u32, height: u32, max_texture_side: u32) -> u32 {
-    width.min(height).saturating_div(8).min(128).min(max_texture_side.saturating_sub(width.max(height)) / 2)
+    // PRUEBA: 0. La textura se sube **entera** a la GPU en cada render (`t.set` de egui), asi que
+    // cada pixel de margen son 4 bytes de subida por frame aunque no cambien. Medido en el Moto G56:
+    // con margen la textura es de 1678x1155 = 1 938 090 px = 7,75 MB, y solo se recalculan ~65 000.
+    let _ = (width, height, max_texture_side);
+    0
 }
 
 #[cfg(test)]
