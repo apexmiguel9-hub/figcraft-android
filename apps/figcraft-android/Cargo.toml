@@ -71,6 +71,16 @@ winit = { workspace = true }
 # MEDIDO que `android-activity` queda como dependencia **directa** y no solo transitiva de winit:
 # `android_main` recibe el `AndroidApp` como argumento y hace falta para arrancar el bucle.
 android-activity = { version = "0.6", default-features = false, features = ["native-activity"] }
+# PRUEBA VULKAN: la misma version que resuelve `egui-wgpu`, pero con la feature `trace`, que vuelca
+# a un fichero los shaders WGSL que se compilan. Sin esto el unico rastro del fallo del driver es un
+# `abort()` sin contexto:
+#
+#     egui_wgpu::Renderer::new() -> wgpu_hal::vulkan::Device::create_render_pipeline
+#       -> vulkan.mtk.so FragmentShaderCompileState::CompileUF() -> abort()
+#
+# Cargo unifica las features de una misma version, asi que esto **activa** el trace del `wgpu` que
+# usa `egui-wgpu`, no añade una segunda copia.
+wgpu = { version = "30", default-features = false, features = ["trace", "wgsl", "vulkan", "gles"] }
 android_logger = { workspace = true }
 # El browser de ficheros, dibujado DENTRO de la app.
 #

@@ -195,6 +195,34 @@ fn wgpu_solo_opengl() -> eframe::egui_wgpu::WgpuConfiguration {
     setup.instance_descriptor.backends =
         eframe::egui_wgpu::wgpu::Backends::VULKAN | eframe::egui_wgpu::wgpu::Backends::GL;
     setup.power_preference = eframe::egui_wgpu::wgpu::PowerPreference::HighPerformance;
+
+    // PRUEBA VULKAN, y son las dos palancas que se prueban aqui:
+    //
+    // 1. `downlevel_defaults()`. `wgpu` por defecto pide los *limits* maximos declarados por el
+    //    adaptador, y en esta GPU (`PowerVR B-Series BXM-8-256`, Imagination Technologies, el mismo
+    //    die `mt6855`) pueden ser mas de lo que el driver sabe compilar. Es la causa mas comun de
+    //    que un shader compile en un movil y no en otro.
+    // 2. `Trace::File`. Vuelca a `/sdcard/vk-trace.html` los shaders WGSL que se compilan, para ver
+    //    cual es el que mata a `FragmentShaderCompileState::CompileUF()`. Sin esto no hay mas que un
+    //    `abort()` sin contexto.
+    setup.device_descriptor = std::sync::Arc::new(|adapter: &eframe::egui_wgpu::wgpu::Adapter| {
+        log::info!(
+            "PRUEBA adapter: {:?} limits.max_fragment_bindings={:?} subgroup={:?}",
+            adapter.get_info(),
+            adapter.limits().max_bindings_per_bind_group,
+            adapter
+                .get_downlevel_capabilities()
+                .map(|c| (c.sub_group_size_features, c.max_textures_per_shader_stage))
+        );
+        eframe::egui_wgpu::wgpu::DeviceDescriptor {
+            label: None,
+            required_features: eframe::egui_wgpu::wgpu::Features::empty(),
+            required_limits: eframe::egui_wgpu::wgpu::Limits::downlevel_defaults(),
+            memory_hints: eframe::egui_wgpu::wgpu::MemoryHints::Performance,
+            trace: eframe::egui_wgpu::wgpu::Trace::File(std::path::PathBuf::from("/sdcard/vk-trace.html")),
+            experimental_features: eframe::egui_wgpu::wgpu::ExperimentalFeatures::disabled(),
+        }
+    });
     eframe::egui_wgpu::WgpuConfiguration { wgpu_setup: eframe::egui_wgpu::WgpuSetup::CreateNew(setup), ..Default::default() }
 }
 
