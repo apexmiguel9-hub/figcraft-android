@@ -1,16 +1,6 @@
 package ai.storyteller.figcraft;
 
-// MEDIDO, y no es lo que dice la documentacion: el paquete **no** es `androidx.games.activity`.
-// Abriendo el `.aar` de `androidx.games:games-activity:4.4.0` y listando el `classes.jar`:
-//
-//     com/google/androidgamesdk/GameActivity.class
-//     com/google/androidgamesdk/gametextinput/GameTextInput.class
-//
-// O sea `com.google.androidgamesdk.GameActivity`, y por eso el import documentado daba
-// "package androidx.games.activity does not exist". El artefacto se llama `androidx.games` pero
-// las clases viven en `com.google.androidgamesdk` (y el `GameTextInput` es justo lo que arregla
-// el teclado blando).
-import com.google.androidgamesdk.GameActivity;
+import android.app.NativeActivity;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
@@ -24,23 +14,39 @@ import android.util.Log;
 /**
  * La Activity del port (copiada de vectorcraft-android).
  *
- * MEDIDO, y es el cambio grande del port: `GameActivity` de androidx.games en vez de
- * `NativeActivity` de AOSP. Con `NativeActivity` el teclado blando se mostraba pero sus teclas
- * no llegaban, porque `NativeActivity` no es una `View` y por tanto no tiene `InputConnection`.
- * En el logcat se veía:
+ * <p>MEDIDO, y este es el punto en el que el port se dio la vuelta: esto es
+ * {@link NativeActivity} de AOSP, <b>no</b> {@code GameActivity} de androidx.games.
  *
- *     GoogleInputMethodService: onStartInputView() : Dummy InputConnection bound
- *     ImeTracker: onCancelled at PHASE_WM_ABORT_SHOW_IME_POST_LAYOUT
+ * <p>Se migrated a {@code GameActivity} porque seitchenso que {@code NativeActivity} no es una
+ * {@code View} y por tanto no tiene {@code InputConnection}, de modo que el teclado se mostraba
+ * pero sus teclas no llegaban. <b>Eso es falso en este telefono</b>: es exactamente lo que hace
+ * vectorcraft-android, y ahi el texto si se escribe. Los datos:
  *
- * `GameActivity` si tiene vista y por tanto `InputConnection`: el teclado funciona sin el puente
- * JNI que hacia falta antes (la clase `BaseInputConnection` y el metodo `nativeTecla` quedan
- * fuera; el texto llega solo por `Event::Text` de egui).
+ * <ul>
+ *   <li>El APK instalado de vectorcraft, extraido del movil, tiene en {@code classes3.dex}:
+ *       {@code Landroid/app/NativeActivity;}. No hay ninguna clase de androidx.games.</li>
+ *   <li>Los manifests de los dos ports son identicos en {@code windowSoftInputMode="adjustResize"}
+ *       y en los mismos {@code configChanges}. El manifest no era la causa.</li>
+ *   <li>Con {@code GameActivity}, Android manda el texto al {@code GameTextInput} de
+ *       androidx.games y <b>se come las teclas</b>: el logcat solo muestra
+ *       {@code D/gti.InputConnection: commitText: h} y ningun evento de teclado.</li>
+ *   <li>winit 0.30.13 en Android no traduce eso: {@code set_ime_purpose} esta vacio
+ *       ({@code src/platform_impl/android/mod.rs:926}) y {@code WindowEvent::Text} no existe en
+ *       todo el crate.</li>
+ *   <li>eframe 0.36.2 solo genera {@code Event::Text} en el backend web; egui 0.36.2 solo lo
+ *       consume.</li>
+ * </ul>
  *
- * `System.loadLibrary` explicito sigue siendo necesario: el load nativo de la Activity no lo ve
- * ART y sin esto las nativas dan `UnsatisfiedLinkError`.
- * SAF descartado: segunda Activity = ANR por el handshake de `android-activity`.
+ * <p>O sea: con {@code GameActivity} el texto se quedaba en un sitio del que nadie lo lee, y habia
+ * que escribir un puente a mano. Con {@code NativeActivity} Android manda <b>teclas</b> al
+ * {@code InputConnection} de AOSP, winit las recibe y el texto sale por ahi.
+ *
+ * <p>{@code System.loadLibrary} explicito sigue siendo necesario: el load nativo de la Activity no
+ * lo ve ART y sin esto las nativas dan {@code UnsatisfiedLinkError}.
+ *
+ * <p>SAF descartado: segunda Activity = ANR por el handshake de {@code android-activity}.
  */
-public class MainActivity extends GameActivity {
+public class MainActivity extends NativeActivity {
 
     private static final String TAG = "FigCraft";
     private static final String LIB = "figcraft_android";
@@ -53,12 +59,10 @@ public class MainActivity extends GameActivity {
     private static native void nativeListo();
     private static native String nativeGetClipboardText();
 
-    // MEDIDO: el puente JNI del teclado (`BaseInputConnection`, `vistaPuente`, `nativeTecla`,
-    // `onWindowFocusChanged`) **se ha eliminado al migrar a `GameActivity`**. Ese puente existia
-    // porque `NativeActivity` no es una `View` y no tiene `InputConnection`, asi que el teclado se
-    // mostraba pero sus teclas no llegaban ("Dummy InputConnection bound" en el logcat).
-    // `GameActivity` si tiene vista, luego el teclado llega solo por `Event::Text` de egui y el
-    // parche sobra.
+    // MEDIDO: con `NativeActivity` **no** hace falta puente de teclado. Las teclas llegan por el
+    // `InputConnection` de AOSP, que es justo lo que usa winit. Los puentes que se llegaron a
+    // escribir (`BaseInputConnection`, `nativeTecla`, y despues el de `GameTextInput` con
+    // `set_text_input_state`) se han borrado: no anadian nada.
 
     private static boolean hayPermiso() {
         try {

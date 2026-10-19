@@ -123,23 +123,8 @@ debug = false
 strip = true
 panic = "abort"
 
-# PATCH (figcraft-android): `android-activity` 0.6.1 aborta el proceso al leer el estado del
-# teclado blando. En `src/game_activity/mod.rs` hace
-#
-#     slice::from_raw_parts((*state).text_UTF8.cast(), (*state).text_length as usize)
-#
-# y `GameTextInput` devuelve `text_UTF8 == null` mientras no haya texto, asi que desde el primer
-# frame (antes de que el usuario toque nada) salta:
-#
-#     panicked at game_activity/mod.rs:717
-#     unsafe precondition(s) violated: slice::from_raw_parts requires the pointer to be aligned
-#     and non-null
-#     Fatal signal 6 (SIGABRT) in tid ... (android_main)
-#
-# `catch_unwind` no salva porque el panic cuelga de una `extern "C"` sin unwind. El parche trata el
-# buffer vacio como cadena vacia, que es un estado valido.
-#
-# MEDIDO que el PR que arregla esto en winit (#4451 "Add basic IME support for Android") sigue
-# abierto, asi que no hay version publicada que lo traiga. El diff es de tres lineas.
-[patch.crates-io]
-android-activity = { path = "patches/android-activity" }
+# MEDIDO que ya NO hace falta el parche de `android-activity`. Estaba puesto porque
+# `GameActivity` entrega el texto por `GameTextInput`, y `text_input_state()` hacia
+# `slice::from_raw_parts(text_UTF8, 0)` con el puntero nulo (SIGABRT al arrancar). Con
+# `native-activity` no se usa esa API: el texto llega como teclas por el `InputConnection` de AOSP
+# y lo entrega winit. El parche y `patches/` se han borrado.

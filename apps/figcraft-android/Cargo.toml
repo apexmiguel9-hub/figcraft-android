@@ -20,37 +20,57 @@ figcraft-format = { workspace = true }
 figcraft-text = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }
-# MEDIDO, y este es EL cambio grande del port: `android-game-activity` en vez de
-# `android-native-activity`.
+# MEDIDO, y este cambio dio la vuelta: se paso a `android-game-activity` y se ha vuelto a
+# `android-native-activity`, **igual que vectorcraft**, que si escribe texto en el mismo telefono.
 #
-# Con `native-activity` el teclado blando **se muestra pero sus teclas no llegan**: `NativeActivity`
-# de AOSP no es una `View`, luego no hay `InputConnection`, y el IME no tiene contra quien enviar el
-# texto. El logcat lo delata en bucle:
+# MEDIDO por que `game-activity` rompe el texto, con el APK instalado de vectorcraft a la vista:
 #
-#     GoogleInputMethodService: onStartInputView() : Dummy InputConnection bound
-#     ImeTracker: onRequestShow  at ORIGIN_CLIENT reason SHOW_SOFT_INPUT
-#     ImeTracker: onCancelled     at PHASE_WM_ABORT_SHOW_IME_POST_LAYOUT
+# * La superclase Java es distinta. Extrayendo el APK de vectorcraft del movil y mirando los `.dex`:
 #
-# Es el bug documentado en el HANDOFF (§4.3) y el que hace vectorcraft. `GameActivity` **si** tiene
-# vista y por tanto `InputConnection`, asi que el teclado funciona sin trucos.
+#       classes3.dex → Landroid/app/NativeActivity;
 #
-# MEDIDO que la feature `game-activity` existe en `android-activity` 0.6
-# (`Cargo.toml`: `game-activity = ["simd_cesu8"]`), y que la dependencia Java
-# `androidx.games:games-activity:4.4.0` si existe en el maven de Google (HTTP 200 comprobado).
-eframe = { workspace = true, features = ["default_fonts", "wgpu", "android-game-activity"] }
+#   o sea `android.app.NativeActivity`, NO `com.google.androidgamesdk.GameActivity`.
+#
+# * `GameActivity` manda el texto al `GameTextInput` de androidx.games y **se come las teclas**, asi
+#   que Android no genera ningun `KeyEvent`. En el logcat de figcraft solo aparece:
+#
+#       D/gti.InputConnection: commitText: h
+#
+#   y ningun evento de teclado.
+#
+# * MEDIDO en el codigo de winit 0.30.13 que ambos usan: el backend de Android **no entrega texto**.
+#   `src/platform_impl/android/mod.rs:926`:
+#
+#       pub fn set_ime_purpose(&self, _purpose: ImePurpose) {}    // vacio
+#
+#   y `grep -rn "WindowEvent::Text"` en todo winit da **cero resultados**: ese evento no existe.
+#
+# * MEDIDO en eframe 0.36.2: `Event::Text` solo se genera en `src/web/`. El backend nativo no.
+#
+# * MEDIDO en egui 0.36.2: `Event::Text` solo se *consume* (`text_edit/builder.rs:1145`), nunca se
+#   produce.
+#
+# O sea: con `GameActivity` el texto se queda en un lado de donde **nadie** lo lee, y habia que
+# escribir un puente a mano para sacarlo. Con `native-activity` Android manda **teclas** al
+# `InputConnection` de AOSP, winit las recibe (`InputEvent::KeyEvent`, `mod.rs:425`) y el texto
+# sale por ahi, sin inventar nada.
+#
+# MEDIDO tambien que los manifests de los dos ports son identicos en lo que suele decidir del
+# teclado
+# (`android:windowSoftInputMode="adjustResize"` y los mismos `configChanges`), asi que el manifest no
+# era la causa.
+#
+# MEDIDO que laidea de que "`NativeActivity` no tiene `InputConnection`, luego el teclado no llega"
+# es falsa en este telefono: es exactamente lo que hace vectorcraft, y ahi escribe.
+eframe = { workspace = true, features = ["default_fonts", "wgpu", "android-native-activity"] }
 egui = { workspace = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.22"
 winit = { workspace = true }
-# MEDIDO: `game-activity` es la feature que da la `GameActivity` de androidx.games, que si tiene
-# vista (y por tanto teclado blando) — ver el comentario de `eframe` mas arriba.
-#
 # MEDIDO que `android-activity` queda como dependencia **directa** y no solo transitiva de winit:
-# `AndroidApp::text_input_state()` y `set_text_input_state()` son la pieza que conecta el teclado
-# con egui (winit no expone el texto del `GameTextInput`), y `TextInputState`/`TextSpan` son los
-# tipos que hay que construir para inicializar ese buffer. Ver `src/lib.rs`, `teclado_a_eventos`.
-android-activity = { version = "0.6", default-features = false, features = ["game-activity"] }
+# `android_main` recibe el `AndroidApp` como argumento y hace falta para arrancar el bucle.
+android-activity = { version = "0.6", default-features = false, features = ["native-activity"] }
 android_logger = { workspace = true }
 # El browser de ficheros, dibujado DENTRO de la app.
 #

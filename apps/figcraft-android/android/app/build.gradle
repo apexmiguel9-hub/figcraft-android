@@ -87,45 +87,23 @@ android {
 }
 
 dependencies {
-    // MEDIDO: con `game-activity` **si** hace falta la dependencia Java. `GameActivity` viene de
-    // androidx.games (no del OS, como `NativeActivity`), asi que hay que declararla.
-    // La version 4.4.0 esta comprobada en el maven de Google (HTTP 200).
+    // MEDIDO: con `native-activity` **no** hace falta ninguna dependencia androidx salvo
+    // `annotation`, que es la misma que usa vectorcraft-android. Todo lo que se habia metido para
+    // `GameActivity` sobra:
+    //
+    // * `androidx.games:games-activity:4.4.0` — `GameActivity` venía de ahi. Con `NativeActivity`
+    //   (que es `android.app.NativeActivity`, del propio framework) no hay nada que declarar.
+    // * `androidx.core:core` — sin el salen 10 errores que parecen 10 bugs distintos, porque al no
+    //   poder resolver la superclase tampoco resolvian `super`, `getPackageName`, `startActivity`,
+    //   `getSystemService`, etc. Con la superclase del framework eso no ocurre.
+    // * `androidx.appcompat:appcompat` — era por `AppCompatActivity`, y con ella el tema
+    //   `Theme.AppCompat.NoActionBar` obligatorio (sin el, la app moria al arrancar).
+    // * `kotlin-stdlib-jdk7` / `jdk8` — solo estaban para silenciar el conflicto de Kotlin que
+    //   arrastraba `games-activity`. Sin androidx, no hay conflicto.
     //
     // MEDIDO que NO va `org.mozilla:android-activity`: ese artefacto no existe en ningun
-    // repositorio de Maven (404 en search.maven.org, repo1.maven.org y el maven de Google) y es el
-    // error que costo tiempo en el port de vectorcraft. El paquete real es `androidx.games`.
+    // repositorio de Maven (404 en search.maven.org, repo1.maven.org y el maven de Google).
     implementation 'androidx.annotation:annotation:1.7.1'
-    implementation 'androidx.games:games-activity:4.4.0'
-    // MEDIDO, y sin esto salen **10 errores** que parecen 10 bugs distintos y son uno solo:
-    //
-    //     MainActivity.java:43: error: cannot access OnApplyWindowInsetsListener
-    //     MainActivity.java:79: error: cannot find symbol  method getPackageName()
-    //     MainActivity.java:81: error: cannot find symbol  method startActivity(Intent)
-    //     MainActivity.java:91: error: cannot find symbol  variable super
-    //     MainActivity.java:103: error: cannot find symbol method getSystemService(String)
-    //     ... (10 en total)
-    //
-    // Todos son metodos de `Activity`/`Context`. La causa es que `GameActivity` (androidx.games)
-    // hereda de `androidx.core.app.ComponentActivity` —o algo por el estilo—, y **androidx.core**
-    // no venia como dependencia transitiva de forma utilizable. Sin la libreria, el compilador no
-    // puede ni resolver la superclase, asi que `super`, `getPackageName`, `startActivity`,
-    // `onCreate` y `onDestroy` salen como simbolos inexistentes.
-    implementation 'androidx.core:core:1.13.1'
-    // MEDIDO: con `androidx.core` el error siguiente es `cannot access AppCompatActivity`, o sea
-    // que la superclase de `GameActivity` es `androidx.appcompat.app.AppCompatActivity` y esa
-    // libreria tampoco estaba. Con las dos, `super`, `getPackageName`, `startActivity`,
-    // `getWindow`, `getResources`, `getSystemService`, `onCreate` y `onDestroy` resuelven.
-    implementation 'androidx.appcompat:appcompat:1.7.0'
-    // MEDIDO, y es el clasico conflicto de Kotlin al meter `appcompat` + `games-activity`:
-    //
-    //     Duplicate class kotlin.collections.jdk8.CollectionsJDK8Kt found in modules
-    //       kotlin-stdlib-1.8.22.jar and kotlin-stdlib-jdk8-1.6.21.jar
-    //
-    // Desde Kotlin 1.8 los modulos `kotlin-stdlib-jdk7`/`jdk8` estan **fusionados** dentro de
-    // `kotlin-stdlib`, asi que tenerlos ademas duplica las clases. `games-activity` arrastra los
-    // viejos (1.6.21). Se resuelven a la version que ya trae `appcompat`.
-    implementation('org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.8.22')
-    implementation('org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.8.22')
 }
 
 // El .so lo compila cargo (build-android-so.yml), no Gradle.
