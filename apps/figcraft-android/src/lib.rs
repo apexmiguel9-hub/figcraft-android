@@ -190,7 +190,11 @@ fn wgpu_solo_opengl() -> eframe::egui_wgpu::WgpuConfiguration {
     // se parte de su propio constructor y se cambia el campo. Es lo que menos puede romperse
     // al actualizar egui.
     let mut setup = eframe::egui_wgpu::WgpuSetupCreateNew::without_display_handle();
-    setup.instance_descriptor.backends = eframe::egui_wgpu::wgpu::Backends::GL;
+    // PRUEBA VULKAN: antes era `Backends::GL`. Se deja `GL` tambien permitido para ver si wgpu
+    // avisa de que no encuentra Vulkan, pero la preferencia es Vulkan (lo decide `PowerPreference`).
+    setup.instance_descriptor.backends =
+        eframe::egui_wgpu::wgpu::Backends::VULKAN | eframe::egui_wgpu::wgpu::Backends::GL;
+    setup.power_preference = eframe::egui_wgpu::wgpu::PowerPreference::HighPerformance;
     eframe::egui_wgpu::WgpuConfiguration { wgpu_setup: eframe::egui_wgpu::WgpuSetup::CreateNew(setup), ..Default::default() }
 }
 
@@ -228,6 +232,18 @@ pub fn run() -> eframe::Result {
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidApp) {
+    // PRUEBA VULKAN, y es lo que hace falta para diagnosticar: sin esto `wgpu` no dice nada,
+    // y el unico rastro del fallo es un `abort()` del driver sin contexto.
+    //
+    // * `RUST_LOG=info` enciende los logs de `wgpu`/`naga`/`ash` (adaptadores, features, pipelines).
+    // * `WGPU_BACKEND=vulkan` fuerza el backend por si la seleccion se cuela por otro sitio.
+    //
+    // `std::env::set_var` en Android llama a `setenv` de libc, que es lo que lee `wgpu`.
+    #[cfg(target_os = "android")]
+    unsafe {
+        std::env::set_var("RUST_LOG", "info");
+        std::env::set_var("WGPU_BACKEND", "vulkan");
+    }
     android_logger::init_once(android_logger::Config::default().with_max_level(log::LevelFilter::Info));
     // MEDIDO que hace falta, y no es opcional: `log` **descarta todo en silencio hasta que se
     // llama a `set_max_level`**, porque su `MAX_LOG_LEVEL_FILTER` empieza en `Off`. Y
