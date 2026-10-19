@@ -5,19 +5,27 @@ on:
     paths:
       - 'apps/figcraft-android/android/**'
       - '.github/workflows/build-apk.yml'
+  # MEDIDO, y aqui estaban los 2-3 APKs de mas: `types: [completed]` dispara **tambien cuando
+  # `build-android-so` falla**, y como este workflow baja "la ultima .so con exito" (de un run
+  # anterior), sale un APK con la `.so` vieja. Con el `if` de `apk` solo se construye cuando la
+  # `.so` ha compilado de verdad, que es lo que se quiere: **una `.so` -> un APK**.
   workflow_run:
     workflows: ['build-android-so']
     branches: [main]
     types: [completed]
   workflow_dispatch:
 
-env:
-  ANDROID_TARGET: aarch64-linux-android
-  ANDROID_ABI: arm64-v8a
-  SO_ARTIFACT: figcraft-android-so
+concurrency:
+  group: build-apk-${{ github.event.workflow_run.head_branch || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   apk:
+    # MEDIDO: este `if` es el que evita los APKs duplicados. Sin el, `workflow_run` con
+    # `types: [completed]` lanza tambien cuando la `.so` ha fallado.
+    if: >-
+      github.event_name != 'workflow_run'
+      || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-22.04
     timeout-minutes: 30
 
@@ -128,17 +136,13 @@ jobs:
           }
           echo "OK: la libreria esta dentro"
           unzip -p "$APK" lib/arm64-v8a/libfigcraft_android.so > /tmp/so.apk.so
-          # Encuentra llvm-readelf en el NDK (mismo criterio que en build-android-so).
           find_ndk_tool() {
             local name="$1"
             for cand in \
               "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/$name" \
               "$ANDROID_NDK_HOME/prebuilt/linux-x86_64/bin/$name" \
               $(find "$ANDROID_NDK_HOME" -name "$name" -type f 2>/dev/null | head -1); do
-              if [ -x "$cand" ]; then
-                echo "$cand"
-                return 0
-              fi
+              if [ -x "$cand" ]; then echo "$cand"; return 0; fi
             done
             return 1
           }
@@ -185,3 +189,9 @@ jobs:
           path: apps/figcraft-android/android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 30
+
+env:
+  ANDROID_TARGET: aarch64-linux-android
+  ANDROID_ABI: arm64-v8a
+  SO_ARTIFACT: figcraft-android-so
+

@@ -111,6 +111,11 @@ dependencies {
     // puede ni resolver la superclase, asi que `super`, `getPackageName`, `startActivity`,
     // `onCreate` y `onDestroy` salen como simbolos inexistentes.
     implementation 'androidx.core:core:1.13.1'
+    // MEDIDO: con `androidx.core` el error siguiente es `cannot access AppCompatActivity`, o sea
+    // que la superclase de `GameActivity` es `androidx.appcompat.app.AppCompatActivity` y esa
+    // libreria tampoco estaba. Con las dos, `super`, `getPackageName`, `startActivity`,
+    // `getWindow`, `getResources`, `getSystemService`, `onCreate` y `onDestroy` resuelven.
+    implementation 'androidx.appcompat:appcompat:1.7.0'
 }
 
 // El .so lo compila cargo (build-android-so.yml), no Gradle.
