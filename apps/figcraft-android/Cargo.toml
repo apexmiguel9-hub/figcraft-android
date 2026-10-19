@@ -20,13 +20,32 @@ figcraft-format = { workspace = true }
 figcraft-text = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }
-eframe = { workspace = true, features = ["default_fonts", "wgpu", "android-native-activity"] }
+# MEDIDO, y este es EL cambio grande del port: `android-game-activity` en vez de
+# `android-native-activity`.
+#
+# Con `native-activity` el teclado blando **se muestra pero sus teclas no llegan**: `NativeActivity`
+# de AOSP no es una `View`, luego no hay `InputConnection`, y el IME no tiene contra quien enviar el
+# texto. El logcat lo delata en bucle:
+#
+#     GoogleInputMethodService: onStartInputView() : Dummy InputConnection bound
+#     ImeTracker: onRequestShow  at ORIGIN_CLIENT reason SHOW_SOFT_INPUT
+#     ImeTracker: onCancelled     at PHASE_WM_ABORT_SHOW_IME_POST_LAYOUT
+#
+# Es el bug documentado en el HANDOFF (§4.3) y el que hace vectorcraft. `GameActivity` **si** tiene
+# vista y por tanto `InputConnection`, asi que el teclado funciona sin trucos.
+#
+# MEDIDO que la feature `game-activity` existe en `android-activity` 0.6
+# (`Cargo.toml`: `game-activity = ["simd_cesu8"]`), y que la dependencia Java
+# `androidx.games:games-activity:4.4.0` si existe en el maven de Google (HTTP 200 comprobado).
+eframe = { workspace = true, features = ["default_fonts", "wgpu", "android-game-activity"] }
 egui = { workspace = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.22"
 winit = { workspace = true }
-android-activity = { version = "0.6", default-features = false, features = ["native-activity"] }
+# MEDIDO: `game-activity` es la feature que da la `GameActivity` de androidx.games, que si tiene
+# vista (y por tanto `InputConnection`) — ver el comentario de `eframe` mas arriba.
+android-activity = { version = "0.6", default-features = false, features = ["game-activity"] }
 android_logger = { workspace = true }
 # El browser de ficheros, dibujado DENTRO de la app.
 #

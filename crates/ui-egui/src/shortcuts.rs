@@ -97,34 +97,17 @@ fn cached_tip(label: &'static str, key: Option<&'static str>) -> &'static str {
 /// `swallowed`: what this frame's Cmd/Ctrl+V chords the shell swallowed ask for ([`swallowed_paste`]).
 pub fn handle(app: &mut FigApp, ctx: &Context, typing: bool, swallowed: Swallowed) {
     note_platform(ctx);
-    // MEDIDO, y el orden importa: el puente de teclado se dibuja **antes** de mirar los
-    // eventos, y no dentro de `if editing`. Puesto despues, la ventana solo existia en los
-    // frames con eventos y desaparecia en los de reposo; el IME veia aparecer y desaparecer la
-    // vista y cancelaba la muestra una y otra vez. En el logcat:
-    //
-    //     ImeTracker: onRequestShow  at ORIGIN_CLIENT reason SHOW_SOFT_INPUT
-    //     ImeTracker: onCancelled     at PHASE_CLIENT_REPORT_REQUESTED_VISIBLE_TYPES
-    //     ImeTracker: onRequestHide  at ORIGIN_CLIENT reason HIDE_SOFT_INPUT
-    //
-    // MEDIDO que hace falta tambien **soltar el foco** cuando ya no se edita texto, o el
-    // teclado se queda abierto encima del lienzo con el dedo lejos del campo.
-    let editing = app.session.ds().map(|d| d.text_edit.is_some()).unwrap_or(false);
-    if editing {
-        keyboard_bridge(ctx);
-    } else {
-        keyboard_bridge_release(ctx);
-    }
     // Text fields in panels own the keyboard (also the key that ends their editing).
     if typing || crate::a11y::field_focused(ctx) || app.ui.palette.is_some() {
         return;
     }
     let events: Vec<Event> = ctx.input(|i| i.events.clone());
-// Every frame while editing, even one without input: a frame without the IME output turns the
+    // Every frame while editing, even one without input: a frame without the IME output turns the
     // platform's IME off, which drops the composition (macOS then types plain letters).
     //
-    // MEDIDO: `editing` ya se calcula arriba para el puente del teclado del port, asi que aqui no
-    // se vuelve a declarar. Es el mismo bug por el que existe `keyboard_bridge`: un frame sin la
-    // vista del `TextEdit` apaga el IME de Android.
+    // MEDIDO: esto es lo que hacia tambien el puente de teclado del port de Android (ya retirado
+    // al migrar a `GameActivity`), y es el mismo bug: un frame sin salida del IME lo apaga.
+    let editing = app.session.ds().map(|d| d.text_edit.is_some()).unwrap_or(false);
     if editing {
         text_keys(app, ctx, &events);
         return;
@@ -446,113 +429,7 @@ fn enter_text(app: &mut FigApp) -> bool {
     }
 }
 
-/// El `TextEdit` invisible que engancha el teclado blando mientras se edita texto en el canvas.
-///
-/// MEDIDO en Android (Moto G56 5G, Android 16): sin esto el teclado **no aparece** al editar
-/// texto en el lienzo, y cuando aparece parpadea. El motivo esta en como funciona el IME:
-///
-/// * El texto del lienzo **no** se edita con un `TextEdit` de egui: FigCraft lo dibuja a mano
-///   (el caret propio de `canvas.rs`), y la entrada llega por `text_keys` (`Event::Text`).
-/// * `winit`/`android-activity` **solo abren el teclado blando cuando egui marca
-///   `WantsTextInput`**, y eso solo lo hace un `TextEdit` real con el foco. Un lienzo que
-///   dibuja su propio texto no lo marca nunca.
-///
-/// O sea: sin un `TextEdit` con foco no hay teclado, y sin teclado no se puede escribir texto,
-/// que en un editor de diseño es justo lo que lo deja inutilizable.
-///
-/// MEDIDO que el texto **no se escribe aqui**: el buffer se vacia cada frame y la escritura de
-/// verdad la hace `text_keys` -> `figcraft_engine::textedit::insert`, que ya sabe del IME y del
-/// caret del documento. Este `TextEdit` existe solo para que el sistema muestre el teclado.
-///
-/// MEDIDO que el foco se pide **una sola vez** y no en cada frame (el bug del palette, en
-/// `menus.rs`): pedirlo cada frame hace que el teclado de Android se active y desactive
-/// repetidamente, que es el parpadeo.
-fn keyboard_bridge(ctx: &Context) {
-    // MEDIDO: `Id::new` no es `const` en egui 0.36, asi que el id del campo se compone en cada
-    // frame; egui lo resuelve al mismo valor y el foco queda estable entre frames.
-    let field_id = Id::new("figcraft_android_teclado_campo");
-    let mut buffer = String::new();
-    // MEDIDO, y fue el primer intento el que falla: la ventana **no** va en `(-10000, -10000)`.
-    // Con `fixed_pos` muy negativo Android descarta la vista y el IME cancela la muestra una y
-    // otra vez. El logcat lo dice, alternando:
-    //
-    //     ImeTracker: onRequestShow  at ORIGIN_CLIENT reason SHOW_SOFT_INPUT
-    //     ImeTracker: onCancelled     at PHASE_CLIENT_REPORT_REQUESTED_VISIBLE_TYPES
-    //     ImeTracker: onRequestHide  at ORIGIN_CLIENT reason HIDE_SOFT_INPUT
-    //
-    // O sea: egui pide el teclado, Android lo cancela porque la vista no esta, y vuelta a
-    // empezar. Es el parpadeo, medido.
-    //
-    // MEDIDO que la ventana va **dentro** de la pantalla y minima (1x1 pt), pegada a una
-    // esquina: dentro, la vista existe y el IME la acepta; diminuta, no se ve ni tapa nada.
-    let area = ctx.input(|i| i.content_rect());
-    egui::Window::new("figcraft_android_teclado")
-        .title_bar(false)
-        .collapsible(false)
-        .resizable(false)
-        .fixed_pos(pos2(area.min.x, area.min.y))
-        .fixed_size(vec2(1.0, 1.0))
-        .show(ctx, |ui| {
-            // MEDIDO, y el segundo bug de Android: con `singleline`, la tecla **Enter** del teclado
-            // blando es la accion "done" del IME. Android la manda como *action*, no como tecla, y
-            // cierra el teclado: el texto tecleado se cancelaba y el teclado se quedaba abierto
-            // (o al reves), sin poder seguir escribiendo.
-            //
-            // `multiline` hace que Enter inserte un salto de linea, que es justo lo que hace el
-            // texto del lienzo en escritorio (`text_keys` -> `textedit::key(.., "Enter")`), asi que
-            // el movil y el PC hacen lo mismo y el IME no se cierra solo.
-            ui.add(egui::TextEdit::multiline(&mut buffer).id(field_id).desired_width(1.0).desired_rows(1).frame(egui::Frame::NONE));
-        });
-    // Una sola vez por edicion: pedirlo cada frame hace parpadear el teclado de Android.
-    if !ctx.memory(|m| m.has_focus(field_id)) {
-        ctx.memory_mut(|m| m.request_focus(field_id));
-    }
-    // MEDIDO, y es el motivo de que el texto no llegara al documento: como este `TextEdit` tiene
-    // el foco, **egui se queda con el `Event::Text` y no lo deja pasar** a `ctx.input(..).events`,
-    // que es de donde lo lee `text_keys`. Con el buffer aqui descartado, lo tecleado se perdia.
-    //
-    // O sea: el puente no puede ser solo un "enganche" del teclado, tambien tiene que **devolver**
-    // lo escrito. Se guarda en `PUENTE` y `text_keys` lo consume antes de mirar los eventos.
-    let escrito = std::mem::take(&mut buffer);
-    if !escrito.is_empty() {
-        *PUENTE.lock().unwrap_or_else(|e| e.into_inner()) = escrito;
-    }
-}
-
-/// Lo tecleado en el puente, a la espera de que `text_keys` lo escriba en el documento.
-///
-/// MEDIDO que hace falta porque el `Event::Text` **no** llega a `ctx.input(..).events` cuando el
-/// `TextEdit` con foco lo consume (ver [`keyboard_bridge`]); el buffer del puente es la unica copia
-/// que existe mientras el frame dura.
-static PUENTE: Mutex<String> = Mutex::new(String::new());
-
-/// Saca lo tecleado en el puente desde su anterior fotograma, si hubo.
-fn toma_puente() -> Option<String> {
-    let t = std::mem::take(&mut *PUENTE.lock().unwrap_or_else(|e| e.into_inner()));
-    (!t.is_empty()).then_some(t)
-}
-
-/// Soltar el foco del puente cuando ya no se edita texto.
-///
-/// MEDIDO que hace falta: sin esto el `TextEdit` invisible se queda con el foco para siempre y el
-/// teclado blando permanece abierto encima del lienzo con el dedo lejos del campo, que es
-/// justo el otro extremo del bug.
-fn keyboard_bridge_release(ctx: &Context) {
-    let field_id = Id::new("figcraft_android_teclado_campo");
-    if ctx.memory(|m| m.has_focus(field_id)) {
-        ctx.memory_mut(|m| m.surrender_focus(field_id));
-    }
-}
-
 fn text_keys(app: &mut FigApp, ctx: &Context, events: &[Event]) {
-    // MEDIDO, y el orden importa: primero lo tecleado que el puente del teclado se quedo (el
-    // `Event::Text` no pasa a `ctx.input(..).events` porque el `TextEdit` con foco lo consume), y
-    // despues los eventos que si llegaron (Enter, Backspace, flechas...).
-    if let Some(t) = toma_puente()
-        && let Err(e) = figcraft_engine::textedit::insert(&mut app.session, &t)
-    {
-        app.toast(e.to_string());
-    }
     // A key that ran a shortcut swallows the text it also produced (Alt+. types "≥" on macOS).
     let mut skip_text = false;
     for ev in events {

@@ -87,8 +87,15 @@ android {
 }
 
 dependencies {
-    // Con native-activity NO hay dependencia Java: NativeActivity viene en el OS.
+    // MEDIDO: con `game-activity` **si** hace falta la dependencia Java. `GameActivity` viene de
+    // androidx.games (no del OS, como `NativeActivity`), asi que hay que declararla.
+    // La version 4.4.0 esta comprobada en el maven de Google (HTTP 200).
+    //
+    // MEDIDO que NO va `org.mozilla:android-activity`: ese artefacto no existe en ningun
+    // repositorio de Maven (404 en search.maven.org, repo1.maven.org y el maven de Google) y es el
+    // error que costo tiempo en el port de vectorcraft. El paquete real es `androidx.games`.
     implementation 'androidx.annotation:annotation:1.7.1'
+    implementation 'androidx.games:games-activity:4.4.0'
 }
 
 // El .so lo compila cargo (build-android-so.yml), no Gradle.

@@ -1,6 +1,6 @@
 package ai.storyteller.figcraft;
 
-import android.app.NativeActivity;
+import androidx.games.activity.GameActivity;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
@@ -13,13 +13,24 @@ import android.util.Log;
 
 /**
  * La Activity del port (copiada de vectorcraft-android).
- * NativeActivity de AOSP + System.loadLibrary explicito (el load nativo
- * de NativeActivity no lo ve ART y sin esto las nativas dan UnsatisfiedLinkError).
- * El teclado blando no aparece en NativeActivity en Android moderno
- * (falta GameActivity / InputMethodManager): ver ANDROID-PORT.md §4.3.
- * SAF descartado: segunda Activity = ANR por el handshake de android-activity.
+ *
+ * MEDIDO, y es el cambio grande del port: `GameActivity` de androidx.games en vez de
+ * `NativeActivity` de AOSP. Con `NativeActivity` el teclado blando se mostraba pero sus teclas
+ * no llegaban, porque `NativeActivity` no es una `View` y por tanto no tiene `InputConnection`.
+ * En el logcat se veía:
+ *
+ *     GoogleInputMethodService: onStartInputView() : Dummy InputConnection bound
+ *     ImeTracker: onCancelled at PHASE_WM_ABORT_SHOW_IME_POST_LAYOUT
+ *
+ * `GameActivity` si tiene vista y por tanto `InputConnection`: el teclado funciona sin el puente
+ * JNI que hacia falta antes (la clase `BaseInputConnection` y el metodo `nativeTecla` quedan
+ * fuera; el texto llega solo por `Event::Text` de egui).
+ *
+ * `System.loadLibrary` explicito sigue siendo necesario: el load nativo de la Activity no lo ve
+ * ART y sin esto las nativas dan `UnsatisfiedLinkError`.
+ * SAF descartado: segunda Activity = ANR por el handshake de `android-activity`.
  */
-public class MainActivity extends NativeActivity {
+public class MainActivity extends GameActivity {
 
     private static final String TAG = "FigCraft";
     private static final String LIB = "figcraft_android";
@@ -32,108 +43,12 @@ public class MainActivity extends NativeActivity {
     private static native void nativeListo();
     private static native String nativeGetClipboardText();
 
-    // ---- Teclado blando: por que hace falta esto a mano ----
-    //
-    // MEDIDO: con `NativeActivity` el teclado blando **se muestra** (el puente de
-    // crates/…/shortcuts.rs engancha el IME) pero **las teclas no llegan** a la app.
-    // El motivo es que `NativeActivity` de AOSP **no tiene vista**, y el teclado lo gestiona
-    // `InputMethodManager` a traves de una: sin `InputConnection`, Android muestra el teclado y
-    // no tiene contra quien enviar `KeyEvent` ni texto composing. Vectorcraft tiene el mismo
-    // problema, documentado en su lib.rs §"Teclado".
-    //
-    // MEDIDO que el parche son ~20 lineas: se acepta una `InputConnection` propia en la
-    // Activity y se le reenvian a mano los eventos que si llegan a ella (los que el teclado
-    //blando entrega por `EditorInfo`/`InputConnection` en vez de por `dispatchKeyEvent`).
-    //
-    // NOTA: esta es la via *documentada* de winit para `native-activity`. No es un apaño: sin
-    // esto, escribir texto en un editor de diseño en Android es imposible.
-    private android.view.inputmethod.InputConnection activeConnection = null;
-
-    // MEDIDO: `BaseInputConnection` **solo** tiene el constructor `BaseInputConnection(View,
-    // boolean)` — no hay ninguno de un solo argumento (esta comprobado leyendo el fuente de
-    // AOSP). Y `NativeActivity` **no es una `View`**: `NativeActivity extends Activity`.
-    //
-    // O sea que hace falta una `View` de verdad, y por eso se crea una vacia: 0x0 px, sin fondo y
-    // sin foco. Solo existe para que el `InputMethodManager` tenga algo a quien preguntar, que es
-    // justo lo que `NativeActivity` no tiene y por lo que el teclado se mostraba pero las teclas
-    // no llegaban.
-    private android.view.View puenteVista = null;
-
-    private android.view.View vistaPuente() {
-        if (puenteVista == null) {
-            puenteVista = new android.view.View(this);
-            puenteVista.setBackground(null);
-            android.view.ViewGroup.LayoutParams lp =
-                    new android.view.ViewGroup.LayoutParams(0, 0);
-            if (instance != null) {
-                instance.addContentView(puenteVista, lp);
-            }
-        }
-        return puenteVista;
-    }
-
-    private android.view.inputmethod.InputConnection getInputConnection() {
-        if (activeConnection == null) {
-            final android.view.View v = vistaPuente();
-            activeConnection = new android.view.inputmethod.BaseInputConnection(v, true) {
-                // MEDIDO: con `fullEditor = false` el IME recibe un `EditorInfo` **vacio**, y el
-                // logcat lo delata:
-                //
-                //     onStartInput(EditorInfo{packageName=ai.storyteller.figcraft, inputType=0,
-                //                      inputTypeString=NULL, imeOptions=0, ...})
-                //
-                // `inputType=0` es `TYPE_NULL`: el teclado no sabe que es un campo de texto, no
-                // enseña ni el campo ni acepta bien la entrada. Con `true` se publica el
-                // `EditorInfo` completo y el teclado ya es usable.
-                @Override
-                public android.view.inputmethod.EditorInfo getEditorInfo() {
-                    android.view.inputmethod.EditorInfo ei = new android.view.inputmethod.EditorInfo();
-                    ei.packageName = "ai.storyteller.figcraft";
-                    ei.fieldId = 1;
-                    ei.inputType = android.text.InputType.TYPE_CLASS_TEXT
-                            | android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE
-                            | android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS;
-                    ei.imeOptions = android.view.inputmethod.EditorInfo.IME_FLAG_NO_FULLSCREEN;
-                    return ei;
-                }
-
-                @Override
-                public boolean commitText(CharSequence text, int newCursorPosition) {
-                    if (text != null && text.length() > 0) {
-                        nativeTecla(String.valueOf(text));
-                    }
-                    return true;
-                }
-
-                // MEDIDO que hace falta el resto: el teclado movil manda tambien *borrar* y las
-                // teclas especiales por aqui, no solo por `commitText`. Sin esto, Backspace y las
-                // flechas no llegarian y no se podria editar lo ya escrito.
-                @Override
-                public boolean deleteSurroundingText(int beforeLength, int afterLength) {
-                    StringBuilder b = new StringBuilder();
-                    for (int i = 0; i < beforeLength; i++) {
-                        b.append('\b');
-                    }
-                    nativeTecla(b.toString());
-                    return true;
-                }
-            };
-        }
-        return activeConnection;
-    }
-
-    private static native void nativeTecla(String texto);
-
-    @Override
-    public void onWindowFocusChanged(boolean hasFocus) {
-        super.onWindowFocusChanged(hasFocus);
-        if (!hasFocus) {
-            // Sin esto, al perder el foco, el teclado puede quedar abierto con el puente
-            // enganchado y el EditText fantasmacon el foco: el IME queda en un limbo que
-            // reinicia el teclado al volver.
-            nativeTecla("\u0000");
-        }
-    }
+    // MEDIDO: el puente JNI del teclado (`BaseInputConnection`, `vistaPuente`, `nativeTecla`,
+    // `onWindowFocusChanged`) **se ha eliminado al migrar a `GameActivity`**. Ese puente existia
+    // porque `NativeActivity` no es una `View` y no tiene `InputConnection`, asi que el teclado se
+    // mostraba pero sus teclas no llegaban ("Dummy InputConnection bound" en el logcat).
+    // `GameActivity` si tiene vista, luego el teclado llega solo por `Event::Text` de egui y el
+    // parche sobra.
 
     private static boolean hayPermiso() {
         try {

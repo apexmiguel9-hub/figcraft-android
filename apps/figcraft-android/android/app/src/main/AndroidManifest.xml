@@ -13,6 +13,9 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.FigCraft">
 
+        <!-- MEDIDO: `GameActivity` de androidx.games trae el `SurfaceView` y el `InputConnection`
+             que `NativeActivity` no tiene, que es lo que hace funcionar el teclado blando.
+             El meta-data `android.app.lib_name` lo sigue leyendo winit para el punto de entrada. -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
