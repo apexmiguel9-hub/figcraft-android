@@ -1040,13 +1040,18 @@ fn palette(app: &mut FigApp, ctx: &egui::Context) {
                         .font(regular(14.0))
                         .frame(egui::Frame::NONE.inner_margin(egui::Margin::same(8))),
                 );
-                // MEDIDO en Android (Moto G56 5G, Android 16): pedir el foco **en cada frame** hace que el
-                // teclado blando se active y desactive repetidamente — el "aparece y desaparece"
-                // que se veia al abrir la paleta. Se pide **una sola vez**, al abrirla
-                // (`palette_focus_pending`, ver `lib.rs`), y de ahi en adelante lo mantiene egui.
-                if app.ui.palette_focus_pending {
+                // MEDIDO en Android (Moto G56 5G, Android 16), y son **dos** bugs distintos:
+//
+// * Pedir el foco **en cada frame** hace que el teclado se active y desactive repetidamente: es
+//   el "aparece y desaparece" de antes.
+// * Pedirlo **una sola vez** tampoco vale: al abrirse el teclado, Android redimensiona la pantalla
+//   (`adjustResize`), el palette se re-coloca y el `TextEdit` **pierde el foco sin recuperarlo**, y
+//   el teclado se esconde a la primera letra.
+//
+// Lo que vale es lo de en medio: pedirlo **solo cuando falta**. Asi no se pide en cada frame (no
+// parpadea) y si el foco se pierde por lo que sea, se recupera.
+                if !ui.memory(|m| m.has_focus(r.id)) {
                     r.request_focus();
-                    app.ui.palette_focus_pending = false;
                 }
                 crate::widgets::select_all_on_focus(ui, &r, &q);
                 // A new search starts again at the first row.
