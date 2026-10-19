@@ -80,15 +80,18 @@ fn teclado_a_eventos() -> Vec<egui::Event> {
     }
 
     // MEDIDO que `GameTextInput` devuelve el buffer **entero**, no un delta. En el logcat se ve
-    // como crece:
+    // como crece con cada tecla:
     //
     //     D/gti.InputConnection: commitText: h, new pos = 1
     //     D/gti.InputConnection: commitText: o, new pos = 1
     //
-    // O sea: el buffer va "h", luego "ho"… y hay que quedarse con lo que se anade. Se compara con lo
-    // puesto antes y, si el buffer empieza por lo anterior, solo se emite lo nuevo; si no (el
-    // usuario borro, o movio el caret), se emite el buffer entero y se re-sincroniza.
-    let ya = TEXTO_YA_PUESTO.lock().map(|mut s| std::mem::take(&mut *s)).unwrap_or_default();
+    // O sea: el buffer va "h", luego "ho"… y hay que quedarse con **lo que se anade**, que es lo
+    // unico que no esta ya escrito en el documento.
+    //
+    // MEDIDO que comparar con `mem::take` no vale (se repite el texto en cada frame): el buffer de
+    // `GameTextInput` lo gestiona Java y no se vacia cuando egui consume el evento, asi que hay que
+    // guardarlo **sin vaciarlo** y comparar contra el valor completo anterior.
+    let ya = TEXTO_YA_PUESTO.lock().map(|s| s.clone()).unwrap_or_default();
     if actual == ya {
         return Vec::new();
     }
@@ -101,6 +104,7 @@ fn teclado_a_eventos() -> Vec<egui::Event> {
     }
     log::info!("teclado: {nuevo:?} -> Event::Text");
     vec![egui::Event::Text(nuevo)]
+
 }
 
 /// El `eframe::App` del port. Reenvia a `FigApp`, que ya trae 100% de la UI.
