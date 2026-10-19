@@ -110,6 +110,17 @@ pub fn handle(app: &mut FigApp, ctx: &Context, typing: bool, swallowed: Swallowe
     // Every frame while editing, even one without input: a frame without the IME output turns the
     // platform's IME off, which drops the composition (macOS then types plain letters).
     let editing = app.session.ds().map(|d| d.text_edit.is_some()).unwrap_or(false);
+
+    // MEDIDO, DIAGNOSTICO: en Android el texto llega a egui (`Event::Text`) pero no se escribe nada en
+    // el lienzo. Este log dice que rama se coje, para no seguir adivinando.
+    if events.iter().any(|e| matches!(e, Event::Text(_))) {
+        log::info!(
+            "DIAG handle: editing={editing} typing={typing} focus={} paleta={}",
+            crate::a11y::field_focused(ctx),
+            app.ui.palette.is_some()
+        );
+    }
+
     if editing {
         text_keys(app, ctx, &events);
         return;
@@ -446,7 +457,10 @@ fn text_keys(app: &mut FigApp, ctx: &Context, events: &[Event]) {
                     skip_text = false;
                     continue;
                 }
+                // MEDIDO, DIAGNOSTICO: se ve que texto entra y que devuelve el motor.
+                log::info!("DIAG insert: {t:?}");
                 if let Err(e) = figcraft_engine::textedit::insert(&mut app.session, t) {
+                    log::info!("DIAG insert ERROR: {e}");
                     app.toast(e.to_string());
                 }
             }
