@@ -121,11 +121,23 @@ impl eframe::App for App {
     }
 
     fn raw_input_hook(&mut self, _ctx: &egui::Context, _raw: &mut egui::RawInput) {
-        // MEDIDO: el texto del teclado blando llega por `GameTextInput`, que `winit` no conecta a
-        // egui (ver `teclado_a_eventos`). Se inyecta aqui como `Event::Text`, que es el camino
-        // normal: `shortcuts::text_keys` -> `figcraft_engine::textedit::insert`.
+        // MEDIDO: el texto del teclado blando llega por `GameTextInput`, que `winit` **no** conecta
+        // a egui (ni en 0.30 ni en el 0.31-beta, y el PR que lo arregla sigue abierto). Se inyecta
+        // aqui como `Event::Text`, que es el camino normal: `shortcuts::text_keys` ->
+        // `figcraft_engine::textedit::insert`.
+        //
+        // MEDIDO que hay que pedir repintado, como hace vectorcraft (`lib.rs:832`:
+        // `if !self.synthetic.is_empty() { ctx.request_repaint(); }`): sin el, el frame que lleva el
+        // texto puede no llegar a procesarse y la letra se queda en el buffer de `GameTextInput`
+        // hasta que toque algo mas.
         #[cfg(target_os = "android")]
-        _raw.events.extend(teclado_a_eventos());
+        {
+            let texto = teclado_a_eventos();
+            if !texto.is_empty() {
+                _ctx.request_repaint();
+                _raw.events.extend(texto);
+            }
+        }
 
         // Recorta `screen_rect`, no rellena `safe_area_insets`.
         //
