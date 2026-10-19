@@ -116,6 +116,16 @@ dependencies {
     // libreria tampoco estaba. Con las dos, `super`, `getPackageName`, `startActivity`,
     // `getWindow`, `getResources`, `getSystemService`, `onCreate` y `onDestroy` resuelven.
     implementation 'androidx.appcompat:appcompat:1.7.0'
+    // MEDIDO, y es el clasico conflicto de Kotlin al meter `appcompat` + `games-activity`:
+    //
+    //     Duplicate class kotlin.collections.jdk8.CollectionsJDK8Kt found in modules
+    //       kotlin-stdlib-1.8.22.jar and kotlin-stdlib-jdk8-1.6.21.jar
+    //
+    // Desde Kotlin 1.8 los modulos `kotlin-stdlib-jdk7`/`jdk8` estan **fusionados** dentro de
+    // `kotlin-stdlib`, asi que tenerlos ademas duplica las clases. `games-activity` arrastra los
+    // viejos (1.6.21). Se resuelven a la version que ya trae `appcompat`.
+    implementation('org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.8.22')
+    implementation('org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.8.22')
 }
 
 // El .so lo compila cargo (build-android-so.yml), no Gradle.
