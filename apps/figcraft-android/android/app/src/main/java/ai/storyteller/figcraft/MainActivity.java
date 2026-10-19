@@ -1,6 +1,16 @@
 package ai.storyteller.figcraft;
 
-import androidx.games.activity.GameActivity;
+// MEDIDO, y no es lo que dice la documentacion: el paquete **no** es `androidx.games.activity`.
+// Abriendo el `.aar` de `androidx.games:games-activity:4.4.0` y listando el `classes.jar`:
+//
+//     com/google/androidgamesdk/GameActivity.class
+//     com/google/androidgamesdk/gametextinput/GameTextInput.class
+//
+// O sea `com.google.androidgamesdk.GameActivity`, y por eso el import documentado daba
+// "package androidx.games.activity does not exist". El artefacto se llama `androidx.games` pero
+// las clases viven en `com.google.androidgamesdk` (y el `GameTextInput` es justo lo que arregla
+// el teclado blando).
+import com.google.androidgamesdk.GameActivity;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
