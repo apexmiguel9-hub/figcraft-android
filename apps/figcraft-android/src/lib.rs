@@ -71,32 +71,9 @@ fn teclado_a_eventos() -> Vec<egui::Event> {
     let app_guard = ANDROID_APP.lock().ok().and_then(|mut g| g.take());
     let Some(app) = app_guard else { return Vec::new() };
 
-    // MEDIDO, y esto va **antes** de leer porque sin el la app **muere al arrancar**.
-    // `text_input_state()` de `android-activity` 0.6.1 aborta el proceso si el buffer de
-    // `GameTextInput` esta vacio:
-    //
-    //     panicked at android-activity-0.6.1/src/game_activity/mod.rs:717
-    //     unsafe precondition(s) violated: slice::from_raw_parts requires the pointer to be
-    //     aligned and non-null
-    //     Fatal signal 6 (SIGABRT) in tid ... (android_main)
-    //
-    // El codigo ofensivo es `slice::from_raw_parts(text_UTF8, text_length)` (`mod.rs:715-717`) y
-    // `text_UTF8` es null hasta que hay texto. Como `raw_input_hook` corre desde el primer frame,
-    // el panic salta antes de que el usuario toque nada.
-    //
-    // MEDIDO que `catch_unwind` **no** vale: el panic cuelga de una `extern "C"` (sin unwind) y el
-    // proceso aborta igual con "thread caused non-unwinding panic".
-    //
-    // MEDIDO que la solucion es **inicializar el buffer** con `set_text_input_state`, que si es
-    // publico y no aborta: asi `text_UTF8` deja de ser null y la lectura ya no revienta. Un texto
-    // vacio con la seleccion en 0 es un estado valido de `GameTextInput`.
-    let vacio = android_activity::input::TextInputState {
-        text: String::new(),
-        selection: android_activity::input::TextSpan { start: 0, end: 0 },
-        compose_region: None,
-    };
-    app.set_text_input_state(vacio);
-
+    // MEDIDO que el buffer vacio ya no revienta porque el crate va parcheado (ver
+    // `patches/android-activity`): el original hace `slice::from_raw_parts(text_UTF8, 0)` con
+    // `text_UTF8` nulo, que es comportamiento indefinido y abortaba el proceso al arrancar.
     let actual = app.text_input_state().text;
     if let Ok(mut g) = ANDROID_APP.lock() {
         *g = Some(app);
