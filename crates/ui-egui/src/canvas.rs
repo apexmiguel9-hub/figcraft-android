@@ -218,10 +218,28 @@ pub fn show(app: &mut FigApp, ui: &mut Ui, worker: &mut Worker) {
         } else {
             egui::TextureOptions::LINEAR
         };
-        match &mut app.canvas.texture {
-            Some(t) => t.set(done.image, filter),
-            None => app.canvas.texture = Some(ctx.load_texture("figcraft-canvas", done.image, filter)),
-        }
+        // PRUEBA, DIAGNOSTICO: se mide cuanto se va en subir la textura a la GPU. Con `frameMs` de
+        // 1 ms y `renderMs` de 8 ms, los fps (27-34) dicen que el resto del frame se va aqui.
+        let t_subida = std::time::Instant::now();
+        let (px, w, h) = match &mut app.canvas.texture {
+            Some(t) => {
+                let (w, h) = (done.image.width, done.image.height);
+                t.set(done.image, filter);
+                (t.options().mipmap_mode.is_some(), w, h)
+            }
+            None => {
+                let (w, h) = (done.image.width, done.image.height);
+                app.canvas.texture = Some(ctx.load_texture("figcraft-canvas", done.image, filter));
+                (false, w, h)
+            }
+        };
+        log::info!(
+            "DIAG subida: {:.2} ms, textura {w}x{h} = {} px, filtro={:?}, mipmap={px}, render trabajo={:?}",
+            t_subida.elapsed().as_secs_f64() * 1000.0,
+            w * h,
+            filter,
+            done.work
+        );
         let latency = Some(done.at.elapsed().as_secs_f64() * 1000.0);
         if done.coarse {
             app.canvas.preview_latency_ms = latency;
