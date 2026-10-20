@@ -31,6 +31,33 @@ fn effect_add_takes_every_type() {
 }
 
 #[test]
+fn adding_glass_reveals_an_opaque_fill() {
+    let mut s = Session::new();
+    let r = rect(&mut s);
+    assert_eq!(s.doc().unwrap().node(r).unwrap().fills[0].opacity, 1.0);
+    s.execute("effect.add", &json!({"ids": [r], "type": "glass"})).unwrap();
+    let n = s.doc().unwrap().node(r).unwrap().clone();
+    assert!((n.fills[0].opacity - 0.15).abs() < 1e-6, "{}", n.fills[0].opacity);
+    assert!(matches!(n.fills[0].kind, figcraft_color::PaintKind::Solid { .. }), "{:?}", n.fills[0].kind);
+    // Un relleno ya translucido se queda como esta: quien lo puso asi ya sabe lo que hace.
+    let mut s = Session::new();
+    let r = rect(&mut s);
+    s.execute("fill.set", &json!({"ids": [r], "color": {"r": 1.0, "g": 1.0, "b": 1.0, "a": 0.4}})).unwrap();
+    s.execute("effect.add", &json!({"ids": [r], "type": "glass"})).unwrap();
+    assert!((s.doc().unwrap().node(r).unwrap().fills[0].opacity - 0.4).abs() < 1e-6);
+    // Otro efecto no toca el relleno.
+    let mut s = Session::new();
+    let r = rect(&mut s);
+    s.execute("effect.add", &json!({"ids": [r], "type": "layerBlur"})).unwrap();
+    assert_eq!(s.doc().unwrap().node(r).unwrap().fills[0].opacity, 1.0);
+    // Y se deshace con el efecto, no aparte.
+    s.execute("effect.add", &json!({"ids": [r], "type": "glass"})).unwrap();
+    assert!((s.doc().unwrap().node(r).unwrap().fills[0].opacity - 0.15).abs() < 1e-6);
+    s.undo().unwrap();
+    assert_eq!(s.doc().unwrap().node(r).unwrap().fills[0].opacity, 1.0);
+}
+
+#[test]
 fn effect_set_edits_noise_texture_and_glass() {
     let mut s = Session::new();
     let r = rect(&mut s);

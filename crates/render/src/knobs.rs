@@ -19,7 +19,7 @@
 //! | `glass` | `on` | efectos de glass: `off` los salta enteros (A/B) |
 //! | `glass_log` | `off` | vuelca cada glass: tamano, margen, ms y alfa media |
 //! | `glass_max_px` | `0` | si el layer del glass pasa de estos px, se salta (0 = sin limite) |
-//! | `glass_scale` | `1` | divide la resolucion del glass (2 = mitad por eje, 4x menos px) |
+//! | `glass_scale` | `1` (2 en Android) | divide la resolucion del glass (2 = mitad por eje, 4x menos px) |
 //!
 //! Donde se busca, en orden (el primero que exista manda):
 //!
@@ -62,7 +62,19 @@ pub struct Knobs {
 
 impl Default for Knobs {
     fn default() -> Self {
-        Self { overscan: 16, preview_after_ms: None, preview_factor: None, glass: true, glass_log: false, glass_max_px: 0, glass_scale: 1, file: None }
+        Self {
+            overscan: 16,
+            preview_after_ms: None,
+            preview_factor: None,
+            glass: true,
+            glass_log: false,
+            glass_max_px: 0,
+            // MEDIDO: en el movil el glass a resolucion completa costaba 163 ms por llamada (4-6
+            // llamadas por render). A la mitad por eje son 40 ms y a simple vista no se distingue:
+            // el borde de la lente mide ~49 px, asi que 24 px siguen siendo de sobra.
+            glass_scale: if cfg!(target_os = "android") { 2 } else { 1 },
+            file: None,
+        }
     }
 }
 
@@ -265,7 +277,7 @@ mod tests {
         assert!(k.glass);
         assert_eq!(k.preview_after_ms, None);
         assert_eq!(k.preview_factor, None);
-        assert_eq!(k.glass_scale, 1);
+        assert_eq!(k.glass_scale, if cfg!(target_os = "android") { 2 } else { 1 });
     }
 
     #[test]

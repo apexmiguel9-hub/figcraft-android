@@ -1383,8 +1383,37 @@ fn effect_add(s: &mut Session, p: &Value) -> Result<Value> {
             Effect::of_type(&ty).ok_or_else(|| bad("effect.add", format!("unknown effect type `{ty}`")))?
         }
     };
-    for i in req_targets("effect.add", s, p)? {
-        s.doc_mut()?.get_mut(i)?.effects.push(e.clone());
+    let glass = matches!(&e.kind, EffectKind::Glass(_));
+    let ids = req_targets("effect.add", s, p)?;
+    let doc = s.doc_mut()?;
+    for i in ids {
+        let n = doc.get_mut(i)?;
+        if glass {
+            reveal_glass(n);
+        }
+        n.effects.push(e.clone());
     }
     ok()
+}
+
+/// Opacidad a la que se baja un relleno opaco al anadir un glass.
+const GLASS_FILL_REVEAL: f32 = 0.15;
+
+/// Al anadir un glass, deja el relleno translucido: Figma lo hace solo, y sin eso el efecto queda
+/// **tapado** por el relleno propio (se paga el calculo y no se ve nada).
+///
+/// MEDIDO en el Moto G56 (271x172 unidades, ppp 2,44): con el relleno opaco el mismo objeto con
+/// glass costaba 294 ms de render y 453 ms de latencia **sin cambio visible**; con el relleno al
+/// 15 % se ve el brillo del borde.
+///
+/// Solo se toca si el relleno visible mas opaco es opaco (quien ya tiene transparencia sabe lo que
+/// hace), y se escala su opacidad en vez de sustituir el color, para no cambiarlo.
+fn reveal_glass(n: &mut Node) {
+    let opaque = n.fills.iter().filter(|f| f.visible).map(|f| f.opacity).fold(0.0, f32::max);
+    if opaque <= 0.9 {
+        return;
+    }
+    for f in n.fills.iter_mut().filter(|f| f.visible) {
+        f.opacity = (f.opacity * GLASS_FILL_REVEAL).clamp(0.05, 1.0);
+    }
 }
