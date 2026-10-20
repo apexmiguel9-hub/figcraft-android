@@ -1,7 +1,31 @@
 # FigCraft en Android — TRASPASO de sesión
 
 > **Lee esto primero si eres un agente nuevo en esta sesión.** Todo el contexto está aquí.
-> Última actualización: 2026-10-17, commit `b782b67`.
+> Última actualización: 2026-10-20, commit `8a496de`.
+
+---
+
+## Estado al 2026-10-20 — táctil: nodos vs cuadritos
+
+- **Rutas**: las `/root/...` que nombra este doc ya no existen; el clon de trabajo es
+  **`/tmp/opencode/repos/figcraft-android`** (y `/tmp/opencode/repos/vectorcraft-android`).
+- **Instalado en el Moto**: APK de **`8a496de`** (encima de `487e170` + `7f79ad0`).
+- **Doble toque** (`7f79ad0`) entra al editor de nodos; log `figcraft_ui_egui::can..` → `DOBLE TOQUE x,y`.
+- **Nodo manda** (`487e170`): en el editor de nodos el círculo gana a la esquina de la caja; la caja
+  solo responde fuera del nodo (tolerancia táctil 12 u ≈ 29 px en `vectoredit::pointer::hit_tol`).
+- **Cuadritos fantasma ocultos** (`8a496de`): en el editor de nodos la caja ya **no dibuja cuadritos**
+  (solo contorno + medida). El dueño confirmó: los que no servían son los del **selector/box**; los
+  que mandan son los **círculos** (nodos). En selección normal los cuadritos siguen y funcionan.
+- **Si mañana hace falta el cuadrito visible** para escalar puntos (p. ej. al seleccionar la arista
+  entre 2 nodos): plan listo = dibujar **por esquina** solo las no tapadas por nodo/manecilla con un
+  `Session::vector_edit_box_live()` que reutilice `vectoredit::hit()` + `hit_tol()`. No implementado.
+- **Tool Direct Select**: descartada por ahora; solo se retomaría si se cambia el método de entrada
+  al editor (el doble toque ya funciona).
+- **Móvil**: `adb connect 192.168.100.51:43263` (el puerto cambia; `adb devices`). Capturas 2400×1080.
+  `gh` siempre con `--repo apexmiguel9-hub/figcraft-android`.
+- **Cola siguiente**: subida parcial de textura (`ImageDelta`), caché del glass por (forma, tamaño,
+  escala), tap de prototipos "on click" en táctil, texto invisible al escribir, menú contextual sin
+  scroll, diálogo de Preferences grande.
 
 ---
 
