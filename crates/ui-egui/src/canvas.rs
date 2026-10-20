@@ -1388,14 +1388,16 @@ fn overlays(app: &FigApp, painter: &egui::Painter, t: &Tokens) -> Vec<(NodeId, [
     {
         // The Variable width tool shows width points in place of the path's points.
         let width_tool = ve.tool == figcraft_engine::vectoredit::VTool::Width;
-        // The box goes **under** the points: its square handles sit at the box corners, which are
-        // often points, and drawn on top they hid the point and took the finger's press. The
-        // point is what is edited; the square only answers outside it (see `transform::box_hit`).
+        // The box goes **under** the points and shows **no square handles**: on a rectangle the
+        // nodes sit on the corners, so the squares sat on the nodes, did nothing once the node
+        // won the press (see `transform::box_hit`) and only cluttered the view — the "ghost
+        // squares" seen on the phone. In normal selection mode the box keeps its handles, which
+        // do work there.
         if !width_tool
             && let Some(c) = app.session.vector_edit_box()
         {
             let label = format!("{} × {}", fmt((c[1] - c[0]).hypot()), fmt((c[3] - c[0]).hypot()));
-            size_label = transform_box(app, painter, c.map(|p| app.to_screen(p.x, p.y)), ACCENT, true, 4, label);
+            size_label = transform_box(app, painter, c.map(|p| app.to_screen(p.x, p.y)), ACCENT, true, 0, label);
         }
         // Other layers edited at once go under the active one; the hover shows on its own layer.
         let ov = &app.session.tool.overlay;
