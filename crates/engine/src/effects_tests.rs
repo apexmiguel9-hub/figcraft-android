@@ -55,6 +55,13 @@ fn adding_glass_reveals_an_opaque_fill() {
     assert!((s.doc().unwrap().node(r).unwrap().fills[0].opacity - 0.15).abs() < 1e-6);
     s.undo().unwrap();
     assert_eq!(s.doc().unwrap().node(r).unwrap().fills[0].opacity, 1.0);
+    // El camino real de la UI: el "+" pone un drop shadow y el desplegable lo cambia a glass.
+    let mut s = Session::new();
+    let r = rect(&mut s);
+    s.execute("effect.add", &json!({"ids": [r], "type": "dropShadow"})).unwrap();
+    assert_eq!(s.doc().unwrap().node(r).unwrap().fills[0].opacity, 1.0);
+    s.execute("effect.set", &json!({"ids": [r], "index": 0, "effect": {"type": "glass"}})).unwrap();
+    assert!((s.doc().unwrap().node(r).unwrap().fills[0].opacity - 0.15).abs() < 1e-6);
 }
 
 #[test]

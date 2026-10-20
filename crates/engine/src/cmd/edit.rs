@@ -259,17 +259,7 @@ pub fn specs() -> Vec<CommandSpec> {
             }
             ok()
         }),
-        spec!("effect.set", "Set effect", "{ids?, index, effect {..}}", true, |s, p| {
-            let i = req_index("effect.set", p, "index")?;
-            let e: Effect = parse("effect.set", p, "effect")?.ok_or_else(|| bad("effect.set", "`effect` required"))?;
-            for id in req_targets("effect.set", s, p)? {
-                let n = s.doc_mut()?.get_mut(id)?;
-                if let Some(slot) = n.effects.get_mut(i) {
-                    *slot = e.clone();
-                }
-            }
-            ok()
-        }),
+        spec!("effect.set", "Set effect", "{ids?, index, effect {..}}", true, effect_set),
         spec!("grid.add", "Add layout grid", "{ids?, grid? {kind: grid|columns|rows, ..}}", true, |s, p| {
             let g: LayoutGrid = parse("grid.add", p, "grid")?.unwrap_or_default();
             for id in req_targets("grid.add", s, p)? {
@@ -1375,6 +1365,24 @@ fn pattern_fill(s: &mut Session, p: &Value) -> Result<Value> {
     paint_set(s, &q, true)
 }
 
+fn effect_set(s: &mut Session, p: &Value) -> Result<Value> {
+    let i = req_index("effect.set", p, "index")?;
+    let e: Effect = parse("effect.set", p, "effect")?.ok_or_else(|| bad("effect.set", "`effect` required"))?;
+    let glass = matches!(&e.kind, EffectKind::Glass(_));
+    let ids = req_targets("effect.set", s, p)?;
+    let doc = s.doc_mut()?;
+    for id in ids {
+        let n = doc.get_mut(id)?;
+        if let Some(slot) = n.effects.get_mut(i) {
+            *slot = e.clone();
+        }
+        if glass {
+            reveal_glass(n);
+        }
+    }
+    ok()
+}
+
 fn effect_add(s: &mut Session, p: &Value) -> Result<Value> {
     let e: Effect = match get(p, "effect") {
         Some(v) => serde_json::from_value(v.clone()).map_err(|e| bad("effect.add", e.to_string()))?,
@@ -1397,9 +1405,7 @@ fn effect_add(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 /// Opacidad a la que se baja un relleno opaco al anadir un glass.
-const GLASS_FILL_REVEAL: f32 = 0.15;
-
-/// Al anadir un glass, deja el relleno translucido: Figma lo hace solo, y sin eso el efecto queda
+const GLASS_FILL_REVEAL: f32 = 0.15;/// Al anadir un glass, deja el relleno translucido: Figma lo hace solo, y sin eso el efecto queda
 /// **tapado** por el relleno propio (se paga el calculo y no se ve nada).
 ///
 /// MEDIDO en el Moto G56 (271x172 unidades, ppp 2,44): con el relleno opaco el mismo objeto con
