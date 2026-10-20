@@ -74,6 +74,7 @@ fn job(doc: &Arc<Document>, page: NodeId, uid: u64, view: View) -> Job {
         proof: false,
         uid,
         zoom_preview: true,
+        gesture: false,
         at: web_time::Instant::now(),
     }
 }

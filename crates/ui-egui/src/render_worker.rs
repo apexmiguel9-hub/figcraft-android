@@ -42,6 +42,9 @@ pub struct Job {
     /// A coarse preview may come first when the zoom changes (not in pixel preview, whose pixels
     /// are the point).
     pub zoom_preview: bool,
+    /// A finger is on the canvas (drag, pan or zoom): render coarse and don't refine until it
+    /// lifts, so the content doesn't lag behind the cursor.
+    pub gesture: bool,
     /// When the UI asked for it: how long the image took to reach the screen.
     pub at: Instant,
 }
@@ -58,6 +61,8 @@ pub struct Done {
     pub page: NodeId,
     /// A coarse preview, refined by a later image unless a newer request replaced it.
     pub coarse: bool,
+    /// An image for a gesture: it replaces the refined one on screen even if it covers the view.
+    pub gesture: bool,
     /// [`Job::at`].
     pub at: Instant,
 }
@@ -103,13 +108,17 @@ fn run(job: &Job, view: &View, retained: &mut Retained, coarse: bool) -> Option<
         mark_outside_srgb(&mut image, pix, job.doc.color_profile);
     }
     let ms = t0.elapsed().as_secs_f64() * 1000.0;
-    Some(Done { image, view, ms, work, uid: job.uid, page: job.page, coarse, at: job.at })
+    Some(Done { image, view, ms, work, uid: job.uid, page: job.page, coarse, gesture: job.gesture, at: job.at })
 }
 
 /// `view` with [`PREVIEW_FACTOR`] times fewer pixels each way, showing at least the same area.
 /// El factor se puede cambiar en caliente (ver `figcraft_render::knobs`).
 pub fn coarse_view(view: &View) -> View {
-    let factor = figcraft_render::knobs::knobs().preview_factor.unwrap_or(PREVIEW_FACTOR);
+    coarse_view_with(view, figcraft_render::knobs::knobs().preview_factor.unwrap_or(PREVIEW_FACTOR))
+}
+
+/// `view` with `factor` times fewer pixels each way.
+fn coarse_view_with(view: &View, factor: f64) -> View {
     let shrink = |n: u32| (f64::from(n) / factor).ceil().max(1.0) as u32;
     View { origin: view.origin, scale: view.scale / factor, width: shrink(view.width), height: shrink(view.height) }
 }
@@ -157,6 +166,21 @@ impl Renders {
             return None;
         }
         let view = coarse_view(&job.view);
+        guarded(&mut self.preview, |r| run(job, &view, r, true))
+    }
+
+    /// The image for a gesture in progress: `gesture_scale` times fewer pixels each way, and no
+    /// refine (the finger moves faster than a full render). On release the canvas asks for a
+    /// normal job and [`Self::refine`] paints the sharp image.
+    ///
+    /// MEDIDO en el Moto G56: con el render fino, la caja de seleccion (UI a 120 Hz) iba 116 ms por
+    /// delante del objeto; a la mitad por eje el render baja a ~1/4 y el objeto sigue al dedo.
+    pub fn gesture(&mut self, job: &Job) -> Option<Done> {
+        let factor = f64::from(figcraft_render::knobs::knobs().gesture_scale.max(1));
+        if factor <= 1.0 {
+            return guarded(&mut self.full, |r| run(job, &job.view, r, false));
+        }
+        let view = coarse_view_with(&job.view, factor);
         guarded(&mut self.preview, |r| run(job, &view, r, true))
     }
 
@@ -212,6 +236,16 @@ impl Worker {
                 // Skip to the newest queued job.
                 while let Ok(newer) = jobs.try_recv() {
                     (seq, job) = newer;
+                }
+                if job.gesture {
+                    if let Some(d) = renders.gesture(&job)
+                        && done_tx.send(d).is_err()
+                    {
+                        break;
+                    }
+                    ctx.request_repaint_of(viewport);
+                    done_with.store(seq, std::sync::atomic::Ordering::Release);
+                    continue;
                 }
                 if let Some(d) = renders.preview(&job) {
                     if done_tx.send(d).is_err() {
@@ -285,6 +319,10 @@ impl Inline {
         self.pending.is_some()
     }
     pub fn poll(&mut self) -> Option<Done> {
+        if self.pending.as_ref().is_some_and(|j| j.gesture) {
+            let job = self.pending.take()?;
+            return self.renders.gesture(&job);
+        }
         if !self.previewed {
             self.previewed = true;
             if let Some(d) = self.pending.as_ref().and_then(|job| self.renders.preview(job)) {

@@ -141,6 +141,9 @@ struct JobKey {
     /// Text lays out anew when fonts arrive (system fonts load in the background).
     fonts: u64,
     proof: bool,
+    /// A finger is down: the image is the coarse one for the gesture. It is part of the key so
+    /// that lifting the finger asks for the sharp image even if nothing else changed.
+    gesture: bool,
 }
 
 impl FigApp {
@@ -208,7 +211,7 @@ pub fn show(app: &mut FigApp, ui: &mut Ui, worker: &mut Worker) {
     if let Some(done) = worker.poll()
         && shows(&app.canvas, &done, shown)
     {
-        if !done.coarse {
+        if !done.coarse || done.gesture {
             app.canvas.render_work = Some(done.work);
             app.ui.render_ms = done.ms;
         }
@@ -223,7 +226,9 @@ pub fn show(app: &mut FigApp, ui: &mut Ui, worker: &mut Worker) {
             None => app.canvas.texture = Some(ctx.load_texture("figcraft-canvas", done.image, filter)),
         }
         let latency = Some(done.at.elapsed().as_secs_f64() * 1000.0);
-        if done.coarse {
+        if done.gesture {
+            // Ni preview ni refine: es la imagen que sigue al dedo.
+        } else if done.coarse {
             app.canvas.preview_latency_ms = latency;
         } else {
             app.canvas.refine_latency_ms = latency;
@@ -338,6 +343,11 @@ fn shows(c: &CanvasState, done: &Done, shown: Option<(u64, NodeId)>) -> bool {
     if shown != Some((done.uid, done.page)) {
         return false;
     }
+    // La imagen de un gesto siempre se pinta: es lo que sigue al dedo. La fina anterior cubre el
+    // mismo view, pero su contenido es el de antes de mover el objeto.
+    if done.gesture {
+        return true;
+    }
     let refined_here = !c.tex_coarse
         && c.tex_of == shown
         && c.tex_view
@@ -394,6 +404,7 @@ fn request_render(app: &mut FigApp, worker: &mut Worker, ppp: f32, max_texture_s
         solo: ds.focused(),
         fonts: figcraft_text::layout_generation(),
         proof,
+        gesture: app.canvas.dragging,
     };
     if let Some(previous) = &app.canvas.submitted {
         let previous_origin = (previous.origin.0 as f64 / 1000.0, previous.origin.1 as f64 / 1000.0);
@@ -418,6 +429,7 @@ fn request_render(app: &mut FigApp, worker: &mut Worker, ppp: f32, max_texture_s
         proof,
         uid: ds.uid,
         zoom_preview: ds.view.pixel_preview_scale().is_none(),
+        gesture: app.canvas.dragging,
         at: web_time::Instant::now(),
     };
     app.canvas.want_view = Some(job.view.clone());

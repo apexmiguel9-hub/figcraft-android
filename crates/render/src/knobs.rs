@@ -20,6 +20,7 @@
 //! | `glass_log` | `off` | vuelca cada glass: tamano, margen, ms y alfa media |
 //! | `glass_max_px` | `0` | si el layer del glass pasa de estos px, se salta (0 = sin limite) |
 //! | `glass_scale` | `1` (2 en Android) | divide la resolucion del glass (2 = mitad por eje, 4x menos px) |
+//! | `gesture_scale` | `1` (2 en Android) | resolucion durante un gesto; al soltar, fino |
 //!
 //! Donde se busca, en orden (el primero que exista manda):
 //!
@@ -56,6 +57,9 @@ pub struct Knobs {
     /// Divide por este factor la resolucion a la que se calcula el glass (1 = completa, 2 = la
     /// mitad por eje, 4x menos pixeles). La lente es suave y se sube con bilineal.
     pub glass_scale: u32,
+    /// Mientras hay un dedo en el lienzo (arrastre, pan, zoom), el render se hace a esta fraccion
+    /// de resolucion para que el contenido siga al dedo; al soltar se pinta el fino. 1 = apagado.
+    pub gesture_scale: u32,
     /// Fichero del que salieron los valores (None: los de compilacion).
     pub file: Option<PathBuf>,
 }
@@ -73,6 +77,10 @@ impl Default for Knobs {
             // llamadas por render). A la mitad por eje son 40 ms y a simple vista no se distingue:
             // el borde de la lente mide ~49 px, asi que 24 px siguen siendo de sobra.
             glass_scale: if cfg!(target_os = "android") { 2 } else { 1 },
+            // MEDIDO: con el render fino, la caja de seleccion (que se dibuja en la UI a 120 Hz)
+            // se movia 116 ms por delante del objeto. A la mitad de resolucion el render baja a
+            // ~1/4 y el objeto sigue al dedo; al soltar llega el fino.
+            gesture_scale: if cfg!(target_os = "android") { 2 } else { 1 },
             file: None,
         }
     }
@@ -107,11 +115,12 @@ pub fn summary() -> String {
     let after = k.preview_after_ms.map(|v| format!("{v}")).unwrap_or_else(|| "auto".to_string());
     let factor = k.preview_factor.map(|v| format!("{v}")).unwrap_or_else(|| "auto".to_string());
     format!(
-        "overscan={} previewAfter={after} previewFactor={factor} glass={} glassMaxPx={} glassScale={} knobs={}",
+        "overscan={} previewAfter={after} previewFactor={factor} glass={} glassMaxPx={} glassScale={} gestureScale={} knobs={}",
         k.overscan,
         if k.glass { "on" } else { "off" },
         k.glass_max_px,
         k.glass_scale,
+        k.gesture_scale,
         k.file.as_ref().map_or_else(|| "ninguno".to_string(), |p| p.display().to_string())
     )
 }
@@ -242,6 +251,7 @@ fn parse(text: &str) -> Knobs {
             "glass_log" => k.glass_log = truthy(value),
             "glass_max_px" => k.glass_max_px = value.parse().unwrap_or(k.glass_max_px),
             "glass_scale" => k.glass_scale = value.parse::<u32>().unwrap_or(k.glass_scale).clamp(1, 8),
+            "gesture_scale" => k.gesture_scale = value.parse::<u32>().unwrap_or(k.gesture_scale).clamp(1, 4),
             _ => {}
         }
     }
@@ -255,14 +265,15 @@ fn truthy(v: &str) -> bool {
 #[cfg(not(target_arch = "wasm32"))]
 fn summary_of(k: &Knobs) -> String {
     format!(
-        "overscan={} previewAfter={} previewFactor={} glass={} glassLog={} glassMaxPx={} glassScale={}",
+        "overscan={} previewAfter={} previewFactor={} glass={} glassLog={} glassMaxPx={} glassScale={} gestureScale={}",
         k.overscan,
         k.preview_after_ms.map(|v| format!("{v}")).unwrap_or_else(|| "auto".to_string()),
         k.preview_factor.map(|v| format!("{v}")).unwrap_or_else(|| "auto".to_string()),
         if k.glass { "on" } else { "off" },
         k.glass_log,
         k.glass_max_px,
-        k.glass_scale
+        k.glass_scale,
+        k.gesture_scale
     )
 }
 
@@ -278,6 +289,7 @@ mod tests {
         assert_eq!(k.preview_after_ms, None);
         assert_eq!(k.preview_factor, None);
         assert_eq!(k.glass_scale, if cfg!(target_os = "android") { 2 } else { 1 });
+        assert_eq!(k.gesture_scale, if cfg!(target_os = "android") { 2 } else { 1 });
     }
 
     #[test]

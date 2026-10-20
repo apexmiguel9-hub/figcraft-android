@@ -233,6 +233,7 @@ fn a_finished_background_render_wakes_the_ui() {
         proof: false,
         uid: 0,
         zoom_preview: false,
+        gesture: false,
         at: web_time::Instant::now(),
     });
     let start = Instant::now();
