@@ -58,6 +58,30 @@ pub struct CanvasState {
     /// MEDIDO que son **puntos recorridos acumulados** y no un instante: a finger resting does
     /// not produce events, so a clock would not advance.
     long_press: Option<(Pos2, f32)>,
+    /// The taps on the canvas, for the double tap ([`doble_toque`]).
+    toque: Toque,
+}
+
+/// A tap on the canvas, for the double tap ([`doble_toque`]).
+#[derive(Default)]
+struct Toque {
+    /// Where and when the finger went down, while it is down.
+    abajo: Option<(Pos2, f64)>,
+    /// How far it has moved from `abajo.0`, in points.
+    movido: f32,
+    /// Where and when the last clean tap started and ended.
+    ultimo: Option<(Pos2, f64)>,
+    /// The second tap of a double tap: its whole touch is swallowed, so the tool sees no click
+    /// or drag for it.
+    tragar: bool,
+}
+
+/// What [`doble_toque`] found in this frame's touch events.
+enum ToqueAhora {
+    Nada,
+    Doble(Pos2),
+    /// The second tap of a double tap is still down: consume its frames.
+    Tragado,
 }
 
 impl Default for CanvasState {
@@ -85,6 +109,7 @@ impl Default for CanvasState {
             pressure: None,
             touch_count: 0,
             long_press: None,
+            toque: Toque::default(),
         }
     }
 }
@@ -639,6 +664,97 @@ fn gestos_tactiles(app: &mut FigApp, ctx: &egui::Context, resp: &egui::Response,
     true
 }
 
+/// The second tap of a double tap, measured on `Event::Touch`.
+///
+/// MEDIDO por que no vale el doble clic de egui: lo decide en la **suelta**, y pide dos sueltas
+/// en menos de `max_double_click_delay` = 0,3 s y a menos de `max_click_dist` = 6 px
+/// (`egui-0.36.2/src/input_state/mod.rs:1165`). Un dedo tarda 400-600 ms entre toques y se mueve
+/// 10-20 px, asi que en el movil el doble toque **no llegaba nunca**: por eso el editor de nodos
+/// (doble toque en un objeto) era inalcanzable con el dedo. Aqui se mide el toque de verdad, con
+/// margenes de dedo, y se traga el segundo toque entero para que la herramienta no vea ademas un
+/// clic o un arrastre.
+fn doble_toque(app: &mut FigApp, ctx: &egui::Context) -> ToqueAhora {
+    // Dos dedos son pan y zoom, no un doble toque.
+    if ctx.multi_touch().is_some() {
+        app.canvas.toque = Toque::default();
+        return ToqueAhora::Nada;
+    }
+    let ahora = ctx.input(|i| i.time);
+    let toques: Vec<(egui::TouchPhase, Pos2)> = ctx.input(|i| {
+        i.events
+            .iter()
+            .filter_map(|e| match e {
+                egui::Event::Touch { phase, pos, .. } => Some((*phase, *pos)),
+                _ => None,
+            })
+            .collect()
+    });
+    let mut doble = None;
+    let mut tragado = false;
+    for (phase, pos) in toques {
+        match phase {
+            egui::TouchPhase::Start => {
+                app.canvas.toque.abajo = Some((pos, ahora));
+                app.canvas.toque.movido = 0.0;
+                if let Some((p0, t0)) = app.canvas.toque.ultimo
+                    && ahora - t0 <= DOBLE_TOQUE_SECS
+                    && pos.distance(p0) <= DOBLE_TOQUE_DIST
+                {
+                    doble = Some(pos);
+                    // A third tap does not make a triple: the pair is spent.
+                    app.canvas.toque.ultimo = None;
+                    app.canvas.toque.abajo = None;
+                    app.canvas.toque.tragar = true;
+                }
+            }
+            egui::TouchPhase::Move => {
+                if let Some((p0, _)) = app.canvas.toque.abajo {
+                    app.canvas.toque.movido = app.canvas.toque.movido.max(p0.distance(pos));
+                }
+            }
+            egui::TouchPhase::End | egui::TouchPhase::Cancel => {
+                if app.canvas.toque.tragar {
+                    // The second tap ends: swallowed, and the next one starts clean.
+                    app.canvas.toque.tragar = false;
+                    tragado = true;
+                } else if let Some((p0, t0)) = app.canvas.toque.abajo {
+                    // Only a short, still touch is half of a double tap; a drag or a hold is not.
+                    app.canvas.toque.ultimo = (phase == egui::TouchPhase::End
+                        && app.canvas.toque.movido <= TOQUE_MOVIMIENTO_MAX
+                        && ahora - t0 <= TOQUE_SECS_MAX)
+                        .then_some((p0, ahora));
+                }
+                app.canvas.toque.abajo = None;
+            }
+        }
+    }
+    if let Some(p) = doble {
+        return ToqueAhora::Doble(p);
+    }
+    if tragado || app.canvas.toque.tragar {
+        return ToqueAhora::Tragado;
+    }
+    ToqueAhora::Nada
+}
+
+/// How far apart two taps can land (in points) and still be a double tap.
+///
+/// MEDIDO que son mas que los 6 px de egui y menos que un dedo de separacion: en el Moto (ppp
+/// 2,44) son unos 78 px, el mismo sitio para un pulgar, y menos que dos objetos distintos.
+const DOBLE_TOQUE_DIST: f32 = 32.0;
+
+/// How long after the first tap ends the second one can start (seconds).
+///
+/// MEDIDO: egui pide 0,3 s entre **sueltas**; un doble toque humano ronda 400-600 ms entre
+/// toques, y con 0,55 s el gesto entra sin abrir la puerta a dos toques seguidos sin querer.
+const DOBLE_TOQUE_SECS: f64 = 0.55;
+
+/// A tap that moves more than this (points) is a drag, not half of a double tap.
+const TOQUE_MOVIMIENTO_MAX: f32 = 16.0;
+
+/// A tap held longer than this (seconds) is a hold, not half of a double tap.
+const TOQUE_SECS_MAX: f64 = 0.7;
+
 /// The long press that stands for a right-click on a touch screen, and the flick/swipe to drag.
 ///
 /// MEDIDO por que hace falta y no sale de egui: en un tactil no hay boton derecho, asi que
@@ -717,6 +833,8 @@ fn pulsacion_larga(app: &mut FigApp, ctx: &egui::Context) -> bool {
             // termine un arrastre que nunca existio.
             app.canvas.long_press = None;
             app.canvas.dragging = false;
+            // A long press is not half of a double tap.
+            app.canvas.toque = Toque::default();
             open_context_menu(app, pos, false);
             return true;
         }
@@ -847,6 +965,21 @@ fn input(app: &mut FigApp, ui: &mut Ui, resp: &egui::Response) -> bool {
     }
     if !app.canvas.dragging && resp.hovered() && crate::handles::input(app, &ctx, pos) {
         return false;
+    }
+    // El doble toque se mide en el toque y no en el raton emulado (ver [`doble_toque`]). Va antes
+    // de `double_clicked` para no mandarlo dos veces, y el segundo toque se consume entero.
+    match doble_toque(app, &ctx) {
+        ToqueAhora::Doble(p) => {
+            log::info!("DOBLE TOQUE {:.0},{:.0}", p.x, p.y);
+            let ev = pointer_event(app, PointerKind::DoubleClick, p, &mods);
+            if let Err(e) = app.session.pointer(&ev) {
+                app.toast(e.to_string());
+            }
+            app.canvas.dragging = false;
+            return true;
+        }
+        ToqueAhora::Tragado => return true,
+        ToqueAhora::Nada => {}
     }
     if resp.secondary_clicked() {
         open_context_menu(app, pos, mods.command);
