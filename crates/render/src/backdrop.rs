@@ -112,12 +112,25 @@ pub(crate) fn replace(dst: &mut Pixmap, at: (i32, i32), src: &Pixmap, clip: Opti
 
 /// Whether a node has a visible background blur or glass.
 pub fn has_effects(n: &Node) -> bool {
-    n.effects.iter().any(|e| (e.visible && matches!(e.kind, EffectKind::Glass(_))) || e.backdrop_radius() > 0.0)
+    // Un glass apagado por los knobs no cuenta: asi el A/B mide de verdad el coste del efecto
+    // entero (capa, recorte del fondo y calculo), no solo el ultimo paso.
+    if n.effects.iter().any(|e| matches!(e.kind, EffectKind::Glass(_))) && !crate::knobs::knobs().glass {
+        return n.effects.iter().any(|e| !matches!(e.kind, EffectKind::Glass(_)) && e.backdrop_radius() > 0.0);
+    }
+    n.effects.iter().any(|e| e.backdrop_radius() > 0.0 || (e.visible && matches!(e.kind, EffectKind::Glass(_))))
 }
 
 /// Pixels around a layer its backdrop effects read at `scale`.
 pub fn pad(n: &Node, scale: f64) -> u32 {
-    let r = n.effects.iter().map(|e| crate::backdrop_reach(e.backdrop_radius(), scale)).fold(0.0, f64::max);
+    // Un glass apagado por los knobs no necesita margen: pedirlo inflaria el recorte del fondo (y
+    // con el, la memoria) para un efecto que no se va a dibujar.
+    let glass = crate::knobs::knobs().glass;
+    let r = n
+        .effects
+        .iter()
+        .filter(|e| glass || !matches!(e.kind, EffectKind::Glass(_)))
+        .map(|e| crate::backdrop_reach(e.backdrop_radius(), scale))
+        .fold(0.0, f64::max);
     if r.is_finite() { r.ceil().clamp(0.0, 2048.0) as u32 } else { 0 }
 }
 
@@ -143,7 +156,12 @@ pub fn effects(n: &Node, shape: &Outline, back: &Pixmap, pad: u32, w: u32, h: u3
                 fx::mask_by(&mut l, cov.as_ref()?, false);
                 l
             }
-            EffectKind::Glass(g) => glass::glass(g, shape, back, pad, w, h, xf, scale)?,
+            EffectKind::Glass(g) => {
+                if !crate::knobs::knobs().glass {
+                    continue;
+                }
+                glass::glass(g, shape, back, pad, w, h, xf, scale)?
+            }
             _ => continue,
         };
         match out.as_mut() {

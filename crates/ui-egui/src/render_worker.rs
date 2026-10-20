@@ -107,9 +107,11 @@ fn run(job: &Job, view: &View, retained: &mut Retained, coarse: bool) -> Option<
 }
 
 /// `view` with [`PREVIEW_FACTOR`] times fewer pixels each way, showing at least the same area.
+/// El factor se puede cambiar en caliente (ver `figcraft_render::knobs`).
 pub fn coarse_view(view: &View) -> View {
-    let shrink = |n: u32| (f64::from(n) / PREVIEW_FACTOR).ceil().max(1.0) as u32;
-    View { origin: view.origin, scale: view.scale / PREVIEW_FACTOR, width: shrink(view.width), height: shrink(view.height) }
+    let factor = figcraft_render::knobs::knobs().preview_factor.unwrap_or(PREVIEW_FACTOR);
+    let shrink = |n: u32| (f64::from(n) / factor).ceil().max(1.0) as u32;
+    View { origin: view.origin, scale: view.scale / factor, width: shrink(view.width), height: shrink(view.height) }
 }
 
 /// What the render thread keeps between jobs: the canvas image, the previews standing in for it
@@ -141,8 +143,11 @@ impl Renders {
     /// full render starts from scratch) and those have been slow. The first render has no
     /// measure yet and comes without one.
     fn wants_preview(&self, job: &Job) -> bool {
+        // El umbral se puede cambiar en caliente (ver `figcraft_render::knobs`), que es como se mide
+        // cuanto cuesta el preview sin recompilar.
+        let after = figcraft_render::knobs::knobs().preview_after_ms.unwrap_or(self.preview_after_ms);
         job.zoom_preview
-            && self.full_ms >= self.preview_after_ms
+            && self.full_ms >= after
             && self.last.is_some_and(|(uid, page, scale)| uid != job.uid || page != job.page || scale.to_bits() != job.view.scale.to_bits())
     }
 

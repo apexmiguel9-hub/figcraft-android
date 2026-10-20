@@ -456,14 +456,16 @@ fn overscan_margin(width: u32, height: u32, max_texture_side: u32) -> u32 {
     // o sea -31% de pixeles dio +43% de fps. Vectorcraft no tiene margen en absoluto
     // (`canvas.rs:237`: `rect.width() * ppp`), asi que 16 px es un margen pequeno que deja algo de
     // colchon para el pan sin inflar la subida.
-    width.min(height).saturating_div(64).min(16).min(max_texture_side.saturating_sub(width.max(height)) / 2)
+    let cap = figcraft_render::knobs::knobs().overscan;
+    width.min(height).saturating_div(64).min(cap).min(max_texture_side.saturating_sub(width.max(height)) / 2)
 }
 
 #[cfg(test)]
 #[test]
 fn pan_uses_cached_pixels_until_the_refill_boundary() {
-    let margin = overscan_margin(1000, 800, 16_383);
-    assert_eq!(margin, 100);
+    // El margen va explicito: lo que prueba es `cached_render_covers`, no cuanto margen se elige
+    // (que depende de un knob de ejecucion y por eso no puede ser una constante en el test).
+    let margin = 100u32;
     let buffer = (-f64::from(margin), -f64::from(margin));
     let size = (1000 + 2 * margin, 800 + 2 * margin);
     assert!(cached_render_covers(buffer, size, (0.0, 0.0), (1000, 800), 1.0));

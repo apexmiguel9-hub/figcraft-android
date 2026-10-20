@@ -192,6 +192,12 @@ const MAX_LIGHT_PX: f64 = 512.0;
 /// `back`, its backdrop padded by `pad` pixels each way, at `scale` device pixels per unit.
 #[allow(clippy::too_many_arguments)]
 pub fn glass(g: &Glass, shape: &Outline, back: &Pixmap, pad: u32, w: u32, h: u32, xf: Affine, scale: f64) -> Option<Pixmap> {
+    let k = crate::knobs::knobs();
+    if k.glass_max_px > 0 && w.saturating_mul(h) > k.glass_max_px {
+        return None;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    let t0 = std::time::Instant::now();
     let g = g.sanitized();
     let depth = (g.depth * scale).clamp(1.0, 1024.0);
     let band = (depth * (0.15 + 0.35 * g.splay)).max(1.0);
@@ -262,6 +268,30 @@ pub fn glass(g: &Glass, shape: &Outline, back: &Pixmap, pad: u32, w: u32, h: u32
                 }
             }
         }
+    }
+    // MEDIDO que hacia falta para el bug "el glass hace lag pero no se ve": este log dice si el
+    // efecto se calcula, cuanto tarda, cuanto margen de fondo esta leyendo y cuantos pixeles
+    // acaban con alfa (si son 0, se esta pagando el calculo para nada: el resultado no llega a
+    // pintarse). Solo se paga cuando `glass_log=on`.
+    if k.glass_log {
+        let mut sum = 0u64;
+        let mut n = 0u64;
+        for p in out.data().chunks_exact(4) {
+            let a = u32::from(p[3]);
+            if a > 0 {
+                sum += u64::from(a);
+                n += 1;
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        let ms = t0.elapsed().as_secs_f64() * 1000.0;
+        #[cfg(target_arch = "wasm32")]
+        let ms = 0.0;
+        log::info!(
+            "GLASS layer {w}x{h} px={} margen={m} depth={depth:.1} reach={reach:.1} pad={pad} cubiertos={n} alfaMedia={:.1} ms={ms:.1}",
+            u64::from(w) * u64::from(h),
+            if n > 0 { sum as f64 / n as f64 } else { 0.0 }
+        );
     }
     Some(out)
 }

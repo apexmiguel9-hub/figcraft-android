@@ -73,8 +73,9 @@ fn diag_perf(&mut self) {
         *p = (frames, t);
         let c = &i["canvas"];
         log::info!(
-            "PERF fps={fps:.1} frameMs={} renderMs={} calidad={} trabajo={} latPreview={} latRefine={} causas={}",
-            i["frameMs"], i["renderMs"], c["quality"], c["renderWork"], c["previewLatencyMs"], c["refineLatencyMs"], i["repaintCauses"]
+            "PERF fps={fps:.1} frameMs={} renderMs={} calidad={} trabajo={} latPreview={} latRefine={} causas={} knobs=[{}]",
+            i["frameMs"], i["renderMs"], c["quality"], c["renderWork"], c["previewLatencyMs"], c["refineLatencyMs"], i["repaintCauses"],
+            figcraft_ui_egui::knobs_summary()
         );
     }
 }

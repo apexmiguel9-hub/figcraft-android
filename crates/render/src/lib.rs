@@ -15,6 +15,7 @@ pub mod glass;
 pub mod grain;
 pub mod image_profile;
 pub mod images;
+pub mod knobs;
 pub mod lod;
 pub mod paint;
 pub mod pattern;

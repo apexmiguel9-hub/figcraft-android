@@ -231,6 +231,11 @@ use serde_json::{Value, json};
 
 pub use control::{ControlReply, ControlRequest};
 
+/// Los knobs de ejecucion activos, en una linea, para el log de rendimiento del port.
+pub fn knobs_summary() -> String {
+    figcraft_render::knobs::summary()
+}
+
 /// Platform services the app crate provides (file dialogs, clipboard, URLs).
 pub trait Services {
     fn pick_open(&mut self, _title: &str, _exts: &[&str]) -> DialogFuture {
