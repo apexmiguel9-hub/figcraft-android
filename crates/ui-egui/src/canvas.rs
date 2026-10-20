@@ -865,6 +865,23 @@ fn input(app: &mut FigApp, ui: &mut Ui, resp: &egui::Response) -> bool {
         return true;
     }
     let ctx = ui.ctx().clone();
+    // El doble toque se mide **antes** del corte por `hover_pos`: al levantar el dedo
+    // egui-winit manda `PointerGone` y `hover_pos` es `None`, y es justo la suelta la que arma
+    // el toque. Debajo del corte no se armaba nunca y el doble toque no llegaba.
+    match doble_toque(app, &ctx) {
+        ToqueAhora::Doble(p) => {
+            let mods = ctx.input(|i| i.modifiers);
+            log::info!("DOBLE TOQUE {:.0},{:.0}", p.x, p.y);
+            let ev = pointer_event(app, PointerKind::DoubleClick, p, &mods);
+            if let Err(e) = app.session.pointer(&ev) {
+                app.toast(e.to_string());
+            }
+            app.canvas.dragging = false;
+            return true;
+        }
+        ToqueAhora::Tragado => return true,
+        ToqueAhora::Nada => {}
+    }
     // MEDIDO que aqui **no** se leen `smooth_scroll_delta` ni `zoom_delta`: los usa
     // `gestures_mouse`, que los toma de su propia lectura, para que el zoom de dos dedos se
     // aplique una sola vez y no aqui y alla.
@@ -965,21 +982,6 @@ fn input(app: &mut FigApp, ui: &mut Ui, resp: &egui::Response) -> bool {
     }
     if !app.canvas.dragging && resp.hovered() && crate::handles::input(app, &ctx, pos) {
         return false;
-    }
-    // El doble toque se mide en el toque y no en el raton emulado (ver [`doble_toque`]). Va antes
-    // de `double_clicked` para no mandarlo dos veces, y el segundo toque se consume entero.
-    match doble_toque(app, &ctx) {
-        ToqueAhora::Doble(p) => {
-            log::info!("DOBLE TOQUE {:.0},{:.0}", p.x, p.y);
-            let ev = pointer_event(app, PointerKind::DoubleClick, p, &mods);
-            if let Err(e) = app.session.pointer(&ev) {
-                app.toast(e.to_string());
-            }
-            app.canvas.dragging = false;
-            return true;
-        }
-        ToqueAhora::Tragado => return true,
-        ToqueAhora::Nada => {}
     }
     if resp.secondary_clicked() {
         open_context_menu(app, pos, mods.command);
