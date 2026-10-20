@@ -85,14 +85,21 @@ pub enum BoxHit {
 }
 
 /// The box's part under page point `p` when it wins over `h`, the network's part there: Bezier
-/// handles come first, then the box's corners, points, the box's edges, segments, the rotation
-/// zones, and the inside of the box last. Edges along an axis without extent are left out.
+/// handles come first, then the box's corners (unless a point is under the pointer: in a
+/// rectangle the nodes sit on the corners and must keep the drag), points, the box's edges,
+/// segments, the rotation zones, and the inside of the box last. Edges along an axis without
+/// extent are left out.
 pub fn box_hit(doc: &Document, ve: &VectorEdit, h: Option<VHit>, p: Point, zoom: f64) -> Option<BoxHit> {
     let b = shown_box(doc, ve)?;
     match handle_at_corners(&b.corners(), p, zoom, false) {
         Some(handle) => {
             let wins = match (handle, h) {
                 (_, Some(VHit::Handle { .. })) => false,
+                // Un nodo bajo el dedo manda sobre el cuadro de la caja. MEDIDO en el Moto: la
+                // esquina del cuadro alcanza 12,8 unidades y el nodo solo 6, asi que al agarrar
+                // el nodo se escalaba la caja en vez de moverlo. Ahora el cuadro solo responde
+                // cuando el toque cae fuera del nodo.
+                (_, Some(VHit::Vertex { .. })) => false,
                 (Handle::Corner(_), _) => true,
                 (Handle::Edge(e), None | Some(VHit::Segment { .. })) => {
                     if e % 2 == 0 {

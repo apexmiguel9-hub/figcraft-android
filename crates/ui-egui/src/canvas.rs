@@ -1388,6 +1388,15 @@ fn overlays(app: &FigApp, painter: &egui::Painter, t: &Tokens) -> Vec<(NodeId, [
     {
         // The Variable width tool shows width points in place of the path's points.
         let width_tool = ve.tool == figcraft_engine::vectoredit::VTool::Width;
+        // The box goes **under** the points: its square handles sit at the box corners, which are
+        // often points, and drawn on top they hid the point and took the finger's press. The
+        // point is what is edited; the square only answers outside it (see `transform::box_hit`).
+        if !width_tool
+            && let Some(c) = app.session.vector_edit_box()
+        {
+            let label = format!("{} × {}", fmt((c[1] - c[0]).hypot()), fmt((c[3] - c[0]).hypot()));
+            size_label = transform_box(app, painter, c.map(|p| app.to_screen(p.x, p.y)), ACCENT, true, 4, label);
+        }
         // Other layers edited at once go under the active one; the hover shows on its own layer.
         let ov = &app.session.tool.overlay;
         let hover_on = |id| ov.vector_hover.filter(|_| ov.vector_hover_on.unwrap_or(ve.id) == id);
@@ -1399,9 +1408,6 @@ fn overlays(app: &FigApp, painter: &egui::Painter, t: &Tokens) -> Vec<(NodeId, [
         vector_overlay(app, painter, &o, !width_tool, hover_on(ve.id), true);
         if width_tool {
             width_overlay(app, painter, &doc, &ve, zoom);
-        } else if let Some(c) = app.session.vector_edit_box() {
-            let label = format!("{} × {}", fmt((c[1] - c[0]).hypot()), fmt((c[3] - c[0]).hypot()));
-            size_label = transform_box(app, painter, c.map(|p| app.to_screen(p.x, p.y)), ACCENT, true, 4, label);
         }
     }
     // Selection.

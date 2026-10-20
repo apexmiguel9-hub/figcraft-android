@@ -114,6 +114,16 @@ pub(crate) struct PointSnap {
 /// Eraser brush radius in screen pixels.
 const ERASER_PX: f64 = 8.0;
 
+/// Pointer reach for the vector hit tests, in page units.
+///
+/// MEDIDO en el Moto: 6 unidades son ~15 px fisicos a ppp 2,44, y el dedo cae fuera del nodo (que
+/// se dibuja de 7 pt) y agarra el relleno, asi que se arrastra la forma entera en vez del nodo.
+/// En tactil se usan 12 (~29 px, 7 mm, lo que mide una yema); con raton se quedan en 6.
+fn hit_tol(zoom: f64) -> f64 {
+    let px = if cfg!(target_os = "android") { 12.0 } else { 6.0 };
+    px / zoom.max(1e-6)
+}
+
 fn erase_all(net: &mut VectorNetwork, stamps: &[Point], radius: f64) -> bool {
     stamps.iter().fold(false, |acc, c| ops::erase(net, *c, radius) | acc)
 }
@@ -193,7 +203,7 @@ impl Session {
             PointerKind::Move => self.vector_drag(&ve, ev).map(|()| true),
             PointerKind::Up => self.vector_up(&ve, ev).map(|()| true),
             PointerKind::DoubleClick => {
-                let tol = 6.0 / ev.zoom.max(1e-6);
+                let tol = hit_tol(ev.zoom);
                 let doc = self.doc()?.clone();
                 if ve.anchor.is_some() {
                     super::escape(self)?;
@@ -330,7 +340,7 @@ impl Session {
 
     fn vector_hover(&mut self, ve: &VectorEdit, ev: &PointerEvent) -> Result<()> {
         let doc = self.doc()?.clone();
-        let tol = 6.0 / ev.zoom.max(1e-6);
+        let tol = hit_tol(ev.zoom);
         let width_tool = ve.tool == VTool::Width;
         let h = if width_tool { None } else { hit(&doc, ve, ev.p(), tol) };
         // Other edited layers' parts light up too (a press there makes that layer active).
@@ -486,7 +496,7 @@ impl Session {
     /// Returns false when the click left edit mode (the caller then runs the normal tool).
     fn vector_down(&mut self, ve: &VectorEdit, ev: &PointerEvent) -> Result<bool> {
         let doc = self.doc()?.clone();
-        let tol = 6.0 / ev.zoom.max(1e-6);
+        let tol = hit_tol(ev.zoom);
         // A press on another edited layer's point, handle or segment (or, with the paint bucket,
         // area) makes it the active layer; a pen drawing a path keeps to its own layer.
         let other = match hit_any(&doc, ve, ev.p(), tol) {
@@ -515,9 +525,11 @@ impl Session {
         let tool = if ev.cmd && ve.tool == VTool::Move { VTool::Bend } else { ve.tool };
         let id = ve.id;
         let w = doc.world_transform(id);
-        // Regions come after Bezier handles (and the transform box's handles), before points and
-        // segments: clear of those, a press inside one selects it.
-        let region = if tool == VTool::Move && !matches!(h, Some(VHit::Handle { .. })) { Self::region_under(&doc, ve, h, ev) } else { None };
+        // Regions come after everything drawn on the outline: a point, a segment or a Bezier
+        // handle under the pointer wins. MEDIDO en el movil: con el dedo el nodo se dibuja de 7 pt
+        // y el relleno esta debajo, asi que la region se comia el arrastre y se movia la forma
+        // entera en vez del nodo. `region_under` sigue mirando la caja para no pisar su interior.
+        let region = if tool == VTool::Move && h.is_none() { Self::region_under(&doc, ve, h, ev) } else { None };
         // Any press without Shift drops the selected regions, except one on a selected region
         // (which keeps the selection to drag it); no hover hatch while the button is down.
         let keep_regions = ev.shift || region.is_some_and(|r| ve.regions.contains(&r));
