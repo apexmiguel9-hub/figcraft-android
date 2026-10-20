@@ -19,6 +19,7 @@
 //! | `glass` | `on` | efectos de glass: `off` los salta enteros (A/B) |
 //! | `glass_log` | `off` | vuelca cada glass: tamano, margen, ms y alfa media |
 //! | `glass_max_px` | `0` | si el layer del glass pasa de estos px, se salta (0 = sin limite) |
+//! | `glass_scale` | `1` | divide la resolucion del glass (2 = mitad por eje, 4x menos px) |
 //!
 //! Donde se busca, en orden (el primero que exista manda):
 //!
@@ -52,13 +53,16 @@ pub struct Knobs {
     pub glass_log: bool,
     /// Salta los glass cuyo layer pase de estos pixeles (0 = sin limite).
     pub glass_max_px: u32,
+    /// Divide por este factor la resolucion a la que se calcula el glass (1 = completa, 2 = la
+    /// mitad por eje, 4x menos pixeles). La lente es suave y se sube con bilineal.
+    pub glass_scale: u32,
     /// Fichero del que salieron los valores (None: los de compilacion).
     pub file: Option<PathBuf>,
 }
 
 impl Default for Knobs {
     fn default() -> Self {
-        Self { overscan: 16, preview_after_ms: None, preview_factor: None, glass: true, glass_log: false, glass_max_px: 0, file: None }
+        Self { overscan: 16, preview_after_ms: None, preview_factor: None, glass: true, glass_log: false, glass_max_px: 0, glass_scale: 1, file: None }
     }
 }
 
@@ -91,10 +95,11 @@ pub fn summary() -> String {
     let after = k.preview_after_ms.map(|v| format!("{v}")).unwrap_or_else(|| "auto".to_string());
     let factor = k.preview_factor.map(|v| format!("{v}")).unwrap_or_else(|| "auto".to_string());
     format!(
-        "overscan={} previewAfter={after} previewFactor={factor} glass={} glassMaxPx={} knobs={}",
+        "overscan={} previewAfter={after} previewFactor={factor} glass={} glassMaxPx={} glassScale={} knobs={}",
         k.overscan,
         if k.glass { "on" } else { "off" },
         k.glass_max_px,
+        k.glass_scale,
         k.file.as_ref().map_or_else(|| "ninguno".to_string(), |p| p.display().to_string())
     )
 }
@@ -224,6 +229,7 @@ fn parse(text: &str) -> Knobs {
             "glass" => k.glass = truthy(value),
             "glass_log" => k.glass_log = truthy(value),
             "glass_max_px" => k.glass_max_px = value.parse().unwrap_or(k.glass_max_px),
+            "glass_scale" => k.glass_scale = value.parse::<u32>().unwrap_or(k.glass_scale).clamp(1, 8),
             _ => {}
         }
     }
@@ -237,13 +243,14 @@ fn truthy(v: &str) -> bool {
 #[cfg(not(target_arch = "wasm32"))]
 fn summary_of(k: &Knobs) -> String {
     format!(
-        "overscan={} previewAfter={} previewFactor={} glass={} glassLog={} glassMaxPx={}",
+        "overscan={} previewAfter={} previewFactor={} glass={} glassLog={} glassMaxPx={} glassScale={}",
         k.overscan,
         k.preview_after_ms.map(|v| format!("{v}")).unwrap_or_else(|| "auto".to_string()),
         k.preview_factor.map(|v| format!("{v}")).unwrap_or_else(|| "auto".to_string()),
         if k.glass { "on" } else { "off" },
         k.glass_log,
-        k.glass_max_px
+        k.glass_max_px,
+        k.glass_scale
     )
 }
 
@@ -258,15 +265,23 @@ mod tests {
         assert!(k.glass);
         assert_eq!(k.preview_after_ms, None);
         assert_eq!(k.preview_factor, None);
+        assert_eq!(k.glass_scale, 1);
     }
 
     #[test]
     fn it_parses_keys_values_and_ignores_comments_and_typos() {
-        let k = parse("# prueba\noverscan = 0\npreview_after_ms=250\nglass = off\nbasura\nno_existe=1\nglass_max_px = 400000\n");
+        let k = parse("# prueba\noverscan = 0\npreview_after_ms=250\nglass = off\nbasura\nno_existe=1\nglass_max_px = 400000\nglass_scale = 2\n");
         assert_eq!(k.overscan, 0);
         assert_eq!(k.preview_after_ms, Some(250.0));
         assert!(!k.glass);
         assert_eq!(k.glass_max_px, 400_000);
+        assert_eq!(k.glass_scale, 2);
+    }
+
+    #[test]
+    fn a_glass_scale_below_one_or_absurd_is_clamped() {
+        assert_eq!(parse("glass_scale=0").glass_scale, 1);
+        assert_eq!(parse("glass_scale=99").glass_scale, 8);
     }
 
     #[test]

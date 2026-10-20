@@ -191,7 +191,44 @@ const MAX_LIGHT_PX: f64 = 512.0;
 /// The glass of a `w` × `h` layer whose `shape` maps through `xf` (local → layer pixels), from
 /// `back`, its backdrop padded by `pad` pixels each way, at `scale` device pixels per unit.
 #[allow(clippy::too_many_arguments)]
+/// El glass a `factor` veces menos resolución cada eje, subido después al tamaño del layer.
+///
+/// MEDIDO que hacia falta: con un panel de 271x172 unidades (662x419 px de aparato) el glass
+/// costaba 85-170 ms **por banda**, y una sola pasada de render lo parte en 4-6 bandas: 294 ms de
+/// `renderMs` frente a 22 ms con el efecto apagado (13x), y 453 ms de latencia hasta la pantalla.
+/// La lente es una funcion suave (el borde mide `depth` px, 48,8 en este movil), asi que calcularla
+/// a media resolución y subirla con bilineal no se distingue a simple vista y cuesta 4x menos.
 pub fn glass(g: &Glass, shape: &Outline, back: &Pixmap, pad: u32, w: u32, h: u32, xf: Affine, scale: f64) -> Option<Pixmap> {
+    let factor = crate::knobs::knobs().glass_scale;
+    if factor <= 1 {
+        return glass_at(g, shape, back, pad, w, h, xf, scale);
+    }
+    let f = f64::from(factor);
+    let w2 = (f64::from(w) / f).ceil().max(1.0) as u32;
+    let h2 = (f64::from(h) / f).ceil().max(1.0) as u32;
+    let pad2 = (f64::from(pad) / f).ceil() as u32;
+    let back2 = resized(back, 1.0 / f)?;
+    let small = glass_at(g, shape, &back2, pad2, w2, h2, Affine::scale(1.0 / f) * xf, scale / f)?;
+    // El redondeo de `ceil` deja el pequeno a un pixel del tamano esperado: se estira al exacto.
+    let mut out = Pixmap::new(w, h)?;
+    let paint = tiny_skia::PixmapPaint { quality: tiny_skia::FilterQuality::Bilinear, ..Default::default() };
+    let sx = w as f32 / small.width() as f32;
+    let sy = h as f32 / small.height() as f32;
+    out.draw_pixmap(0, 0, small.as_ref(), &paint, tiny_skia::Transform::from_scale(sx, sy), None);
+    Some(out)
+}
+
+/// `p` dibujado `factor` veces mas grande (o mas pequeno, con `factor` < 1).
+fn resized(p: &Pixmap, factor: f64) -> Option<Pixmap> {
+    let w = (f64::from(p.width()) * factor).round().max(1.0) as u32;
+    let h = (f64::from(p.height()) * factor).round().max(1.0) as u32;
+    let mut out = Pixmap::new(w, h)?;
+    let paint = tiny_skia::PixmapPaint { quality: tiny_skia::FilterQuality::Bilinear, ..Default::default() };
+    out.draw_pixmap(0, 0, p.as_ref(), &paint, tiny_skia::Transform::from_scale(factor as f32, factor as f32), None);
+    Some(out)
+}
+
+fn glass_at(g: &Glass, shape: &Outline, back: &Pixmap, pad: u32, w: u32, h: u32, xf: Affine, scale: f64) -> Option<Pixmap> {
     let k = crate::knobs::knobs();
     if k.glass_max_px > 0 && w.saturating_mul(h) > k.glass_max_px {
         return None;
@@ -288,8 +325,9 @@ pub fn glass(g: &Glass, shape: &Outline, back: &Pixmap, pad: u32, w: u32, h: u32
         #[cfg(target_arch = "wasm32")]
         let ms = 0.0;
         log::info!(
-            "GLASS layer {w}x{h} px={} margen={m} depth={depth:.1} reach={reach:.1} pad={pad} cubiertos={n} alfaMedia={:.1} ms={ms:.1}",
+            "GLASS layer {w}x{h} px={} margen={m} depth={depth:.1} reach={reach:.1} pad={pad} escala={} cubiertos={n} alfaMedia={:.1} ms={ms:.1}",
             u64::from(w) * u64::from(h),
+            crate::knobs::knobs().glass_scale,
             if n > 0 { sum as f64 / n as f64 } else { 0.0 }
         );
     }
