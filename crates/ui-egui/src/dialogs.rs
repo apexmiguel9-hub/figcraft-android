@@ -50,9 +50,19 @@ figcraft.exe",
     )
 }
 
-/// A dialog window, centred.
+/// A dialog's content width: the requested one, clamped so the window and its margins fit the
+/// screen (a tablet in landscape vs. a phone at 1600x720 or 2400x1080).
+pub(crate) fn dialog_width(ctx: &Context, desired: f32) -> f32 {
+    desired.min((ctx.content_rect().width() - 64.0).max(220.0))
+}
+
+/// A dialog window, centred. On a short screen it scrolls instead of running off the top and
+/// bottom; this is shared by every dialog, so Preferences, Export and the rest get it at once.
 pub(crate) fn window<'a>(title: &'a str, ctx: &Context) -> egui::Window<'a> {
-    floating(title, ctx).anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0))
+    let screen = ctx.content_rect();
+    let max_h = (screen.height() - 24.0).max(160.0);
+    let max_w = (screen.width() - 24.0).max(200.0);
+    floating(title, ctx).anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0)).max_height(max_h).max_width(max_w).vscroll(true).constrain(true)
 }
 
 /// A window styled like the dialogs that the user can move.
@@ -185,7 +195,7 @@ pub fn show(app: &mut FigApp, ctx: &Context) {
     if app.ui.about {
         let mut open = true;
         window(tr("About FigCraft"), ctx).open(&mut open).show(ctx, |ui| {
-            ui.set_width(ABOUT_WIDTH);
+            ui.set_width(dialog_width(ui.ctx(), ABOUT_WIDTH));
             tab_strip(ui, &t, &AboutTab::ALL, AboutTab::label, &mut app.ui.about_tab);
             ui.add_space(12.0);
             match app.ui.about_tab {
@@ -201,7 +211,7 @@ pub fn show(app: &mut FigApp, ctx: &Context) {
     if app.ui.preferences {
         let mut open = true;
         window(tr("Preferences"), ctx).open(&mut open).show(ctx, |ui| {
-            ui.set_width(360.0);
+            ui.set_width(dialog_width(ui.ctx(), 360.0));
             let prefs = app.session.prefs.clone();
             let mut toggles = vec![];
             for (label, val, cmd) in [
@@ -325,11 +335,15 @@ pub fn show(app: &mut FigApp, ctx: &Context) {
             .open(&mut open)
             .anchor(Align2::LEFT_TOP, vec2(260.0, 120.0))
             .resizable(false)
+            .constrain(true)
+            .vscroll(true)
+            .max_height((ctx.content_rect().height() - 24.0).max(160.0))
             .show(ctx, |ui| {
-                ui.set_width(280.0);
-                let r = ui.add(egui::TextEdit::singleline(&mut find).hint_text(tr("Find")).desired_width(260.0));
+                let w = dialog_width(ui.ctx(), 280.0);
+                ui.set_width(w);
+                let r = ui.add(egui::TextEdit::singleline(&mut find).hint_text(tr("Find")).desired_width(w));
                 crate::widgets::select_all_on_focus(ui, &r, &find);
-                let r = ui.add(egui::TextEdit::singleline(&mut replace).hint_text(tr("Replace with")).desired_width(260.0));
+                let r = ui.add(egui::TextEdit::singleline(&mut replace).hint_text(tr("Replace with")).desired_width(w));
                 crate::widgets::select_all_on_focus(ui, &r, &replace);
                 ui.horizontal(|ui| {
                     if ui.button(tr("Find")).clicked() {
@@ -384,7 +398,7 @@ fn menu_input_dialog(app: &mut FigApp, ctx: &Context) {
     let mut open = true;
     let mut action: Option<(&str, serde_json::Value)> = None;
     window(&title, ctx).open(&mut open).show(ctx, |ui| {
-        ui.set_width(320.0);
+        ui.set_width(dialog_width(ui.ctx(), 320.0));
         match &mut input {
             MenuInput::Link(url) => {
                 ui.horizontal(|ui| {
@@ -496,10 +510,11 @@ fn batch_rename_dialog(app: &mut FigApp, ctx: &Context) {
     let mut cancel = false;
     let mut apply = false;
     window(tr("Rename layers"), ctx).id(egui::Id::new("Rename layers")).open(&mut open).show(ctx, |ui| {
-        ui.set_width(320.0);
+        let w = dialog_width(ui.ctx(), 320.0);
+        ui.set_width(w);
         ui.label(RichText::new(trn("{n} layers", n, &[])).color(t.text_secondary));
         ui.add_space(6.0);
-        let r = ui.add(egui::TextEdit::singleline(&mut b.find).hint_text(tr("Match (empty: the whole name)")).desired_width(300.0));
+        let r = ui.add(egui::TextEdit::singleline(&mut b.find).hint_text(tr("Match (empty: the whole name)")).desired_width((w - 20.0).max(160.0)));
         crate::widgets::select_all_on_focus(ui, &r, &b.find);
         if crate::widgets::checkbox(ui, b.regex, tr("Regular expression")) {
             b.regex = !b.regex;
@@ -561,7 +576,7 @@ fn color_profile_dialog(app: &mut FigApp, ctx: &Context) {
     let mut open = true;
     let mut apply = None;
     window(tr("Color profile"), ctx).open(&mut open).show(ctx, |ui| {
-        ui.set_width(340.0);
+        ui.set_width(dialog_width(ui.ctx(), 340.0));
         ui.label(RichText::new(tr("Color values in this file are in this color space.")).color(t.text_secondary).font(regular(11.0)));
         ui.add_space(8.0);
         for p in ColorProfile::ALL {
@@ -678,18 +693,19 @@ fn export_dialog(app: &mut FigApp, ctx: &Context) {
     ];
     let mut choice = None;
     window(tr("Export"), ctx).open(&mut open).show(ctx, |ui| {
-        ui.set_width(320.0);
+        let w = dialog_width(ui.ctx(), 320.0);
+        ui.set_width(w);
         let caption = |ui: &mut egui::Ui, s: &str| {
             ui.label(RichText::new(s).font(regular(11.0)).color(t.text_secondary));
         };
         let divider = |ui: &mut egui::Ui| {
             ui.add_space(10.0);
-            let (r, _) = ui.allocate_exact_size(vec2(320.0, 1.0), Sense::hover());
+            let (r, _) = ui.allocate_exact_size(vec2(w, 1.0), Sense::hover());
             ui.painter().line_segment([r.left_center(), r.right_center()], Stroke::new(1.0, t.border));
             ui.add_space(10.0);
         };
         let row = |ui: &mut egui::Ui, label: &str| {
-            let (r, resp) = ui.allocate_exact_size(vec2(320.0, 30.0), Sense::click());
+            let (r, resp) = ui.allocate_exact_size(vec2(w, 30.0), Sense::click());
             if resp.hovered() {
                 ui.painter().rect_filled(r, CornerRadius::same(5), t.hover);
             }

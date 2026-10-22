@@ -466,6 +466,9 @@ pub fn show(app: &mut FigApp, ctx: &egui::Context) {
         .title_bar(false)
         .fixed_pos(pos)
         .fixed_size(vec2(240.0, 0.0))
+        .constrain(true)
+        .max_height((screen.height() - 24.0).max(180.0))
+        .vscroll(true)
         .frame(egui::Frame::window(&ctx.global_style()).fill(t.panel).inner_margin(egui::Margin::same(0)))
         .open(&mut open)
         .show(ctx, |ui| {

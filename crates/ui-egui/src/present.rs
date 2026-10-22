@@ -2391,7 +2391,9 @@ fn input(p: &mut Presenter, ctx: &egui::Context, l: &Layout, over_area: bool, ke
             })
             .collect();
         (
-            i.pointer.hover_pos(),
+            // `interact_pos` conserva el punto del toque al soltar; `hover_pos` se pierde con
+            // `PointerGone` y el click de un prototipo no llegaba.
+            i.pointer.interact_pos().or_else(|| i.pointer.latest_pos()),
             i.pointer.button_pressed(egui::PointerButton::Primary),
             i.pointer.button_released(egui::PointerButton::Primary),
             i.pointer.primary_down(),
@@ -2412,7 +2414,7 @@ fn input(p: &mut Presenter, ctx: &egui::Context, l: &Layout, over_area: bool, ke
             None => a.follow = None,
         }
     }
-    let pos = pos.filter(|_| over_area || p.press.is_some());
+    let pos = pos.filter(|_| over_area || p.press.is_some()).or_else(|| p.press.filter(|_| released));
     // A drag that scrolled lets go: it carries on at the pointer's speed (and springs back from
     // past the ends).
     if !down && let Some((t, _)) = p.drag_scroll.take() {

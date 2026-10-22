@@ -719,10 +719,9 @@ fn doble_toque(app: &mut FigApp, ctx: &egui::Context) -> ToqueAhora {
                     tragado = true;
                 } else if let Some((p0, t0)) = app.canvas.toque.abajo {
                     // Only a short, still touch is half of a double tap; a drag or a hold is not.
-                    app.canvas.toque.ultimo = (phase == egui::TouchPhase::End
-                        && app.canvas.toque.movido <= TOQUE_MOVIMIENTO_MAX
-                        && ahora - t0 <= TOQUE_SECS_MAX)
-                        .then_some((p0, ahora));
+                    app.canvas.toque.ultimo =
+                        (phase == egui::TouchPhase::End && app.canvas.toque.movido <= TOQUE_MOVIMIENTO_MAX && ahora - t0 <= TOQUE_SECS_MAX)
+                            .then_some((p0, ahora));
                 }
                 app.canvas.toque.abajo = None;
             }
@@ -865,6 +864,14 @@ fn input(app: &mut FigApp, ui: &mut Ui, resp: &egui::Response) -> bool {
         return true;
     }
     let ctx = ui.ctx().clone();
+    // Un handle (gradiente, recorte, padding, blur) que ya está arrastrando tiene que ver la
+    // suelta **antes** del corte por `hover_pos`. En tactil, egui-winit manda `PointerGone` al
+    // levantar el dedo y `hover_pos` queda en `None`; sin esto, el drag se quedaba abierto y el
+    // siguiente toque lo aplicaba en otro sitio.
+    let handle_pos = ctx.input(|i| i.pointer.interact_pos().or_else(|| i.pointer.latest_pos()));
+    if crate::handles::is_dragging(&ctx) && crate::handles::input(app, &ctx, handle_pos) {
+        return false;
+    }
     // El doble toque se mide **antes** del corte por `hover_pos`: al levantar el dedo
     // egui-winit manda `PointerGone` y `hover_pos` es `None`, y es justo la suelta la que arma
     // el toque. Debajo del corte no se armaba nunca y el doble toque no llegaba.
@@ -885,18 +892,21 @@ fn input(app: &mut FigApp, ui: &mut Ui, resp: &egui::Response) -> bool {
     // MEDIDO que aqui **no** se leen `smooth_scroll_delta` ni `zoom_delta`: los usa
     // `gestures_mouse`, que los toma de su propia lectura, para que el zoom de dos dedos se
     // aplique una sola vez y no aqui y alla.
-    let (mods, hover_pos, space) = ctx.input(|i| (i.modifiers, i.pointer.hover_pos(), i.key_down(egui::Key::Space)));
+    // `interact_pos` y no `hover_pos`: en tactil, al soltar, `hover_pos` es `None` pero
+    // `interact_pos` conserva el punto del toque. Los dos son iguales con raton.
+    let (mods, pointer_pos, space) =
+        ctx.input(|i| (i.modifiers, i.pointer.interact_pos().or_else(|| i.pointer.latest_pos()), i.key_down(egui::Key::Space)));
     let editing_text = app.session.ds().map(|d| d.text_edit.is_some()).unwrap_or(false);
     let typing_elsewhere = crate::a11y::field_focused(&ctx);
     app.canvas.space_pan = space && !editing_text && !typing_elsewhere;
-    if !app.canvas.dragging && crate::selection_spacing::input(app, &ctx, hover_pos, resp.hovered(), app.canvas.space_pan) {
+    if !app.canvas.dragging && crate::selection_spacing::input(app, &ctx, pointer_pos, resp.hovered(), app.canvas.space_pan) {
         return false;
     }
     // Dropped files import onto the canvas, behind a card while they do ([`crate::pending_open`]).
     let dropped = ctx.input(|i| i.raw.dropped_files.clone());
     for f in dropped {
         let path = f.path().to_path_buf();
-        let pt = hover_pos.map(|h| app.to_page(h)).unwrap_or_default();
+        let pt = pointer_pos.map(|h| app.to_page(h)).unwrap_or_default();
         let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "dropped.png".into());
         let params = if path.exists() {
             json!({"path": path.to_string_lossy(), "x": pt.x, "y": pt.y})
@@ -914,11 +924,11 @@ fn input(app: &mut FigApp, ui: &mut Ui, resp: &egui::Response) -> bool {
         };
         app.ui.pending_opens.push(crate::pending_open::PendingOpen { label: name, params, command: "file.import", target: Some(target) });
     }
-    let Some(pos) = hover_pos.filter(|p| app.canvas.rect.contains(*p)) else {
+    let Some(pos) = pointer_pos.filter(|p| app.canvas.rect.contains(*p)) else {
         // A drag released off the canvas, or off the window, ends where the pointer was last seen.
         if app.canvas.dragging && !ctx.input(|i| i.pointer.primary_down()) {
             app.canvas.dragging = false;
-            if let Some(at) = hover_pos.or_else(|| app.canvas.last_pointer.map(|p| app.to_screen(p.x, p.y))) {
+            if let Some(at) = pointer_pos.or_else(|| app.canvas.last_pointer.map(|p| app.to_screen(p.x, p.y))) {
                 send(app, PointerKind::Up, at, &mods);
             }
         }
@@ -980,7 +990,7 @@ fn input(app: &mut FigApp, ui: &mut Ui, resp: &egui::Response) -> bool {
     if !app.canvas.dragging && resp.hovered() && crate::guides::input(app, &ctx, pos) {
         return false;
     }
-    if !app.canvas.dragging && resp.hovered() && crate::handles::input(app, &ctx, pos) {
+    if !app.canvas.dragging && resp.hovered() && crate::handles::input(app, &ctx, Some(pos)) {
         return false;
     }
     if resp.secondary_clicked() {
@@ -1393,9 +1403,7 @@ fn overlays(app: &FigApp, painter: &egui::Painter, t: &Tokens) -> Vec<(NodeId, [
         // won the press (see `transform::box_hit`) and only cluttered the view — the "ghost
         // squares" seen on the phone. In normal selection mode the box keeps its handles, which
         // do work there.
-        if !width_tool
-            && let Some(c) = app.session.vector_edit_box()
-        {
+        if !width_tool && let Some(c) = app.session.vector_edit_box() {
             let label = format!("{} × {}", fmt((c[1] - c[0]).hypot()), fmt((c[3] - c[0]).hypot()));
             size_label = transform_box(app, painter, c.map(|p| app.to_screen(p.x, p.y)), ACCENT, true, 0, label);
         }

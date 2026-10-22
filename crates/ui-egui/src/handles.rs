@@ -71,6 +71,13 @@ fn drag_id() -> Id {
     Id::new("figcraft_handle_drag")
 }
 
+/// Whether a handle drag is still open. The canvas checks this before its early return on a lost
+/// pointer: on touch, egui-winit drops `hover_pos` when the finger lifts, and the release has to
+/// reach [`input`] so the interaction is committed.
+pub fn is_dragging(ctx: &egui::Context) -> bool {
+    ctx.data(|d| d.get_temp::<Drag>(drag_id()).is_some())
+}
+
 /// The gradient being edited (single node, picker open on a gradient paint).
 fn gradient_target(app: &FigApp) -> Option<(NodeId, bool, usize, figcraft_color::Gradient)> {
     let Some(PickerTarget::Paint { fills, index, ids }) = &app.ui.picker else { return None };
@@ -365,8 +372,10 @@ pub fn draw(app: &FigApp, painter: &egui::Painter) {
     let _ = Align2::CENTER_CENTER;
 }
 
-/// Pointer handling; returns true when a handle owns the pointer this frame.
-pub fn input(app: &mut FigApp, ctx: &egui::Context, pos: Pos2) -> bool {
+/// Pointer handling; returns true when a handle owns the pointer this frame. `pos` is `None` when
+/// the platform dropped the pointer on release (touch): a running drag then commits without
+/// applying a position it no longer has.
+pub fn input(app: &mut FigApp, ctx: &egui::Context, pos: Option<Pos2>) -> bool {
     let (pressed, down, released, shift) = ctx.input(|i| {
         (
             i.pointer.button_pressed(egui::PointerButton::Primary),
@@ -377,7 +386,7 @@ pub fn input(app: &mut FigApp, ctx: &egui::Context, pos: Pos2) -> bool {
     });
     let dragging: Option<Drag> = ctx.data(|d| d.get_temp(drag_id()));
     if let Some(drag) = dragging {
-        if down {
+        if down && let Some(pos) = pos {
             apply(app, &drag, pos, shift);
             ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
         }
@@ -387,6 +396,7 @@ pub fn input(app: &mut FigApp, ctx: &egui::Context, pos: Pos2) -> bool {
         }
         return true;
     }
+    let Some(pos) = pos else { return false };
     // Hover cursors / press to start.
     if let Some((id, fills, index, g)) = gradient_target(app) {
         let pts = [unit_to_screen(app, id, g.from), unit_to_screen(app, id, g.to), unit_to_screen(app, id, g.width)];

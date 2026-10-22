@@ -334,7 +334,7 @@ fn recent_menu(app: &mut FigApp, ui: &mut Ui, prefix: &str, key: &str, label: &s
 /// it. `key` names the submenu (its menu path, unique in its menu tree). Returns what `add`
 /// returned.
 pub(crate) fn submenu<R>(ui: &mut Ui, key: &str, label: &str, t: &Tokens, add: impl FnOnce(&mut Ui) -> Option<R>) -> Option<R> {
-    submenu_at(ui, Id::new(("submenu", key)), key, label, 4.0, false, t, add)
+    submenu_at(ui, Id::new(("submenu", key)), key, label, 4.0, true, t, add)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -627,13 +627,20 @@ fn menu_frame<R>(ui: &mut Ui, t: &Tokens, at: At, add: impl FnOnce(&mut Ui) -> R
         .inner_margin(egui::Margin::same(8))
         .shadow(egui::Shadow { offset: [0, 4], blur: 16, spread: 0, color: Color32::from_black_alpha(60) })
         .show(ui, |ui| {
-            // As wide as its widest row asked for (labels run longer in some languages).
-            let w = ui.data(|d| d.get_temp::<f32>(width_key(ui))).unwrap_or(0.0).max(MENU_W);
+            // As wide as its widest row asked for (labels run longer in some languages), but
+            // never wider than the window: on a phone a 240 pt menu plus 240 pt submenu does
+            // not fit side by side.
+            let screen = ui.ctx().content_rect();
+            let max_w = (screen.width() - 16.0).max(120.0);
+            let w = ui.data(|d| d.get_temp::<f32>(width_key(ui))).unwrap_or(0.0).max(MENU_W).min(max_w);
             ui.set_width(w);
             ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
             let key = at_key(ui);
             ui.data_mut(|d| d.insert_temp(key, at));
-            add(ui)
+            // Menus are taller than a landscape phone (the main menu alone is eleven top-level
+            // rows, and Edit has many more): scroll instead of running off the top and bottom.
+            let max_h = (screen.height() - 24.0).max(160.0);
+            egui::ScrollArea::vertical().id_salt(("menu_scroll", ui.id())).max_height(max_h).auto_shrink([false, true]).show(ui, |ui| add(ui)).inner
         })
         .inner
 }
@@ -753,37 +760,48 @@ pub fn popups(app: &mut FigApp, ctx: &egui::Context) {
     // Main menu.
     if app.ui.main_menu {
         let mut close = false;
-        let area = egui::Area::new(main_menu_id()).fixed_pos(pos2(8.0, crate::tabs::HEIGHT + 48.0)).order(egui::Order::Foreground).show(ctx, |ui| {
-            menu_frame(ui, &t, At { root: main_menu_id(), path: String::new() }, |ui| {
-                // Quick actions search row.
-                let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::click());
-                plain_row_hover(ui, &resp);
-                a11y::menu_item(&resp, tr("Actions…"), crate::shortcuts::shortcut("app.actions").unwrap_or(""), None);
-                ui.painter().rect_filled(r.shrink(2.0), CornerRadius::same(5), Color32::from_white_alpha(18));
-                icons::paint(ui.painter(), Rect::from_center_size(pos2(r.min.x + 16.0, r.center().y), vec2(14.0, 14.0)), Icon::Search, t.menu_dim);
-                ui.painter().text(pos2(r.min.x + 32.0, r.center().y), Align2::LEFT_CENTER, tr("Actions…"), regular(12.0), t.menu_dim);
-                ui.painter().text(
-                    pos2(r.max.x - 10.0, r.center().y),
-                    Align2::RIGHT_CENTER,
-                    pretty_shortcut(crate::shortcuts::shortcut("app.actions").unwrap_or("")),
-                    regular(12.0),
-                    t.menu_dim,
-                );
-                if resp.clicked() {
-// MEDIDO en Android: `set_palette` es de upstream; el foco se pide a mano o el teclado
-                    // blando de la paleta parpadea (`palette_focus_pending`).
-                    set_palette(&mut app.ui, true);
-                    app.ui.palette_focus_pending = true;
-                    close = true;
-                }
-                ui.add_space(6.0);
-                for top in TOP_MENUS {
-                    if submenu_at(ui, Id::new(("menu", *top)), top, tr(top), 12.0, false, &t, |ui| menu_level(app, ui, top).then_some(())).is_some() {
+        let area = egui::Area::new(main_menu_id())
+            .fixed_pos(pos2(8.0, crate::tabs::HEIGHT + 48.0))
+            .order(egui::Order::Foreground)
+            .constrain(true)
+            .show(ctx, |ui| {
+                menu_frame(ui, &t, At { root: main_menu_id(), path: String::new() }, |ui| {
+                    // Quick actions search row.
+                    let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::click());
+                    plain_row_hover(ui, &resp);
+                    a11y::menu_item(&resp, tr("Actions…"), crate::shortcuts::shortcut("app.actions").unwrap_or(""), None);
+                    ui.painter().rect_filled(r.shrink(2.0), CornerRadius::same(5), Color32::from_white_alpha(18));
+                    icons::paint(
+                        ui.painter(),
+                        Rect::from_center_size(pos2(r.min.x + 16.0, r.center().y), vec2(14.0, 14.0)),
+                        Icon::Search,
+                        t.menu_dim,
+                    );
+                    ui.painter().text(pos2(r.min.x + 32.0, r.center().y), Align2::LEFT_CENTER, tr("Actions…"), regular(12.0), t.menu_dim);
+                    ui.painter().text(
+                        pos2(r.max.x - 10.0, r.center().y),
+                        Align2::RIGHT_CENTER,
+                        pretty_shortcut(crate::shortcuts::shortcut("app.actions").unwrap_or("")),
+                        regular(12.0),
+                        t.menu_dim,
+                    );
+                    if resp.clicked() {
+                        // MEDIDO en Android: `set_palette` es de upstream; el foco se pide a mano o el teclado
+                        // blando de la paleta parpadea (`palette_focus_pending`).
+                        set_palette(&mut app.ui, true);
+                        app.ui.palette_focus_pending = true;
                         close = true;
                     }
-                }
+                    ui.add_space(6.0);
+                    for top in TOP_MENUS {
+                        if submenu_at(ui, Id::new(("menu", *top)), top, tr(top), 12.0, true, &t, |ui| menu_level(app, ui, top).then_some(()))
+                            .is_some()
+                        {
+                            close = true;
+                        }
+                    }
+                });
             });
-        });
         let clicked_outside = ctx.input(|i| i.pointer.any_pressed()) && !over_menu(ctx) || ctx.input(|i| i.key_pressed(egui::Key::Escape));
         if close || (clicked_outside && !area.response.hovered()) {
             app.ui.main_menu = false;
@@ -997,10 +1015,18 @@ fn palette(app: &mut FigApp, ctx: &egui::Context) {
     let Some(mut q) = app.ui.palette.clone() else { return };
     let t = Tokens::get(ctx);
     // Same centre and width as the toolbar pill (it centres on the canvas, not the window),
-    // floating 8 px above it. Fixed size: switching tabs never resizes the panel.
-    let bar_w = crate::toolbar::main_width();
+    // floating 8 px above it. The panel shrinks to the screen instead of running off the top:
+    // `PALETTE_H` is taller than a landscape phone (443 pt on the Moto G56, 360 pt at 1600x720).
+    let screen = ctx.content_rect();
+    let bar_w = crate::toolbar::main_width().min((screen.width() - 16.0).max(240.0));
     let bar = crate::toolbar::pill_rect(app.canvas.rect, bar_w);
-    let area = Rect::from_min_max(pos2(bar.min.x, bar.min.y - 8.0 - (PALETTE_H + 16.0)), pos2(bar.max.x, bar.min.y - 8.0));
+    let bottom = (bar.min.y - 8.0).min(screen.max.y - 8.0);
+    let panel_h = PALETTE_H.min((bottom - screen.min.y - 16.0).max(160.0));
+    let total_h = panel_h + 16.0;
+    let top = (bottom - total_h).max(screen.min.y + 8.0);
+    // If the top was clamped by the screen, shrink the body so the frame still ends at `bottom`.
+    let panel_h = panel_h.min((bottom - top - 16.0).max(120.0));
+    let area = Rect::from_min_max(pos2(bar.min.x.max(screen.min.x + 8.0), top), pos2(bar.max.x.min(screen.max.x - 8.0), bottom));
     let mut run: Option<String> = None;
     let mut close = false;
     // A press anywhere outside closes the panel. The opening press is spared once, and the
@@ -1029,27 +1055,28 @@ fn palette(app: &mut FigApp, ctx: &egui::Context) {
             .inner_margin(egui::Margin::same(8))
             .show(ui, |ui| {
                 // Same outer width as the toolbar pill, and a fixed height: switching tabs
-                // never resizes the panel.
-                let inner = bar_w - 16.0;
+                // never resizes the panel. On a small screen both shrink to the space above
+                // the toolbar, and the list scrolls inside.
+                let inner = (area.width() - 16.0).max(120.0);
                 ui.set_width(inner);
-                ui.set_height(PALETTE_H);
+                ui.set_height(panel_h);
                 let r = ui.add(
                     egui::TextEdit::singleline(&mut q)
                         .hint_text(tr("Search actions, layers and tools"))
-                        .desired_width(inner - 16.0)
+                        .desired_width((inner - 16.0).max(80.0))
                         .font(regular(14.0))
                         .frame(egui::Frame::NONE.inner_margin(egui::Margin::same(8))),
                 );
                 // MEDIDO en Android (Moto G56 5G, Android 16), y son **dos** bugs distintos:
-//
-// * Pedir el foco **en cada frame** hace que el teclado se active y desactive repetidamente: es
-//   el "aparece y desaparece" de antes.
-// * Pedirlo **una sola vez** tampoco vale: al abrirse el teclado, Android redimensiona la pantalla
-//   (`adjustResize`), el palette se re-coloca y el `TextEdit` **pierde el foco sin recuperarlo**, y
-//   el teclado se esconde a la primera letra.
-//
-// Lo que vale es lo de en medio: pedirlo **solo cuando falta**. Asi no se pide en cada frame (no
-// parpadea) y si el foco se pierde por lo que sea, se recupera.
+                //
+                // * Pedir el foco **en cada frame** hace que el teclado se active y desactive repetidamente: es
+                //   el "aparece y desaparece" de antes.
+                // * Pedirlo **una sola vez** tampoco vale: al abrirse el teclado, Android redimensiona la pantalla
+                //   (`adjustResize`), el palette se re-coloca y el `TextEdit` **pierde el foco sin recuperarlo**, y
+                //   el teclado se esconde a la primera letra.
+                //
+                // Lo que vale es lo de en medio: pedirlo **solo cuando falta**. Asi no se pide en cada frame (no
+                // parpadea) y si el foco se pierde por lo que sea, se recupera.
                 if !ui.memory(|m| m.has_focus(r.id)) {
                     r.request_focus();
                 }
@@ -1087,7 +1114,8 @@ fn palette(app: &mut FigApp, ctx: &egui::Context) {
                 app.ui.palette_hi = hi;
                 // The pointer moving over a row moves the highlight there.
                 let pointer_moved = ui.input(|i| i.pointer.delta() != egui::Vec2::ZERO);
-                egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+                let list_h = (panel_h - 70.0).max(80.0);
+                egui::ScrollArea::vertical().max_height(list_h).show(ui, |ui| {
                     let mut i = 0;
                     for (name, rows) in &sections {
                         section(ui, &t, name, |ui| {

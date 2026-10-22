@@ -213,7 +213,7 @@ fn pages(app: &mut FigApp, ui: &mut Ui) {
     let mut rename_done: Option<(NodeId, String)> = None;
     // Layers dragged from the list onto another page move there.
     let dragging: Option<NodeId> = ui.data(|d| d.get_temp(layer_drag_id()));
-    let pointer = ui.input(|i| i.pointer.hover_pos());
+    let pointer = ui.input(|i| i.pointer.interact_pos().or_else(|| i.pointer.latest_pos()));
     let mut move_to: Option<(NodeId, String)> = None;
     // Pages are dragged up and down the list to reorder them.
     let mut reorder = crate::list_drag::ListDrag::in_order(ui, "pages");
@@ -283,7 +283,7 @@ fn pages(app: &mut FigApp, ui: &mut Ui) {
     });
     // A drop outside the list's visible area (and the row gap at its edges) isn't on a page row,
     // even one scrolled out of view.
-    if !ui.input(|i| i.pointer.latest_pos()).is_some_and(|p| moved.inner_rect.expand2(vec2(0.0, 3.0)).contains(p)) {
+    if !pointer.is_some_and(|p| moved.inner_rect.expand2(vec2(0.0, 3.0)).contains(p)) {
         moved.inner = None;
         move_to = None;
     }
@@ -380,6 +380,13 @@ struct Sweep {
 
 fn sweep_id() -> Id {
     Id::new("layer_toggle_sweep")
+}
+
+/// The row and insertion zone a layer drag last previewed. On touch the release can arrive without
+/// a pointer position (`PointerGone`), so the drop uses the target the user last saw highlighted
+/// instead of guessing from a position that no longer exists.
+fn layer_drop_id() -> Id {
+    Id::new("layer_drop_target")
 }
 
 /// What a drag of row `dragging` moves: the selection when the row is in it, else the row.
@@ -722,14 +729,22 @@ fn layers(app: &mut FigApp, ui: &mut Ui) {
     let drag_id = layer_drag_id();
     // Escape cancels a drag.
     if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-        ui.data_mut(|d| d.remove::<NodeId>(drag_id));
+        ui.data_mut(|d| {
+            d.remove::<NodeId>(drag_id);
+            d.remove::<(NodeId, i8)>(layer_drop_id());
+        });
     }
     let dragging: Option<NodeId> = ui.data(|d| d.get_temp(drag_id));
+    // En tactil, la suelta puede venir sin `hover_pos`; `interact_pos` conserva el ultimo toque.
+    let pointer = ui.input(|i| i.pointer.interact_pos().or_else(|| i.pointer.latest_pos()));
     let mut sweep: Option<Sweep> = ui.data(|d| d.get_temp(sweep_id()));
     let moving = dragged_layers(dragging, &sel);
     // A layer can't go into itself or its own descendants.
     let blocked = |id: NodeId| moving.contains(&id) || doc.ancestors(id).iter().any(|a| moving.contains(a));
     let mut drop: Option<(NodeId, i8)> = None;
+    // Whether this frame previewed a drop target (so a stale target can be forgotten when the
+    // pointer leaves the rows before it is released).
+    let mut previewed = false;
     // The drag is over a row that takes no drop: the not-allowed cursor shows.
     let mut refused = false;
     // Only the rows in view are laid out and drawn; the rest is empty scroll space.
@@ -751,7 +766,7 @@ fn layers(app: &mut FigApp, ui: &mut Ui) {
         }
         // Dragging near the list's top or bottom edge scrolls it, faster closer to the edge.
         if dragging.is_some()
-            && let Some(p) = ui.input(|i| i.pointer.hover_pos())
+            && let Some(p) = pointer
         {
             const EDGE: f32 = 28.0;
             let view = ui.clip_rect();
@@ -866,7 +881,7 @@ fn layers(app: &mut FigApp, ui: &mut Ui) {
             // A sweep across the eyes or padlocks takes in the rows the pointer passes.
             if let Some(sw) = sweep.as_mut()
                 && !sw.ids.contains(&row.id)
-                && ui.input(|i| i.pointer.hover_pos()).is_some_and(|p| r.y_range().contains(p.y))
+                && pointer.is_some_and(|p| r.y_range().contains(p.y))
             {
                 sw.ids.push(row.id);
             }
@@ -911,23 +926,27 @@ fn layers(app: &mut FigApp, ui: &mut Ui) {
                 if !sel.contains(&row.id) {
                     clicked = Some((row.id, egui::Modifiers::NONE));
                 }
-                let pos = ui.input(|i| i.pointer.hover_pos()).unwrap_or(r.center());
+                let pos = pointer.unwrap_or(r.center());
                 app.ui.context_menu = Some((pos, vec![row.id]));
             }
             // Drag to reorder.
             if resp.drag_started() {
-                ui.data_mut(|d| d.insert_temp(drag_id, row.id));
+                ui.data_mut(|d| {
+                    d.insert_temp(drag_id, row.id);
+                    d.remove::<(NodeId, i8)>(layer_drop_id());
+                });
             }
-            let over = dragging.is_some() && ui.input(|i| i.pointer.hover_pos()).is_some_and(|p| r.contains(p));
+            let over = dragging.is_some() && pointer.is_some_and(|p| r.contains(p));
             // What is inside the dragged layers, and inside an instance, takes no drop.
             refused |= over
                 && (doc.ancestors(row.id).iter().any(|a| moving.contains(a))
                     || n.parent.is_some_and(|p| figcraft_engine::components::structure_locked(&doc, p)));
             if dragging.is_some()
                 && !blocked(row.id)
-                && let Some(p) = ui.input(|i| i.pointer.hover_pos())
+                && let Some(p) = pointer
                 && r.contains(p)
             {
+                previewed = true;
                 let rel = (p.y - r.min.y) / r.height();
                 let into = n.kind.is_container() && !matches!(n.kind, NodeKind::Instance { .. }) && (0.25..0.75).contains(&rel);
                 let zone: i8 = if into {
@@ -937,6 +956,9 @@ fn layers(app: &mut FigApp, ui: &mut Ui) {
                 } else {
                     1
                 };
+                // Remember the target that is being previewed: a touch release may not carry a
+                // position with it.
+                ui.data_mut(|d| d.insert_temp(layer_drop_id(), (row.id, zone)));
                 let y = match zone {
                     -1 => r.min.y,
                     1 => r.max.y,
@@ -969,6 +991,11 @@ fn layers(app: &mut FigApp, ui: &mut Ui) {
                 }
             }
         }
+        // The pointer left the rows (or is over one that refuses the drop): forget the preview so
+        // a release in empty space doesn't use an older target.
+        if dragging.is_some() && pointer.is_some() && !previewed {
+            ui.data_mut(|d| d.remove::<(NodeId, i8)>(layer_drop_id()));
+        }
         // The field of a rename scrolled out of view stays (unseen), so the rename goes on.
         if let Some((i, id, depth)) = rename_row.filter(|(i, ..)| !(first..last).contains(i))
             && let Some(n) = doc.node(id)
@@ -986,7 +1013,7 @@ fn layers(app: &mut FigApp, ui: &mut Ui) {
         }
     });
     // The dragged layers' name follows the pointer.
-    if let (Some(dg), Some(p)) = (dragging, ui.input(|i| i.pointer.hover_pos())) {
+    if let (Some(dg), Some(p)) = (dragging, pointer) {
         let label = match moving.len() {
             1 => doc.node(dg).map(|n| n.name.clone()).unwrap_or_default(),
             n => trn("{n} layers", n, &[]),
@@ -1012,11 +1039,14 @@ fn layers(app: &mut FigApp, ui: &mut Ui) {
         }
     }
     if ui.input(|i| i.pointer.any_released()) {
+        // The finger can lift after `PointerGone`, so the last previewed target is the drop.
+        let target = drop.or_else(|| ui.data(|d| d.get_temp::<(NodeId, i8)>(layer_drop_id())));
         ui.data_mut(|d| {
             d.remove::<NodeId>(drag_id);
             d.remove::<(NodeId, f64)>(Id::new("layer_drag_hold"));
+            d.remove::<(NodeId, i8)>(layer_drop_id());
         });
-        if let (Some(_), Some((target, zone))) = (dragging, drop) {
+        if let (Some(_), Some((target, zone))) = (dragging, target) {
             let ids = moving.clone();
             match zone {
                 0 => {
