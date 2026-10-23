@@ -590,7 +590,7 @@ fn submenu_at<R>(
     // can release without egui reporting `clicked()` (the pointer is already gone), so the
     // press over the row opens it too.
     let pressed = ui.ctx().input(|i| i.pointer.any_pressed());
-    if resp.has_focus() || resp.clicked() || (pressed && resp.hovered()) {
+    if resp.has_focus() || resp.clicked() || (pressed && resp.contains_pointer()) {
         set_open(ui.ctx(), at.root, &at.path, Some(key));
     } else if resp.hovered() && !aim {
         hover_request(ui.ctx(), &at, Some(key));
@@ -667,7 +667,7 @@ fn menu_frame<R>(ui: &mut Ui, t: &Tokens, at: At, add: impl FnOnce(&mut Ui) -> R
                 // The panel starts at the same absolute y as the main menu.
                 (screen.max.y - (crate::tabs::HEIGHT + 48.0) - 16.0).max(160.0)
             };
-            let fresh = ui.data_mut(|d| d.remove_temp::<bool>(Id::new(("menu_fresh", at.root, at.path.clone()))));
+            let fresh = ui.data_mut(|d| d.remove_temp::<bool>(Id::new(("menu_fresh", at.root, at.path.clone())))).unwrap_or(false);
             let mut scroll =
                 egui::ScrollArea::vertical().id_salt(("menu_scroll", at.root, at.path.clone())).max_height(max_h).auto_shrink([false, true]);
             if fresh {

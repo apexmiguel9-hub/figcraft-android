@@ -4,7 +4,7 @@
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU8, Ordering};
 
-use egui::{Context, Event, Id, Key, Modifiers, pos2, vec2};
+use egui::{Context, Event, Key, Modifiers};
 use figcraft_engine::keymap::{self, Platform};
 use serde_json::json;
 
