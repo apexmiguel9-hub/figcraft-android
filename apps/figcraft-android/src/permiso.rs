@@ -95,6 +95,17 @@ static CONCEDIDO: AtomicBool = AtomicBool::new(false);
 /// El usuario ya dijo que no. No se vuelve a preguntar.
 static DESCARTADO: AtomicBool = AtomicBool::new(false);
 
+/// Si ya se pudo leer el permiso al menos una vez.
+///
+/// MEDIDO: `CONCEDIDO` empieza en `false`, y eso **no** significa "denegado" hasta que
+/// termina la primera lectura. Sin esta bandera el aviso salia en el primer frame aunque
+/// el permiso ya estuviera concedido.
+static LEIDO: AtomicBool = AtomicBool::new(false);
+
+/// Cache de la marca de "ya se pregunto", para no tocar el disco en cada frame.
+static PREGUNTADO: AtomicBool = AtomicBool::new(false);
+static PREGUNTADO_CARGADO: AtomicBool = AtomicBool::new(false);
+
 /// Frames que quedan mirando el permiso, porque el usuario se ha ido a Ajustes.
 static MIRANDO: AtomicU32 = AtomicU32::new(0);
 
@@ -125,6 +136,12 @@ const GRACIA: u32 = 180;
 /// Guardar el `JavaVM` del proceso. Se llama una vez, al arrancar.
 pub fn registrar(app: &winit::platform::android::activity::AndroidApp) {
     VM.store(app.vm_as_ptr() as *mut JavaVM, Ordering::Release);
+    // La clase puede haber llegado antes que la JVM: `MainActivity.onCreate` llama a
+    // `nativeListo` antes de que arranque `android_main`. Si ya esta, se lee aqui, en el
+    // hilo nativo, que es el unico sitio donde `attach_current_thread_for_scope` vale.
+    if !CLASE_JAVA.load(Ordering::Acquire).is_null() {
+        leer();
+    }
 }
 
 /// Java -> Rust: la app ya esta viva y nos pasa su propia clase.
@@ -158,9 +175,9 @@ pub extern "system" fn Java_ai_storyteller_figcraft_MainActivity_nativeListo<'ca
         })
         .resolve_with::<jni::errors::LogContextErrorAndDefault, _>(|| "MainActivity no pudo pasar su clase a Rust".to_string());
     log::info!("permiso: clase de Java recibida: {}", CLASE_JAVA.load(Ordering::Acquire) != std::ptr::null_mut());
-    // La clase acaba de llegar: este es el momento de la primera lectura, y es el
-    // unico que se puede hacer con seguridad — antes, `clase()` daria null.
-    leer();
+    // La primera lectura **no** se hace aqui: en `onCreate` la JVM todavia puede no estar
+    // registrada en `VM`, y `leer()` fallaria. Se hace en `registrar` o, como red de
+    // seguridad, en el primer frame de `cada_frame`.
 }
 
 /// La clase de Java, por el puntero que nos paso `nativeListo`.
@@ -399,6 +416,9 @@ fn leer() {
     // dos niveles. Es el mismo error que salio al ultimo con `pick_open`.
     match r {
         Ok(v) => {
+            // La lectura ha funcionado: desde aqui `concedido() == false` ya significa de
+            // verdad "denegado", no "todavia no lo se".
+            LEIDO.store(true, Ordering::Release);
             let antes = CONCEDIDO.swap(v, Ordering::AcqRel);
             if antes != v {
                 log::info!("permiso: acceso a todos los archivos: {v}");
@@ -417,8 +437,11 @@ pub fn concedido() -> bool {
 
 /// ¿Hay que preguntar? MEDIDO que se pueda saltar sin romper nada, asi que basta con que
 /// falte el permiso y que el usuario no haya dicho que no.
+///
+/// `LEIDO` es imprescindible: hasta que la primera lectura no termina, `concedido()`
+/// vale `false` por inicializacion, no porque falte el permiso.
 pub fn hay_que_preguntar() -> bool {
-    !concedido() && !DESCARTADO.load(Ordering::Acquire)
+    LEIDO.load(Ordering::Acquire) && !concedido() && !DESCARTADO.load(Ordering::Acquire) && !ya_preguntado()
 }
 
 /// Abrir los Ajustes de "Acceso a todos los archivos".
@@ -426,6 +449,9 @@ pub fn hay_que_preguntar() -> bool {
 /// MEDIDO que esto **no** es SAF y por eso no da ANR: se lanza y se vuelve, sin esperar
 /// nada. El bloqueo del ANR era esperar dentro del update de egui, que ya no existe.
 pub fn pedir() {
+    // Si el usuario pulsa Permitir, ya ha visto el aviso: no se le vuelve a sacar en el
+    // siguiente arranque aunque no llegue a activar el interruptor.
+    marcar_preguntado();
     // Se mira un rato largo: el viaje a Ajustes, el interruptor y la vuelta. Y se
     // apaga solo si el usuario no vuelve, para no preguntar sin parar.
     MIRANDO.store(GRACIA, Ordering::Release);
@@ -448,6 +474,9 @@ pub fn pedir() {
 /// El usuario ha dicho que ahora no. No se vuelve a preguntar.
 pub fn descartar() {
     DESCARTADO.store(true, Ordering::Release);
+    // Que no vuelva a salir en el siguiente arranque: el usuario ya lo ha visto y ha
+    // elegido seguir sin el permiso.
+    marcar_preguntado();
     MIRANDO.store(0, Ordering::Release);
     log::info!("permiso: el usuario lo aplaza; el browser se queda en lo nuestro");
 }
@@ -458,6 +487,13 @@ pub fn descartar() {
 /// posterior, asi que en vez de adivinar se relee un rato y se para.
 pub fn cada_frame() {
     FRAMES.fetch_add(1, Ordering::Relaxed);
+    // La primera lectura se hace **aqui**, en el primer frame, cuando la JVM ya esta
+    // registrada y la clase ya llego. Antes se hacia en `nativeListo`, pero alli `VM`
+    // todavia podia ser nulo y la lectura fallaba; el aviso se quedaba en pantalla
+    // aunque el permiso estuviera concedido.
+    if !LEIDO.load(Ordering::Acquire) && !CLASE_JAVA.load(Ordering::Acquire).is_null() {
+        leer();
+    }
     preguntar_una_vez();
 
     // La clase llega en el `onCreate`, antes que el primer frame, asi que normalmente
@@ -530,7 +566,7 @@ fn preguntar_una_vez() {
         log::error!("permiso: no se pudo crear {}: {e}", dir.display());
     }
 
-    if concedido() || DESCARTADO.load(Ordering::Acquire) || ya_preguntado() {
+    if !LEIDO.load(Ordering::Acquire) || concedido() || DESCARTADO.load(Ordering::Acquire) || ya_preguntado() {
         return;
     }
     if FRAMES.load(Ordering::Relaxed) < ESPERA_ANTES_DE_PREGUNTAR {
@@ -550,7 +586,11 @@ fn marca() -> std::path::PathBuf {
 }
 
 fn ya_preguntado() -> bool {
-    marca().is_file()
+    if !PREGUNTADO_CARGADO.load(Ordering::Acquire) {
+        PREGUNTADO.store(marca().is_file(), Ordering::Release);
+        PREGUNTADO_CARGADO.store(true, Ordering::Release);
+    }
+    PREGUNTADO.load(Ordering::Acquire)
 }
 
 fn marcar_preguntado() {
@@ -559,6 +599,8 @@ fn marcar_preguntado() {
     if let Err(e) = std::fs::write(marca(), b"1") {
         log::debug!("permiso: no se pudo marcar que ya se pregunto: {e}");
     }
+    PREGUNTADO.store(true, Ordering::Release);
+    PREGUNTADO_CARGADO.store(true, Ordering::Release);
 }
 
 /// Where the app's own documents live, for the permission-free browser start.
