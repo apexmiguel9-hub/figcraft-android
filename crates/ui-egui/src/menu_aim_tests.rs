@@ -191,7 +191,9 @@ fn a_submenu_one_level_down_reopens_closed() {
         u.settle(pos2(panel.center().x, y));
         y += 7.0;
     }
-    let Some(open) = sub_shown(&u) else { panic!("no File submenu opened (looked for {keys:?})") };
+    let Some(open) = sub_shown(&u) else {
+        panic!("no File submenu opened (looked for {keys:?}); panel={panel:?}; y={y}; file_shown={}; tops={:?}", u.shown(top("File")), u.tops_shown())
+    };
     // Over to Edit and back to File: File shows, without its submenu.
     u.hover(u.top_row(1).center());
     u.wait(AIM_REST + 0.1);
