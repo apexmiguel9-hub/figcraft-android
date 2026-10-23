@@ -651,11 +651,9 @@ fn menu_frame<R>(ui: &mut Ui, t: &Tokens, at: At, add: impl FnOnce(&mut Ui) -> R
             // not fit side by side.
             let screen = ui.ctx().content_rect();
             let max_w = (screen.width() - 16.0).max(120.0);
-            let w = ui.data(|d| d.get_temp::<f32>(width_key(ui))).unwrap_or(0.0).max(MENU_W).min(max_w);
+            let w = ui.data(|d| d.get_temp::<f32>(width_key_for(&at))).unwrap_or(0.0).max(MENU_W).min(max_w);
             ui.set_width(w);
             ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
-            let key = at_key(ui);
-            ui.data_mut(|d| d.insert_temp(key, at.clone()));
             // Menus are taller than a landscape phone (the main menu alone is eleven top-level
             // rows, and Edit has many more): scroll instead of running off the top and bottom.
             // On a phone a submenu is pinned below the tab bar (see `submenu_at`), so it has
@@ -673,7 +671,18 @@ fn menu_frame<R>(ui: &mut Ui, t: &Tokens, at: At, add: impl FnOnce(&mut Ui) -> R
             if fresh {
                 scroll = scroll.vertical_scroll_offset(0.0);
             }
-            scroll.show(ui, |ui| add(ui)).inner
+            // The rows live in the scroll area's own `Ui`, not in this frame's. The menu level
+            // has to be stored on that one too: `level_at` reads it from the `Ui` that draws the
+            // rows. Storing it only here made every level fall back to the same `"menus"`/empty
+            // path, so hovering a submenu item closed the submenu (it thought it was a plain row
+            // of the parent), and closing the menu never forgot the real tree.
+            let inner_at = at.clone();
+            scroll
+                .show(ui, |ui| {
+                    ui.data_mut(|d| d.insert_temp(at_key(ui), inner_at));
+                    add(ui)
+                })
+                .inner
         })
         .inner
 }
@@ -682,8 +691,12 @@ fn menu_frame<R>(ui: &mut Ui, t: &Tokens, at: At, add: impl FnOnce(&mut Ui) -> R
 const MENU_W: f32 = 240.0;
 
 /// Where a menu remembers the width its rows need (its frame's ui), per language.
+fn width_key_for(at: &At) -> Id {
+    Id::new(("menu_w", at.root, at.path.clone(), i18n::current().map(|l| l.code)))
+}
+
 fn width_key(ui: &Ui) -> Id {
-    ui.id().with(("menu_w", i18n::current().map(|l| l.code)))
+    width_key_for(&level_at(ui))
 }
 
 /// A row needs `w`: the menu widens to it from the next frame on.

@@ -1416,9 +1416,16 @@ impl FigApp {
         self.frame(ui);
         windows::settle(self, &ctx, files);
         if self.session.prefs != prefs {
-            // Android can kill the app without a clean shutdown: write preferences as soon as
-            // they change, whether or not the dialog's Save was pressed.
-            self.services.save_prefs(&self.session.prefs);
+            // The side panels have their own save when the drag ends (and in their command):
+            // writing here too would hit the disk on every pointer move, and save the same
+            // widths twice once the drag is over.
+            let mut others = self.session.prefs.clone();
+            others.panel_widths = prefs.panel_widths;
+            if others != prefs {
+                // Android can kill the app without a clean shutdown: write preferences as soon as
+                // they change, whether or not the dialog's Save was pressed.
+                self.services.save_prefs(&self.session.prefs);
+            }
             windows::repaint_others(self, &ctx);
         }
         windows::show(self, &ctx);

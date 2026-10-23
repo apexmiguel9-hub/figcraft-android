@@ -101,7 +101,7 @@ fn the_templates_grid_shows_every_template_and_a_click_opens_a_new_document() {
         assert!(has_text(&s, t.name), "{}", t.name);
     }
     assert!(has_text(&s, "Apps · 390 × 844"), "the kind and size tag");
-    assert_eq!(cached_thumbnails(&u.ctx, false).len(), TEMPLATES.len(), "every card has its picture");
+    assert_eq!(cached_thumbnails(&u.ctx, true).len(), TEMPLATES.len(), "every card has its picture");
     click(&mut u, text_center(&s, "Dashboard"));
     assert_eq!(u.app.session.docs.len(), 1);
     let ds = u.app.session.ds().unwrap();
@@ -344,12 +344,12 @@ fn empty_home_search_can_browse_all_templates() {
 fn thumbnails_are_cached_per_theme() {
     let mut u = first_run();
     templates_tab(&mut u);
-    assert_eq!(cached_thumbnails(&u.ctx, false).len(), TEMPLATES.len());
-    assert!(cached_thumbnails(&u.ctx, true).is_empty());
-    u.app.session.prefs.theme = "dark".into();
+    assert_eq!(cached_thumbnails(&u.ctx, true).len(), TEMPLATES.len());
+    assert!(cached_thumbnails(&u.ctx, false).is_empty());
+    u.app.session.prefs.theme = "light".into();
     settle(&mut u);
-    assert_eq!(cached_thumbnails(&u.ctx, true).len(), TEMPLATES.len(), "the dark theme's pictures");
-    assert_eq!(cached_thumbnails(&u.ctx, false).len(), TEMPLATES.len(), "the light ones are kept");
+    assert_eq!(cached_thumbnails(&u.ctx, false).len(), TEMPLATES.len(), "the light theme's pictures");
+    assert_eq!(cached_thumbnails(&u.ctx, true).len(), TEMPLATES.len(), "the dark ones are kept");
 }
 
 #[test]
@@ -362,7 +362,7 @@ fn the_home_screen_draws_no_frames_once_its_thumbnails_are_in() {
         let (_, delay) = h.frame(vec![]);
         assert!(delay >= std::time::Duration::from_secs(1), "{tab:?} asks for a frame in {delay:?}: {:?}", h.ctx.repaint_causes());
     }
-    assert_eq!(cached_thumbnails(&h.ctx, false).len(), TEMPLATES.len());
+    assert_eq!(cached_thumbnails(&h.ctx, true).len(), TEMPLATES.len());
 }
 
 #[test]

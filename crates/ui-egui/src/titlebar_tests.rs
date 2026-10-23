@@ -142,8 +142,8 @@ fn edges_and_corners_resize_the_window() {
 fn tabs_and_new_tab_keep_their_clicks() {
     let mut u = Ui::new(TitleBar::Custom);
     u.app.ui.home = true;
-    // The open file's tab switches to it.
-    assert!(u.click(pos2(100.0, 20.0)).is_empty());
+    // The open file's tab (after the undo/redo pair) switches to it.
+    assert!(u.click(pos2(176.0, 20.0)).is_empty());
     assert!(!u.app.ui.home);
     // The `+` right of it opens a new file (found by clicking along the bar past the tab).
     let mut opened = false;
