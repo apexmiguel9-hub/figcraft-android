@@ -61,7 +61,14 @@ pub(crate) fn window<'a>(title: &'a str, ctx: &Context) -> egui::Window<'a> {
     let screen = ctx.content_rect();
     let max_h = (screen.height() - 24.0).max(160.0);
     let max_w = (screen.width() - 24.0).max(200.0);
-    floating(title, ctx).anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0)).max_height(max_h).max_width(max_w).vscroll(true).constrain(true)
+    let mut window = floating(title, ctx).anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0)).max_height(max_h).max_width(max_w).constrain(true);
+    // En una pantalla corta el scroll es lo que deja llegar a todo. En una normal no se activa:
+    // el `ScrollArea` se queda con las flechas y rompe el recorrido de foco por teclado de los
+    // menus dentro del dialogo (Preferences ▸ Interface size).
+    if screen.height() < 640.0 {
+        window = window.vscroll(true);
+    }
+    window
 }
 
 /// A window styled like the dialogs that the user can move.
