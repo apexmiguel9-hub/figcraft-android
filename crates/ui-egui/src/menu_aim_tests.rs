@@ -186,13 +186,29 @@ fn a_submenu_one_level_down_reopens_closed() {
     let sub_shown = |u: &Ui| keys.iter().find(|k| u.shown(Id::new(("submenu", k.as_str())))).cloned();
     // Down the middle of File's panel until one of its submenus opens.
     let panel = u.rect(top("File"));
+    // The File menu may be taller than its scroll viewport (the panel is capped on short
+    // windows): go to its end so the last row, Open recent, is on screen.
+    u.hover(panel.center());
+    for _ in 0..40 {
+        u.frame(vec![Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: vec2(0.0, -40.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: Default::default(),
+        }]);
+    }
     let mut y = panel.min.y + 10.0;
     while sub_shown(&u).is_none() && y < panel.max.y {
         u.settle(pos2(panel.center().x, y));
         y += 7.0;
     }
     let Some(open) = sub_shown(&u) else {
-        panic!("no File submenu opened (looked for {keys:?}); panel={panel:?}; y={y}; file_shown={}; tops={:?}", u.shown(top("File")), u.tops_shown())
+        panic!(
+            "no File submenu opened (looked for {keys:?}); panel={panel:?}; y={y}; file_shown={}; tops={:?}; screen={:?}",
+            u.shown(top("File")),
+            u.tops_shown(),
+            u.ctx.content_rect()
+        )
     };
     // Over to Edit and back to File: File shows, without its submenu.
     u.hover(u.top_row(1).center());

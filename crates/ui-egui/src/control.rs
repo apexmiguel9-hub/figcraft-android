@@ -487,9 +487,13 @@ pub fn handle(app: &mut FigApp, ctx: &Context, method: &str, p: &Value) -> Resul
             match p.get("contextMenu") {
                 Some(Value::Array(at)) => {
                     let (x, y) = (at.first().and_then(Value::as_f64).unwrap_or(0.0), at.get(1).and_then(Value::as_f64).unwrap_or(0.0));
+                    app.ui.context_menu_ignore_release = false;
                     crate::canvas::open_context_menu(app, egui::pos2(x as f32, y as f32), b(p, "cmd"));
                 }
-                Some(Value::Null) => app.ui.context_menu = None,
+                Some(Value::Null) => {
+                    app.ui.context_menu = None;
+                    app.ui.context_menu_ignore_release = false;
+                }
                 _ => {}
             }
             if let Some(v) = p.get("contextSelectLayer").and_then(Value::as_bool) {

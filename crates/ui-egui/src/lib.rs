@@ -495,6 +495,10 @@ pub struct UiState {
     pub preview: Option<present::Pane>,
     pub picker: Option<colorpicker::PickerTarget>,
     pub context_menu: Option<(egui::Pos2, Vec<NodeId>)>,
+    /// The context menu just opened from a long press (the finger is still down) or from the
+    /// release of a right-click; that same release must not count as a click outside and close
+    /// it. Cleared on the first release after opening.
+    pub context_menu_ignore_release: bool,
     /// The context menu was asked for from the keyboard (`view.contextMenu`): it opens at the
     /// focused layer row or the canvas selection and takes the keyboard.
     pub key_menu: bool,
@@ -638,6 +642,7 @@ impl Default for UiState {
             preview: None,
             picker: None,
             context_menu: None,
+            context_menu_ignore_release: false,
             key_menu: false,
             key_box: None,
             layer_search: false,

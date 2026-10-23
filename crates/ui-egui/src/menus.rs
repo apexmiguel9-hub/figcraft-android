@@ -827,6 +827,10 @@ pub fn popups(app: &mut FigApp, ctx: &egui::Context) {
     if ctx.data(|d| d.get_temp::<Option<egui::Pos2>>(ctx_seen)) != Some(ctx_at) {
         ctx.data_mut(|d| d.insert_temp(ctx_seen, ctx_at));
         forget_tree(ctx, ctx_menu_id());
+        // A context menu opened by a long press still has the finger down; one opened by a
+        // right-click opens on the release itself. In both cases the release that ends the
+        // gesture is not a click outside, so it must not close the menu.
+        app.ui.context_menu_ignore_release = ctx_at.is_some() && ctx.input(|i| i.pointer.any_down() || i.pointer.any_released());
     }
     // Select layer opened or closed from the control channel.
     if let Some(open) = ctx.data_mut(|d| d.remove_temp::<bool>(select_layer_ask_id())) {
@@ -1004,9 +1008,16 @@ pub fn popups(app: &mut FigApp, ctx: &egui::Context) {
                 }
             });
         });
-        let clicked_outside = released_outside(ctx, area.response.rect) || ctx.input(|i| i.key_pressed(egui::Key::Escape));
-        if close || clicked_outside {
+        let released = ctx.input(|i| i.pointer.any_released());
+        let ignore_release = app.ui.context_menu_ignore_release;
+        if ignore_release && released {
+            app.ui.context_menu_ignore_release = false;
+        }
+        let escape = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+        let clicked_outside = !ignore_release && released_outside(ctx, area.response.rect);
+        if close || escape || clicked_outside {
             app.ui.context_menu = None;
+            app.ui.context_menu_ignore_release = false;
             forget_tree(ctx, ctx_menu_id());
         }
     }

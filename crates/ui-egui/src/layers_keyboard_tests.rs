@@ -131,6 +131,48 @@ fn shift_f10_opens_the_context_menu_at_the_row_or_the_canvas_selection() {
 }
 
 #[test]
+fn a_long_press_release_does_not_close_the_context_menu() {
+    let (mut u, a, _) = setup();
+    assert_eq!(u.app.session.selection(), vec![a]);
+    let p = u.app.to_screen(20.0, 15.0);
+    assert!(u.app.canvas.rect.contains(p), "the touch lands on the canvas: {p:?}");
+    let touch =
+        |phase: egui::TouchPhase, pos: egui::Pos2| Event::Touch { device_id: egui::TouchDeviceId(0), id: egui::TouchId(1), phase, pos, force: None };
+    // Down: the emulated mouse press and the real touch that egui-winit would deliver together.
+    u.frame(vec![
+        touch(egui::TouchPhase::Start, p),
+        Event::PointerMoved(p),
+        Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE },
+    ]);
+    // A still finger: four touch moves in one frame (the long press counts events, not time).
+    let mut still = vec![Event::PointerMoved(p)];
+    for _ in 0..4 {
+        still.push(touch(egui::TouchPhase::Move, p));
+    }
+    u.frame(still);
+    assert!(u.app.ui.context_menu.is_some(), "the long press opens the context menu");
+
+    // Lifting the finger a few points up-left leaves the menu's top-left corner: the release that
+    // ends the long press must not count as a tap outside.
+    let up = p - egui::vec2(8.0, 8.0);
+    u.frame(vec![
+        touch(egui::TouchPhase::End, up),
+        Event::PointerMoved(up),
+        Event::PointerButton { pos: up, button: egui::PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE },
+        Event::PointerGone,
+    ]);
+    assert!(u.app.ui.context_menu.is_some(), "the release that ends the long press must keep it open");
+
+    // A new press outside is a real dismissal.
+    let outside = u.app.canvas.rect.min + egui::vec2(5.0, 5.0);
+    u.frame(vec![
+        Event::PointerMoved(outside),
+        Event::PointerButton { pos: outside, button: egui::PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE },
+    ]);
+    assert!(u.app.ui.context_menu.is_none(), "a later press outside closes it");
+}
+
+#[test]
 fn f8_draws_a_selection_box_the_arrows_move_and_size() {
     let (mut u, a, b) = setup();
     press(&mut u, Key::F8, Modifiers::NONE);
