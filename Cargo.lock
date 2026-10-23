@@ -1550,7 +1550,7 @@ dependencies = [
 
 [[package]]
 name = "figcraft-android"
-version = "0.7.0"
+version = "0.10.0"
 dependencies = [
  "android-activity",
  "android_logger",
