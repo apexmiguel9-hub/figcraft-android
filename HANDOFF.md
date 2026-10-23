@@ -1,7 +1,33 @@
 # FigCraft en Android — TRASPASO de sesión
 
 > **Lee esto primero si eres un agente nuevo en esta sesión.** Todo el contexto está aquí.
-> Última actualización: 2026-10-20, commit `8a496de`.
+> Última actualización: 2026-10-23, commit `538ad16a`.
+> Las secciones de 2026-10-20 son el estado anterior; la sección de 2026-10-23 manda.
+
+---
+
+## Estado al 2026-10-23 — menús táctiles y preferencias
+
+- **Instalado en el Moto**: APK de **`538ad16a`** (CI `39903444700` verde; APK `39903999864`).
+- **Menú `@`**: el deadlock de `released_outside` (`30ad2665`) y el nivel `At` del submenú
+  (`5be88c3f`) están corregidos. Verificado en el móvil: File/Preferences abren su submenú y
+  "Preferences..." abre el diálogo.
+- **Long press**: la suelta que termina el gesto ya no cierra el menú contextual. `facfdd0c`
+  añade `context_menu_ignore_release`: se ignora la primera suelta (la del gesto que abrió el
+  menú) y se vuelve a cerrar con la siguiente. Verificado 4/4 en el móvil con un desplazamiento
+  de 7 px arriba-izquierda al soltar, más la prueba headless
+  `layers_keyboard_tests::a_long_press_release_does_not_close_the_context_menu`.
+- **Preferences**: el toggle se autoguarda sin pulsar Save; `state.json` cambia y el valor
+  sobrevive a `am force-stop` + relanzar. El bloque de autoguardado sigue tras `frame` (el
+  diálogo se dibuja dentro); el intento de moverlo dentro de `frame` se revirtió (`538ad16a`).
+- **Cierre fuera**: tocar el lienzo con el menú `@` abierto lo cierra sin congelar ni abortar.
+- **Ojo/candado**: siguen visibles en la fila de la capa seleccionada.
+- **Pruebas**: CI `39903444700` verde; se añadió
+  `windows_qa_tests::a_preference_toggle_is_written_without_the_save_button`; el test de File
+  hace scroll al final para encontrar Open recent; los `eprintln!` de diagnóstico se quitaron.
+- **Siguiente**: verificar el selector de color Custom (altura/scroll) y el long press en la
+  fila de capas; después decidir si se portan las piezas de 0.8.0 (Lote 1: `#867`, `#817` +
+  JNI clipboard, `#900`, `#861`; `#865` opcional; luego `#832`).
 
 ---
 
