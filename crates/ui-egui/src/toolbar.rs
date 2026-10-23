@@ -152,7 +152,7 @@ fn main_toolbar(app: &mut FigApp, ui: &mut Ui, canvas: Rect, t: &Tokens) {
         icons::paint(ui.painter(), r.shrink(7.0), icon, if actions_open { Color32::WHITE } else { t.icon });
         if resp.clicked() {
             if id == "actions" {
-// MEDIDO en Android: `toggle_palette` es de upstream (el boton cierra y abre), pero el foco
+                // MEDIDO en Android: `toggle_palette` es de upstream (el boton cierra y abre), pero el foco
                 // hay que pedirlo a mano o el teclado blando parpadea (`palette_focus_pending`,
                 // ver `menus.rs`).
                 crate::menus::toggle_palette(&mut app.ui);

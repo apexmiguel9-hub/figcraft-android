@@ -48,7 +48,7 @@
 
 use std::cell::RefCell;
 use std::path::PathBuf;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 use std::task::Poll;
 
 use egui_file::{FileDialog, State};
@@ -74,8 +74,7 @@ enum Respuesta {
 /// MEDIDO que es `static` y no un campo del `App`: las futures se crean **dentro** de
 /// `pick_open` y `pick_save`, que solo reciben `&mut self` del trait; no hay donde guardar
 /// nada mas. Y no se guarda ninguna referencia a la app.
-static RESPUESTA: LazyLock<Arc<Mutex<Respuesta>>> =
-    LazyLock::new(|| Arc::new(Mutex::new(Respuesta::Esperando)));
+static RESPUESTA: LazyLock<Arc<Mutex<Respuesta>>> = LazyLock::new(|| Arc::new(Mutex::new(Respuesta::Esperando)));
 
 /// Que esta esperando el browser. Uno cada vez, que es lo correcto: es modal.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -175,8 +174,7 @@ pub fn logic(ctx: &egui::Context) {
             State::Selected => {
                 // MEDIDO: `selection()` cubre los casos con multi-seleccion, pero se cae a
                 // `path()` si viene vacia (p. ej. dialogo de guardar).
-                let mut elegidas: Vec<PathBuf> =
-                    estado.dialogo.selection().iter().map(|p| p.to_path_buf()).collect();
+                let mut elegidas: Vec<PathBuf> = estado.dialogo.selection().iter().map(|p| p.to_path_buf()).collect();
                 if elegidas.is_empty()
                     && let Some(p) = estado.dialogo.path()
                 {
@@ -236,8 +234,7 @@ fn mostrar(para: Para, titulo: &str, exts: &[&str], propuesto: &str, es_carpeta:
     // un closure `Box<dyn Fn(&Path) -> bool>`. Los ext se comparan en minusculas porque el
     // motor las da asi pero los ficheros no siempre.
     if !exts.is_empty() {
-        let permitidas: Vec<String> =
-            exts.iter().map(|e| e.to_ascii_lowercase()).collect();
+        let permitidas: Vec<String> = exts.iter().map(|e| e.to_ascii_lowercase()).collect();
         dialogo = dialogo.show_files_filter(Box::new(move |p: &std::path::Path| {
             match p.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()) {
                 Some(e) => permitidas.contains(&e),
@@ -295,6 +292,65 @@ fn espera() -> DialogFuture {
 /// lo que falta despues del browser.
 pub struct Android;
 
+/// The app's private files directory, set once from `android_main`.
+static DATA_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+/// Point preferences at the app's private files. Called before `build` runs.
+pub fn set_data_dir(dir: PathBuf) {
+    if DATA_DIR.set(dir).is_err() {
+        log::warn!("preferences: the data directory was already set");
+    }
+}
+
+fn state_path() -> Option<PathBuf> {
+    DATA_DIR.get().map(|dir| dir.join("state.json"))
+}
+
+/// Read the preferences saved by an earlier run, if any. The engine's `Prefs` is the part of
+/// `state.json` this port keeps; a missing or unreadable file simply means defaults (dark).
+pub fn load_prefs() -> Option<Prefs> {
+    let path = state_path()?;
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(e) => {
+            log::warn!("preferences: couldn't read {}: {e}", path.display());
+            return None;
+        }
+    };
+    let value: serde_json::Value = match serde_json::from_slice(&bytes) {
+        Ok(value) => value,
+        Err(e) => {
+            log::warn!("preferences: {} is not valid JSON: {e}", path.display());
+            return None;
+        }
+    };
+    match serde_json::from_value(value.get("prefs")?.clone()) {
+        Ok(prefs) => Some(prefs),
+        Err(e) => {
+            log::warn!("preferences: {} has no usable prefs: {e}", path.display());
+            None
+        }
+    }
+}
+
+/// Write `prefs` atomically, like the desktop app does at quit. Android may kill the process
+/// without running a shutdown path, so this runs whenever a preference changes.
+fn save_prefs_now(prefs: &Prefs) {
+    let Some(path) = state_path() else {
+        log::warn!("preferences: no data directory, not saving");
+        return;
+    };
+    let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let tmp = path.with_extension("json.tmp");
+    let written = std::fs::create_dir_all(dir)
+        .and_then(|()| std::fs::write(&tmp, serde_json::json!({"prefs": prefs}).to_string().as_bytes()))
+        .and_then(|()| std::fs::rename(&tmp, &path));
+    if let Err(e) = written {
+        log::warn!("preferences: couldn't save {}: {e}", path.display());
+    }
+}
+
 impl Default for Android {
     fn default() -> Self {
         Self
@@ -347,9 +403,11 @@ impl Services for Android {
     /// Depois de un panic: no hay copia de emergencia específica de Android.
     fn emergency_save(&mut self, _session: &Session) {}
 
-    /// Guardar preferencias: no hay nada específico de Android que guardar aparte de lo
-    /// que ya hace el motor en `prefs`.
-    fn save_prefs(&mut self, _prefs: &Prefs) {}
+    /// Guardar preferencias en el directorio privado de la app (`state.json`, igual que el
+    /// escritorio). Sin esto, Android las perdía al matar el proceso.
+    fn save_prefs(&mut self, prefs: &Prefs) {
+        save_prefs_now(prefs);
+    }
 
     /// El idioma del sistema no se lee desde Android por ahora; el motor usa el default.
     fn system_language(&self) -> Option<String> {

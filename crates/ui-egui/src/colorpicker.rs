@@ -459,15 +459,18 @@ pub fn show(app: &mut FigApp, ctx: &egui::Context) {
         PickerTarget::PluginField { plugin, .. } => crate::plugins_ui::field_window(app, ctx, plugin).map(|r| pos2(r.min.x - 248.0, r.min.y)),
         _ => None,
     };
-    let pos = beside.unwrap_or(pos2(screen.max.x - app.ui.right_width - 260.0, 140.0));
+    // MEDIDO en el Moto G56: con `fixed_size(240, 0)` el `vscroll` de la ventana se quedaba
+    // con 0 pt de alto y el selector salía como una tira de 64 px. La altura tiene que ser
+    // explícita: así el cuerpo hace scroll dentro de una ventana que sí se ve.
+    let picker_h = (screen.height() - 80.0).clamp(240.0, 560.0);
+    let pos = beside.unwrap_or(pos2(screen.max.x - app.ui.right_width - 260.0, (screen.height() - picker_h) / 2.0));
     let mut open = true;
     let mut close_now = false;
     egui::Window::new("color_picker")
         .title_bar(false)
         .fixed_pos(pos)
-        .fixed_size(vec2(240.0, 0.0))
+        .fixed_size(vec2(240.0, picker_h))
         .constrain(true)
-        .max_height((screen.height() - 24.0).max(180.0))
         .vscroll(true)
         .frame(egui::Frame::window(&ctx.global_style()).fill(t.panel).inner_margin(egui::Margin::same(0)))
         .open(&mut open)

@@ -12,25 +12,26 @@ fn frame(ctx: &Context, app: &mut FigApp, system: Option<Theme>) {
 }
 
 #[test]
-fn fresh_app_uses_system_dark_theme_on_its_first_frame() {
+fn fresh_app_uses_dark_theme_on_its_first_frame() {
     let ctx = Context::default();
     let mut app = FigApp::new(Session::empty(), Box::new(NoServices));
-    frame(&ctx, &mut app, Some(Theme::Dark));
-    assert!(app.ui.dark, "a first run must use the OS dark theme before drawing");
+    // The OS preference doesn't change the default: FigCraft starts dark.
+    frame(&ctx, &mut app, Some(Theme::Light));
+    assert!(app.ui.dark, "a first run must use the dark theme before drawing");
     assert_eq!(Tokens::get(&ctx), Tokens::dark());
-    assert_eq!(app.session.prefs.theme, "system", "following the OS must remain a preference, not a saved snapshot");
+    assert_eq!(app.session.prefs.theme, "dark", "dark is the default, not a snapshot of the OS");
 }
 
 #[test]
-fn first_run_and_preferences_without_a_theme_follow_system_light() {
+fn first_run_and_preferences_without_a_theme_are_dark() {
     for prefs in [Prefs::default(), serde_json::from_value(json!({"nudge_small": 2})).unwrap()] {
         let ctx = Context::default();
         let mut session = Session::empty();
         session.prefs = prefs;
         let mut app = FigApp::new(session, Box::new(NoServices));
         frame(&ctx, &mut app, Some(Theme::Light));
-        assert_eq!(app.session.prefs.theme, "system");
-        assert_eq!(Tokens::get(&ctx), Tokens::light());
+        assert_eq!(app.session.prefs.theme, "dark");
+        assert_eq!(Tokens::get(&ctx), Tokens::dark());
     }
 }
 

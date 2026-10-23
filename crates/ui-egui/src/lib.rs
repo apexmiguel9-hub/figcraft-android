@@ -446,7 +446,7 @@ pub struct UiState {
     pub rename_label: Option<layers::Rename>,
     pub main_menu: bool,
     pub palette: Option<String>,
-/// The Actions palette's tab.
+    /// The Actions palette's tab.
     pub palette_tab: menus::PaletteTab,
     /// The palette row Up and Down are on (Enter runs it).
     pub palette_hi: usize,
@@ -611,7 +611,7 @@ impl Default for UiState {
             rename_label: None,
             main_menu: false,
             palette: None,
-palette_tab: menus::PaletteTab::All,
+            palette_tab: menus::PaletteTab::All,
             palette_hi: 0,
             palette_armed: false,
             actions_rect: None,
@@ -899,7 +899,7 @@ impl FigApp {
                 "dialog.preferences" => self.ui.preferences = true,
                 "dialog.missingFonts" => missing_fonts::request(self),
                 "panel.shortcuts" => self.ui.shortcuts_panel = !self.ui.shortcuts_panel,
-// MEDIDO en Android: el toggle es de upstream, y el foco se pide a mano o el teclado
+                // MEDIDO en Android: el toggle es de upstream, y el foco se pide a mano o el teclado
                 // blando parpadea (`palette_focus_pending`).
                 "palette.actions" => {
                     menus::toggle_palette(&mut self.ui);
@@ -1416,6 +1416,9 @@ impl FigApp {
         self.frame(ui);
         windows::settle(self, &ctx, files);
         if self.session.prefs != prefs {
+            // Android can kill the app without a clean shutdown: write preferences as soon as
+            // they change, whether or not the dialog's Save was pressed.
+            self.services.save_prefs(&self.session.prefs);
             windows::repaint_others(self, &ctx);
         }
         windows::show(self, &ctx);

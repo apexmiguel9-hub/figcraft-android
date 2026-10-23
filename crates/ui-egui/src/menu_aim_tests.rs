@@ -5,7 +5,7 @@
 //! submenu's row to its submenu the rows the pointer crosses don't take over (the safe triangle),
 //! unless it rests on one or turns away.
 
-use egui::{Event, Id, LayerId, Order, Pos2, RawInput, Rect, pos2, vec2};
+use egui::{Event, Id, LayerId, Order, PointerButton, Pos2, RawInput, Rect, pos2, vec2};
 use figcraft_engine::Session;
 
 use crate::menus::{AIM_REST, HOVER_DELAY, heading_for, in_triangle, main_menu_id};
@@ -18,12 +18,17 @@ struct Ui {
     ctx: egui::Context,
     app: FigApp,
     time: f64,
+    size: egui::Vec2,
 }
 
 impl Ui {
     fn new() -> Self {
+        Self::new_size(SIZE)
+    }
+
+    fn new_size(size: egui::Vec2) -> Self {
         let app = FigApp::new(Session::new(), Box::new(NoServices));
-        let mut u = Self { ctx: egui::Context::default(), app, time: 0.0 };
+        let mut u = Self { ctx: egui::Context::default(), app, time: 0.0, size };
         for _ in 0..3 {
             u.frame(vec![]);
         }
@@ -32,7 +37,7 @@ impl Ui {
 
     fn frame(&mut self, events: Vec<Event>) {
         self.time += 1.0 / 60.0;
-        let input = RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, SIZE)), time: Some(self.time), events, ..Default::default() };
+        let input = RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, self.size)), time: Some(self.time), events, ..Default::default() };
         let app = &mut self.app;
         let mut out = self.ctx.run_ui(input, |ui| app.ui(ui));
         out.textures_delta.clear();
@@ -40,6 +45,15 @@ impl Ui {
 
     fn hover(&mut self, p: Pos2) {
         self.frame(vec![Event::PointerMoved(p)]);
+    }
+
+    /// A mouse click: press and release at `p`, then a frame with no pointer (as Android
+    /// sends when the finger lifts).
+    fn click(&mut self, p: Pos2) {
+        self.hover(p);
+        self.frame(vec![Event::PointerButton { pos: p, button: PointerButton::Primary, pressed: true, modifiers: Default::default() }]);
+        self.frame(vec![Event::PointerButton { pos: p, button: PointerButton::Primary, pressed: false, modifiers: Default::default() }]);
+        self.frame(vec![Event::PointerGone]);
     }
 
     /// Hover `p` and stay there until a submenu could open.
@@ -121,6 +135,23 @@ fn the_triangle_takes_the_pointer_from_the_row_toward_the_panel() {
     assert!(!heading_for(from, pos2(260.0, 130.0), left));
     // Junk positions never count.
     assert!(!heading_for(pos2(f32::NAN, 0.0), from, panel));
+}
+
+#[test]
+fn a_tap_on_a_landscape_phone_opens_and_runs_the_preferences_submenu() {
+    // The Moto G56's usable size: the Preferences submenu is taller than the room below its
+    // row, so this is the case that used to open a panel the tap couldn't reach.
+    let mut u = Ui::new_size(vec2(984.0, 443.0));
+    u.open_main_menu();
+    // Preferences is row 8 (File, Edit, View, Object, Text, Arrange, Vector, Plugins…).
+    u.click(u.top_row(8).center());
+    u.wait(0.15);
+    assert!(u.shown(top("Preferences")), "the tap must open the submenu");
+    let panel = u.rect(top("Preferences"));
+    // Its last item, Preferences… (no separators in this menu).
+    u.click(pos2(panel.center().x, panel.max.y - 8.0 - 14.0));
+    assert!(u.app.ui.preferences, "the tapped item must run, not just close the menu");
+    assert!(!u.app.ui.main_menu, "running an item closes the menu");
 }
 
 #[test]

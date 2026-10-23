@@ -886,11 +886,12 @@ fn layers(app: &mut FigApp, ui: &mut Ui) {
                 sw.ids.push(row.id);
             }
             let swept = |lock: bool| sweep.as_ref().filter(|sw| sw.lock == lock && sw.ids.contains(&row.id)).map(|sw| sw.on);
-            // Lock / eye on hover (or when set); a layer in a locked one shows a faint padlock.
+            // Lock / eye on hover, on the selected layer, or when set. On touch there is no
+            // hover after the finger lifts: hiding them again left no way to tap them.
             let hidden = swept(false).unwrap_or(!n.visible);
             let locked = swept(true).unwrap_or(n.locked);
-            let show_lock = over || locked || row.locked_above;
-            let show_eye = over || hidden;
+            let show_lock = over || selected || locked || row.locked_above;
+            let show_eye = over || selected || hidden;
             let er = Rect::from_center_size(pos2(rr.max.x - 14.0, r.center().y), vec2(20.0, 20.0));
             let lr = Rect::from_center_size(pos2(rr.max.x - 36.0, r.center().y), vec2(20.0, 20.0));
             if show_eye {

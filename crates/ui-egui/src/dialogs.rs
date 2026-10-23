@@ -321,6 +321,20 @@ pub fn show(app: &mut FigApp, ctx: &Context) {
                 let note = trf("{language}: draft translation, waiting for a native speaker's review.", &[("language", &lang.name)]);
                 crate::widgets::label(ui, &note, t.text_secondary);
             }
+            ui.add_space(12.0);
+            ui.separator();
+            ui.horizontal(|ui| {
+                // Every change is saved as it happens, but a visible Save makes that explicit
+                // and forces the write now (the Android app can be killed without a clean exit).
+                if crate::widgets::button(ui, tr("Save"), true, true).clicked() {
+                    app.services.save_prefs(&app.session.prefs);
+                    app.toast(tr("Preferences saved"));
+                    app.ui.preferences = false;
+                }
+                if crate::widgets::button(ui, tr("Close"), false, true).clicked() {
+                    app.ui.preferences = false;
+                }
+            });
         });
         if !open {
             app.ui.preferences = false;

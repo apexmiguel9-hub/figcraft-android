@@ -44,41 +44,47 @@ mod permiso;
 pub struct App(pub FigApp);
 
 impl App {
-/// PRUEBA: volca cada 3 s las metricas de rendimiento que `FigApp` ya mide.
-///
-/// MEDIDO que hace falta: en el movil de pruebas figcraft va a 33-65 fps y vectorcraft a
-/// 70-120 en el mismo aparato, asi que hay que ver donde se va el tiempo en vez de suponer.
-/// Los numeros salen de [`FigApp::inspect`], que ya los tenia todos: `frameMs`, `renderMs`,
-/// `framesDrawn`, `repaintCauses` y, del lienzo, si el render fue completo o parcial, si es
-/// preview o refinado, y las dos latencias.
-///
-/// `framesDrawn` es un acumulado, asi que el fps sale del delta entre muestras.
-fn diag_perf(&mut self) {
-    #[cfg(target_os = "android")]
-    {
-        use std::sync::OnceLock;
-        static INICIO: OnceLock<std::time::Instant> = OnceLock::new();
-        static PREV: OnceLock<std::sync::Mutex<(u64, f64)>> = OnceLock::new();
+    /// PRUEBA: volca cada 3 s las metricas de rendimiento que `FigApp` ya mide.
+    ///
+    /// MEDIDO que hace falta: en el movil de pruebas figcraft va a 33-65 fps y vectorcraft a
+    /// 70-120 en el mismo aparato, asi que hay que ver donde se va el tiempo en vez de suponer.
+    /// Los numeros salen de [`FigApp::inspect`], que ya los tenia todos: `frameMs`, `renderMs`,
+    /// `framesDrawn`, `repaintCauses` y, del lienzo, si el render fue completo o parcial, si es
+    /// preview o refinado, y las dos latencias.
+    ///
+    /// `framesDrawn` es un acumulado, asi que el fps sale del delta entre muestras.
+    fn diag_perf(&mut self) {
+        #[cfg(target_os = "android")]
+        {
+            use std::sync::OnceLock;
+            static INICIO: OnceLock<std::time::Instant> = OnceLock::new();
+            static PREV: OnceLock<std::sync::Mutex<(u64, f64)>> = OnceLock::new();
 
-        let t = INICIO.get_or_init(std::time::Instant::now).elapsed().as_secs_f64();
-        let prev = PREV.get_or_init(|| std::sync::Mutex::new((0, 0.0)));
-        let Ok(mut p) = prev.lock() else { return };
-        if t - p.1 < 3.0 {
-            return;
+            let t = INICIO.get_or_init(std::time::Instant::now).elapsed().as_secs_f64();
+            let prev = PREV.get_or_init(|| std::sync::Mutex::new((0, 0.0)));
+            let Ok(mut p) = prev.lock() else { return };
+            if t - p.1 < 3.0 {
+                return;
+            }
+            let i = self.0.inspect();
+            let frames = i["framesDrawn"].as_u64().unwrap_or(0);
+            let dt = t - p.1;
+            let fps = if frames > p.0 { (frames - p.0) as f64 / dt } else { 0.0 };
+            *p = (frames, t);
+            let c = &i["canvas"];
+            log::info!(
+                "PERF fps={fps:.1} frameMs={} renderMs={} calidad={} trabajo={} latPreview={} latRefine={} causas={} knobs=[{}]",
+                i["frameMs"],
+                i["renderMs"],
+                c["quality"],
+                c["renderWork"],
+                c["previewLatencyMs"],
+                c["refineLatencyMs"],
+                i["repaintCauses"],
+                figcraft_ui_egui::knobs_summary()
+            );
         }
-        let i = self.0.inspect();
-        let frames = i["framesDrawn"].as_u64().unwrap_or(0);
-        let dt = t - p.1;
-        let fps = if frames > p.0 { (frames - p.0) as f64 / dt } else { 0.0 };
-        *p = (frames, t);
-        let c = &i["canvas"];
-        log::info!(
-            "PERF fps={fps:.1} frameMs={} renderMs={} calidad={} trabajo={} latPreview={} latRefine={} causas={} knobs=[{}]",
-            i["frameMs"], i["renderMs"], c["quality"], c["renderWork"], c["previewLatencyMs"], c["refineLatencyMs"], i["repaintCauses"],
-            figcraft_ui_egui::knobs_summary()
-        );
     }
-}
 }
 
 impl eframe::App for App {
@@ -165,6 +171,21 @@ pub fn build(cc: &eframe::CreationContext<'_>) -> std::result::Result<Box<dyn ef
     figcraft_ui_egui::theme::install_fonts(&cc.egui_ctx, false, 0);
 
     let mut session = Session::empty();
+    // The preferences saved by the previous run (theme, language, panel widths...). Without
+    // this every launch started from the defaults and the Settings dialog appeared not to save.
+    #[cfg(target_os = "android")]
+    if let Some(prefs) = browser::load_prefs() {
+        session.prefs = prefs;
+    }
+    // `file.new` paints the first page with the interface's theme, and this runs before the
+    // first UI frame: tell the session now so a saved light theme (or the dark default) doesn't
+    // create the wrong page colour.
+    let dark = match session.prefs.theme.as_str() {
+        "light" => false,
+        "dark" => true,
+        _ => cc.egui_ctx.system_theme().unwrap_or(egui::Theme::Dark) == egui::Theme::Dark,
+    };
+    session.set_ui_dark(dark);
     // Primera ejecucion: arranca en un fichero nuevo, no en home vacio.
     if session.docs.is_empty() {
         let _ = session.execute("file.new", &serde_json::json!({}));
@@ -263,6 +284,15 @@ pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidA
     // consulta el permiso en cuanto el usuario abre un fichero, y `raw_input_hook` pide los
     // insets en el primer frame.
     permiso::registrar(&app);
+
+    // Preferencias: el directorio privado de la app es el equivalente a la carpeta de
+    // configuracion de escritorio. Se registra antes de `build`, que las lee.
+    if let Some(dir) = app.internal_data_path() {
+        log::info!("figcraft-android: datos en {}", dir.display());
+        browser::set_data_dir(dir);
+    } else {
+        log::warn!("figcraft-android: Android no dio un directorio de datos; las preferencias no se guardaran");
+    }
 
     // El `AndroidApp` va DENTRO de las opciones, no como argumento aparte: es lo que el
     // `EventLoop` de winit necesita para construirse, y sin el se queda sin bucle de eventos.

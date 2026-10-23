@@ -429,6 +429,12 @@ fn set_open(ctx: &egui::Context, root: Id, path: &str, key: Option<&str>) {
             let below = format!("{old}/");
             tree.levels.retain(|p, _| *p != old && !p.starts_with(&below));
         }
+        if let Some(key) = key {
+            let child = if path.is_empty() { key.to_string() } else { format!("{path}/{key}") };
+            // Start a submenu that just opened at its first row, not where the previous one
+            // was left scrolled (View is long enough to scroll on a phone).
+            d.insert_temp(Id::new(("menu_fresh", root, child)), true);
+        }
     });
 }
 
@@ -580,8 +586,11 @@ fn submenu_at<R>(
     let aim = aiming(ui);
     let w = ui.available_width();
     let (r, resp) = ui.allocate_exact_size(vec2(w, 28.0), Sense::click());
-    // The keyboard and clicks open it at once; hovering after a moment.
-    if resp.has_focus() || resp.clicked() {
+    // The keyboard and clicks open it at once; hovering after a moment. On touch a short tap
+    // can release without egui reporting `clicked()` (the pointer is already gone), so the
+    // press over the row opens it too.
+    let pressed = ui.ctx().input(|i| i.pointer.any_pressed());
+    if resp.has_focus() || resp.clicked() || (pressed && resp.hovered()) {
         set_open(ui.ctx(), at.root, &at.path, Some(key));
     } else if resp.hovered() && !aim {
         hover_request(ui.ctx(), &at, Some(key));
@@ -602,10 +611,20 @@ fn submenu_at<R>(
     if !open {
         return None;
     }
-    let pos = pos2(r.max.x + gap, r.min.y - 8.0);
+    // On a landscape phone the submenu is pinned below the tab bar, next to the parent menu.
+    // Aligning it with its row would push a long submenu (View, Edit) off screen and `constrain`
+    // would move the Area *after* its rows were laid out, which is what made a tap land outside
+    // the row the user saw. Pinned, it fits, so it never has to move.
+    let screen = ui.ctx().content_rect();
+    let mobile = screen.height() < 600.0;
+    let mut pos = if mobile { pos2(r.max.x + gap, crate::tabs::HEIGHT + 48.0) } else { pos2(r.max.x + gap, r.min.y - 8.0) };
+    pos.x = pos.x.min(screen.max.x - 248.0).max(screen.min.x + 8.0);
     let child = At { root: at.root, path: key.to_string() };
-    let shown =
-        egui::Area::new(area).fixed_pos(pos).order(egui::Order::Foreground).constrain(constrain).show(ui.ctx(), |ui| menu_frame(ui, t, child, add));
+    let shown = egui::Area::new(area)
+        .fixed_pos(pos)
+        .order(egui::Order::Foreground)
+        .constrain(constrain && !mobile)
+        .show(ui.ctx(), |ui| menu_frame(ui, t, child, add));
     let panel = shown.response.rect;
     with_level(ui.ctx(), &at, |l| l.panel = Some(panel));
     shown.inner
@@ -636,11 +655,25 @@ fn menu_frame<R>(ui: &mut Ui, t: &Tokens, at: At, add: impl FnOnce(&mut Ui) -> R
             ui.set_width(w);
             ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
             let key = at_key(ui);
-            ui.data_mut(|d| d.insert_temp(key, at));
+            ui.data_mut(|d| d.insert_temp(key, at.clone()));
             // Menus are taller than a landscape phone (the main menu alone is eleven top-level
             // rows, and Edit has many more): scroll instead of running off the top and bottom.
-            let max_h = (screen.height() - 24.0).max(160.0);
-            egui::ScrollArea::vertical().id_salt(("menu_scroll", ui.id())).max_height(max_h).auto_shrink([false, true]).show(ui, |ui| add(ui)).inner
+            // On a phone a submenu is pinned below the tab bar (see `submenu_at`), so it has
+            // less room and must not be constrained after layout: moving an Area after its
+            // rows were laid out is what made taps land in the wrong place.
+            let max_h = if at.path.is_empty() || screen.height() >= 600.0 {
+                (screen.height() - 24.0).max(160.0)
+            } else {
+                // The panel starts at the same absolute y as the main menu.
+                (screen.max.y - (crate::tabs::HEIGHT + 48.0) - 16.0).max(160.0)
+            };
+            let fresh = ui.data_mut(|d| d.remove_temp::<bool>(Id::new(("menu_fresh", at.root, at.path.clone()))));
+            let mut scroll =
+                egui::ScrollArea::vertical().id_salt(("menu_scroll", at.root, at.path.clone())).max_height(max_h).auto_shrink([false, true]);
+            if fresh {
+                scroll = scroll.vertical_scroll_offset(0.0);
+            }
+            scroll.show(ui, |ui| add(ui)).inner
         })
         .inner
 }
@@ -721,9 +754,21 @@ pub fn main_menu_id() -> Id {
     Id::new("main_menu")
 }
 
-/// Whether the pointer is over a menu (any foreground area).
-fn over_menu(ctx: &egui::Context) -> bool {
-    ctx.input(|i| i.pointer.interact_pos()).and_then(|p| ctx.layer_id_at(p)).is_some_and(|l| l.order == egui::Order::Foreground)
+/// Whether `p` is over a menu (any foreground area).
+fn over_menu_at(ctx: &egui::Context, p: egui::Pos2) -> bool {
+    ctx.layer_id_at(p).is_some_and(|l| l.order == egui::Order::Foreground)
+}
+
+/// Whether a release closed the menu: it is outside every menu panel and the parent area.
+///
+/// This waits for the release. Closing on the press hit an Android touch race: the press that
+/// opened a submenu could be followed by a frame without an interact position, which counted
+/// as "outside" and closed the whole menu before the row ever ran.
+fn released_outside(ctx: &egui::Context, parent: egui::Rect) -> bool {
+    ctx.input(|i| {
+        i.pointer.any_released()
+            && i.pointer.interact_pos().or_else(|| i.pointer.latest_pos()).is_some_and(|p| !parent.contains(p) && !over_menu_at(ctx, p))
+    })
 }
 
 const TOP_MENUS: &[&str] = &[
@@ -802,8 +847,8 @@ pub fn popups(app: &mut FigApp, ctx: &egui::Context) {
                     }
                 });
             });
-        let clicked_outside = ctx.input(|i| i.pointer.any_pressed()) && !over_menu(ctx) || ctx.input(|i| i.key_pressed(egui::Key::Escape));
-        if close || (clicked_outside && !area.response.hovered()) {
+        let clicked_outside = released_outside(ctx, area.response.rect) || ctx.input(|i| i.key_pressed(egui::Key::Escape));
+        if close || clicked_outside {
             app.ui.main_menu = false;
             forget_tree(ctx, main_menu_id());
         }
@@ -929,8 +974,8 @@ pub fn popups(app: &mut FigApp, ctx: &egui::Context) {
                 }
             });
         });
-        let clicked_outside = ctx.input(|i| i.pointer.any_pressed()) && !area.response.hovered() && !over_menu(ctx);
-        if close || clicked_outside || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        let clicked_outside = released_outside(ctx, area.response.rect) || ctx.input(|i| i.key_pressed(egui::Key::Escape));
+        if close || clicked_outside {
             app.ui.context_menu = None;
             forget_tree(ctx, ctx_menu_id());
         }
