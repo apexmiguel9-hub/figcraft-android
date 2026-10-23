@@ -2,13 +2,17 @@
 //! field keeps its value when the pointer lets go, typing on a field Tab reached edits it, and
 //! Escape closes a dialog without deselecting.
 
+use std::sync::{Arc, Mutex};
+
 use egui::{Event, Key, Modifiers, Pos2, Rect, vec2};
 use figcraft_doc::NodeId;
-use figcraft_engine::Session;
+use figcraft_engine::{Prefs, Session};
 use serde_json::json;
 
+use crate::Services;
 use crate::a11y::focused_name;
 use crate::layers_drag_tests::Ui;
+use crate::live_tests::{flat, text_center};
 
 fn press(u: &mut Ui, key: Key, modifiers: Modifiers) {
     u.frame(vec![
@@ -89,4 +93,31 @@ fn escape_closes_preferences_without_deselecting() {
     assert_eq!(u.app.session.selection(), vec![a], "and leaves the selection alone");
     press(&mut u, Key::Escape, Modifiers::NONE);
     assert!(u.app.session.selection().is_empty(), "the next Escape reaches the canvas");
+}
+
+/// What the app asked to write.
+struct Saved(Arc<Mutex<Vec<Prefs>>>);
+impl Services for Saved {
+    fn save_prefs(&mut self, prefs: &Prefs) {
+        self.0.lock().unwrap().push(prefs.clone());
+    }
+}
+
+#[test]
+fn a_preference_toggle_is_written_without_the_save_button() {
+    let (mut u, _) = setup();
+    let saved = Arc::new(Mutex::new(Vec::new()));
+    u.app.services = Box::new(Saved(saved.clone()));
+    assert!(!u.app.session.prefs.auto_save);
+    u.app.ui.preferences = true;
+    u.frame(vec![]);
+    let shapes = flat(&u.frame_output(vec![]).shapes);
+    let p = text_center(&shapes, "Save files automatically");
+    u.frame(vec![Event::PointerMoved(p)]);
+    u.button(p, true);
+    u.button(p, false);
+    assert!(u.app.session.prefs.auto_save, "the click turns the preference on");
+    let log = saved.lock().unwrap();
+    assert_eq!(log.len(), 1, "the change is written once, without Save");
+    assert!(log[0].auto_save, "the written preferences carry the change");
 }

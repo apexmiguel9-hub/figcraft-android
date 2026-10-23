@@ -414,10 +414,6 @@ pub(crate) fn forget_tree(ctx: &egui::Context, root: Id) {
 /// Open (`Some(key)`) or close (`None`) a submenu of `root`'s level `path`; the levels below the
 /// one it replaces are forgotten (they reopen closed).
 fn set_open(ctx: &egui::Context, root: Id, path: &str, key: Option<&str>) {
-    #[cfg(test)]
-    if path == "File" && (key.is_none() || key.is_some_and(|k| k.contains("Open recent"))) {
-        eprintln!("SET_OPEN path={path:?} key={key:?}");
-    }
     ctx.data_mut(|d| {
         let tree = d.get_temp_mut_or_default::<Tree>(root);
         let level = tree.levels.entry(path.to_string()).or_default();
@@ -551,13 +547,7 @@ fn hover_request(ctx: &egui::Context, at: &At, target: Option<&str>) {
         Some(HOVER_DELAY - (now - since))
     });
     match left {
-        Some(left) if left <= 0.0 => {
-            #[cfg(test)]
-            if target == Some("File/Open recent") {
-                eprintln!("OPEN at={:?} target={target:?}", at.path);
-            }
-            set_open(ctx, at.root, &at.path, target);
-        }
+        Some(left) if left <= 0.0 => set_open(ctx, at.root, &at.path, target),
         // Wake up when it's due, so a still pointer gets there.
         Some(left) => ctx.request_repaint_after(std::time::Duration::from_secs_f64(left.min(HOVER_DELAY))),
         None => {}
@@ -600,10 +590,6 @@ fn submenu_at<R>(
     // can release without egui reporting `clicked()` (the pointer is already gone), so the
     // press over the row opens it too.
     let pressed = ui.ctx().input(|i| i.pointer.any_pressed());
-    #[cfg(test)]
-    if key == "File/Open recent" && resp.hovered() {
-        eprintln!("HOVER {key:?} at={:?} aim={aim} pressed={pressed} rect={r:?}", at.path);
-    }
     if resp.has_focus() || resp.clicked() || (pressed && resp.contains_pointer()) {
         set_open(ui.ctx(), at.root, &at.path, Some(key));
     } else if resp.hovered() && !aim {
