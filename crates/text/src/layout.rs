@@ -82,6 +82,9 @@ pub struct Line {
     pub x: f64,
     /// The line ends a paragraph (hard break or end of text).
     pub para_end: bool,
+    /// The line ends with a line break char: a newline, or a line separator (U+2028) that breaks
+    /// the line inside its paragraph.
+    pub break_after: bool,
     /// The paragraph runs right to left (its first strong character is right-to-left).
     pub rtl: bool,
 }
@@ -155,6 +158,15 @@ fn deco_len(m: DecorationLength, size: f64, auto: f64) -> f64 {
         DecorationLength::Percent(p) => size * p / 100.0,
     };
     if v.is_finite() { v } else { auto }
+}
+
+/// The line separator (U+2028): a line break inside a paragraph, as `.fig` files store a soft
+/// break (imported text keeps it; typed text has newlines only).
+const LINE_SEPARATOR: char = '\u{2028}';
+
+/// A char that ends its line: a newline (which also ends the paragraph) or a line separator.
+fn is_line_break(c: char) -> bool {
+    c == '\n' || c == LINE_SEPARATOR
 }
 
 /// Opening punctuation, which hangs outside a line's start.
@@ -332,7 +344,7 @@ pub fn layout(text: &TextData, box_width: Option<f64>, box_height: Option<f64>) 
     }
     // Colour emoji are their own, large faces (Apple Color Emoji is ~180 MB): they are read only
     // for a text with emoji, or with characters nothing above covers.
-    let covered = |c: char| c == '\n' || faces.iter().flatten().any(|f| f.has_char(c)) || fallbacks.iter().any(|f| f.has_char(c));
+    let covered = |c: char| is_line_break(c) || faces.iter().flatten().any(|f| f.has_char(c)) || fallbacks.iter().any(|f| f.has_char(c));
     let emoji = if chars.iter().any(|c| is_emoji(*c) || !covered(*c)) { dbw.emoji_fallbacks() } else { Vec::new() };
     fallbacks.extend(emoji.iter().cloned());
     drop(dbw);
@@ -370,7 +382,7 @@ pub fn layout(text: &TextData, box_width: Option<f64>, box_height: Option<f64>) 
                 {
                     return f.clone();
                 }
-                if c == '\n' || primary.has_char(c) {
+                if is_line_break(c) || primary.has_char(c) {
                     return primary.clone();
                 }
                 let fallbacks = style_fallbacks.get(st_idx).unwrap_or(&fallbacks);
@@ -382,13 +394,15 @@ pub fn layout(text: &TextData, box_width: Option<f64>, box_height: Option<f64>) 
             let mut seg_end = seg_start + 1;
             while seg_end < *end
                 && chars.get(seg_end).is_some_and(|c| {
-                    *c != '\n' && first != '\n' && (!cluster_start.get(seg_end).copied().unwrap_or(true) || face_for(*c).id == face.id)
+                    !is_line_break(*c)
+                        && !is_line_break(first)
+                        && (!cluster_start.get(seg_end).copied().unwrap_or(true) || face_for(*c).id == face.id)
                 })
                 && level_at(seg_end) == level
             {
                 seg_end += 1;
             }
-            if first == '\n' {
+            if is_line_break(first) {
                 items.push(Item {
                     face: face.clone(),
                     coords: no_coords(),
@@ -401,7 +415,7 @@ pub fn layout(text: &TextData, box_width: Option<f64>, box_height: Option<f64>) 
                     char_start: seg_start,
                     char_end: seg_start + 1,
                     style: st_idx,
-                    ch: '\n',
+                    ch: first,
                     level,
                 });
             } else {
@@ -465,6 +479,17 @@ pub fn layout(text: &TextData, box_width: Option<f64>, box_height: Option<f64>) 
             para += 1;
             continue;
         }
+        // A line separator (a soft break) breaks the line inside its paragraph: no
+        // paragraph spacing and no new list marker after it.
+        if it.ch == LINE_SEPARATOR {
+            lines.push((line_start, i + 1, false, para));
+            i += 1;
+            line_start = i;
+            x = 0.0;
+            last_break = None;
+            para_first_line = false;
+            continue;
+        }
         let line_indent = line_indent_of(para, para_first_line, it.char_start);
         let w = it.adv;
         // Hanging punctuation takes no room inside the box.
@@ -491,7 +516,8 @@ pub fn layout(text: &TextData, box_width: Option<f64>, box_height: Option<f64>) 
         }
         i += 1;
     }
-    if line_start < items.len() || lines.is_empty() || lines.last().is_some_and(|l| l.2) {
+    let break_after = |e: usize| e.checked_sub(1).and_then(|i| items.get(i)).is_some_and(|it| is_line_break(it.ch));
+    if line_start < items.len() || lines.is_empty() || lines.last().is_some_and(|l| l.2 || break_after(l.1)) {
         lines.push((line_start, items.len(), true, para));
     }
 
@@ -546,7 +572,7 @@ pub fn layout(text: &TextData, box_width: Option<f64>, box_height: Option<f64>) 
         let baseline = y + (lh - (asc + desc)) / 2.0 + asc;
         // Trailing spaces don't count for width/alignment.
         let mut vis_end = *e;
-        while vis_end > *s && items.get(vis_end - 1).is_some_and(|it| it.is_space() || it.ch == '\n') {
+        while vis_end > *s && items.get(vis_end - 1).is_some_and(|it| it.is_space() || is_line_break(it.ch)) {
             vis_end -= 1;
         }
         // Letter spacing separates glyphs: none after the line's last visible one.
@@ -563,7 +589,9 @@ pub fn layout(text: &TextData, box_width: Option<f64>, box_height: Option<f64>) 
         // Justify: extra space per gap.
         let gaps = items.get(*s..vis_end).unwrap_or(&[]).iter().filter(|it| it.is_space()).count();
         let justify_extra = match (text.align_h, wrap) {
-            (TextAlignH::Justified, Some(maxw)) if !para_end && gaps > 0 => ((maxw - line_indent + hang_l + hang_r - width) / gaps as f64).max(0.0),
+            (TextAlignH::Justified, Some(maxw)) if !para_end && !break_after(*e) && gaps > 0 => {
+                ((maxw - line_indent + hang_l + hang_r - width) / gaps as f64).max(0.0)
+            }
             _ => 0.0,
         };
         // Where the visible text ends once justified.
@@ -574,7 +602,7 @@ pub fn layout(text: &TextData, box_width: Option<f64>, box_height: Option<f64>) 
             .get(vis_end..*e)
             .unwrap_or(&[])
             .iter()
-            .filter(|it| it.ch != '\n')
+            .filter(|it| !is_line_break(it.ch))
             .map(|it| it.adv + if it.is_space() { justify_extra } else { 0.0 })
             .sum();
         let mut pen = if rtl_line { -trailing } else { line_indent - hang_l };
@@ -649,7 +677,7 @@ pub fn layout(text: &TextData, box_width: Option<f64>, box_height: Option<f64>) 
             (0..line_items.len()).collect()
         };
         for it in order.iter().filter_map(|k| line_items.get(*k)) {
-            if it.ch == '\n' {
+            if is_line_break(it.ch) {
                 continue;
             }
             let size = styles.get(it.style).map(|st| sanitize_size(st.font_size)).unwrap_or(12.0) * it.scale;
@@ -687,6 +715,7 @@ pub fn layout(text: &TextData, box_width: Option<f64>, box_height: Option<f64>) 
             width: width + line_indent - hang_l - hang_r,
             x: 0.0,
             para_end: *para_end,
+            break_after: break_after(*e),
             rtl: rtl_line,
         });
         y += lh;
@@ -1142,15 +1171,11 @@ impl TextLayout {
     pub fn caret(&self, index: usize) -> (f64, usize) {
         for (li, line) in self.lines.iter().enumerate() {
             let last_line = li + 1 == self.lines.len();
+            // A caret at a line's end belongs to the next line, whether the line wraps or ends with a
+            // line break (before the break it is still on this line: past its glyphs).
             let in_line = index >= line.char_start && (index < line.char_end || (last_line && index <= line.char_end));
-            // A caret at the end of a soft-wrapped line belongs to the next line.
-            if !(in_line || index == line.char_end && line.para_end && !last_line) {
+            if !in_line {
                 continue;
-            }
-            if index == line.char_end && line.para_end && !last_line {
-                // Before the newline: end of this line.
-                let x = self.line_end_x(line);
-                return (x, li);
             }
             let gl = self.glyphs.get(line.glyph_start..line.glyph_end).unwrap_or(&[]);
             for g in gl {
@@ -1179,8 +1204,8 @@ impl TextLayout {
         if !line.rtl && !gl.iter().any(|g| g.rtl) {
             return None;
         }
-        // The caret can't sit after a paragraph's newline on its own line.
-        let end = if line.para_end && li + 1 < self.lines.len() { line.char_end.saturating_sub(1) } else { line.char_end };
+        // The caret can't sit after a line's break on its own line.
+        let end = if line.break_after && li + 1 < self.lines.len() { line.char_end.saturating_sub(1) } else { line.char_end };
         let next = (line.char_start..=end.max(line.char_start))
             .filter(|i| *i != index)
             .map(|i| (i, self.caret(i).0))
@@ -1247,7 +1272,7 @@ impl TextLayout {
             }
         }
         let last_line = li + 1 == self.lines.len();
-        let end = if line.para_end && !last_line { line.char_end.saturating_sub(1).max(line.char_start) } else { line.char_end };
+        let end = if line.break_after && !last_line { line.char_end.saturating_sub(1).max(line.char_start) } else { line.char_end };
         // Right of a right-to-left line is its start.
         if line.rtl { line.char_start } else { end }
     }
@@ -1274,12 +1299,11 @@ impl TextLayout {
                 out.extend(Self::mixed_selection(gl, a, b, line));
                 continue;
             }
-            // From the line's own start: `caret(char_start)` after a hard break is the end of the
-            // line above.
+            // From the line's own start.
             let x0 = if a <= line.char_start { self.line_start_x(line) } else { self.caret(a).0 };
             let x1 = if b >= line.char_end {
                 // The last line has no paragraph break to show, so it ends at its glyphs.
-                self.line_end_x(line) + if line.para_end && !last && b > line.char_end.saturating_sub(1) { 4.0 } else { 0.0 }
+                self.line_end_x(line) + if line.break_after && !last && b > line.char_end.saturating_sub(1) { 4.0 } else { 0.0 }
             } else {
                 self.caret(b).0
             };

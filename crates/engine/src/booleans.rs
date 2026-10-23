@@ -124,7 +124,7 @@ pub(crate) fn apply(s: &mut Session, cmd: &str, p: &Value, op: BoolOp) -> Result
         }
         return Ok(json!({"ids": ids, "operation": op}));
     }
-    let out = crate::cmd::structure::wrap_boolean(s, p, op)?;
+    let out = crate::cmd::structure::wrap_boolean(s, p, cmd, op)?;
     // Operands of a new group follow its operation.
     if let Some(g) = crate::params::id_of(&out["id"]) {
         let doc = s.doc_mut()?;

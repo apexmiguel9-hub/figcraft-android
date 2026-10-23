@@ -376,6 +376,7 @@ fn pointer_draw_move_resize() {
     assert_eq!(s.selection(), vec![r]);
 }
 
+/// No command panics on junk parameters.
 #[test]
 fn every_command_survives_junk_params() {
     // A junk-parameter sweep: no command may panic (guard turns panics into Internal errors,
@@ -418,6 +419,9 @@ fn every_command_survives_junk_params() {
         // Selection color slots: malformed indexes, ranges and paints.
         json!({"targets": [{"id": 2, "fills": true, "index": -1, "range": [0, 1e308]}], "paint": {"type": "solid", "color": "invalid"}}),
         json!({"targets": [{"id": 2, "fills": "yes", "index": 0, "range": [4, 1]}], "style": 5}),
+        // Smart-selection reorder targets and modes as junk.
+        json!({"ids": [2, 3], "source": -1, "target": {"id": 3}, "swap": [], "fromGesture": true}),
+        json!({"source": 1e308, "target": "NaN", "swap": "yes", "fromGesture": []}),
         // Rotation origins and placing with a tool as junk.
         json!({"tool": [1], "x": 1e308, "y": "NaN", "reset": "maybe", "on": {"x": 1}}),
         json!({"tool": "frame", "x": -1e308, "y": 1e308, "reset": true, "on": "yes"}),
@@ -434,6 +438,8 @@ fn every_command_survives_junk_params() {
                 | "file.placeImage"
                 | "image.place"
                 | "file.revert"
+                // Takes no params and walks the font folders: one walk per junk is slow.
+                | "text.rescanFonts"
         ) {
             continue;
         }

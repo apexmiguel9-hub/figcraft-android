@@ -368,6 +368,9 @@ struct Mapper<'a> {
     blobs: Vec<&'a [u8]>,
     /// Component property definitions: id → (REST name "Name#id", type).
     prop_defs: BTreeMap<String, (String, &'a str)>,
+    /// The copies of a set's definitions each variant keeps (no name or type of their own; the
+    /// variant's layers and its instances' assignments use them): copy id → the definition's id.
+    prop_parents: BTreeMap<String, String>,
     /// File nodes by asset `key` and `version`: references can name a collection, variable or
     /// style as the asset instead of the guid, and the file carries the resources to resolve
     /// them (the collection node itself says the same `key`).
@@ -402,6 +405,7 @@ impl<'a> Mapper<'a> {
         let mut nodes = BTreeMap::new();
         let mut kids: BTreeMap<String, Vec<(&'a str, String)>> = BTreeMap::new();
         let mut prop_defs = BTreeMap::new();
+        let mut prop_parents = BTreeMap::new();
         let changes = msg.get("nodeChanges").map(Kv::list).unwrap_or_default();
         // The last change of a GUID wins; a REMOVED change deletes what came before it.
         for n in changes {
@@ -423,10 +427,11 @@ impl<'a> Mapper<'a> {
                 kids.entry(parent).or_default().push((p.get("position").and_then(Kv::str).unwrap_or(""), id.clone()));
             }
             for d in n.get("componentPropDefs").map(Kv::list).unwrap_or_default() {
-                if let (Some(did), Some(name), Some(ty)) =
-                    (d.get("id").and_then(guid), d.get("name").and_then(Kv::str), d.get("type").and_then(Kv::str))
-                {
+                let Some(did) = d.get("id").and_then(guid) else { continue };
+                if let (Some(name), Some(ty)) = (d.get("name").and_then(Kv::str), d.get("type").and_then(Kv::str)) {
                     prop_defs.insert(did.clone(), (format!("{name}#{did}"), ty));
+                } else if let Some(parent) = d.get("parentPropDefId").and_then(guid) {
+                    prop_parents.insert(did, parent);
                 }
             }
         }
@@ -450,6 +455,7 @@ impl<'a> Mapper<'a> {
             kids,
             blobs,
             prop_defs,
+            prop_parents,
             assets,
             styles: Obj::new(),
             components: Obj::new(),
@@ -640,7 +646,7 @@ impl<'a> Mapper<'a> {
             targets.extend(data.and_then(|d| d.get("symbolID")).and_then(guid));
             for assignment in row.get("componentPropAssignments").map(Kv::list).unwrap_or_default() {
                 if assignment.get("defID").is_some_and(|def| self.is_instance_swap(def).is_some()) {
-                    targets.extend(assignment.get("value").and_then(|v| v.get("guidValue")).and_then(guid));
+                    targets.extend(assigned(assignment).and_then(prop_guid));
                 }
             }
             let overrides = data.and_then(|d| d.get("symbolOverrides")).map(Kv::list).unwrap_or_default();
@@ -651,7 +657,31 @@ impl<'a> Mapper<'a> {
     }
 
     fn is_instance_swap(&self, def: &Kv) -> Option<()> {
-        matches!(self.prop_defs.get(&guid(def)?), Some((_, "INSTANCE_SWAP"))).then_some(())
+        matches!(self.prop_def(&guid(def)?), Some((_, "INSTANCE_SWAP"))).then_some(())
+    }
+
+    /// The definition a copy of it was made from, followed to the original: the values an instance
+    /// sets are kept under it, since an assignment and the layers that read it may name different
+    /// copies of one definition.
+    fn prop_root(&self, def: &str) -> String {
+        let mut def = def;
+        for _ in 0..=MAX_DEPTH {
+            let Some(parent) = self.prop_parents.get(def) else { break };
+            def = parent;
+        }
+        def.to_string()
+    }
+
+    /// The definition `def` names: its own, or the set's for a variant's copy of it.
+    fn prop_def(&self, def: &str) -> Option<&(String, &'a str)> {
+        let mut def = def;
+        for _ in 0..=MAX_DEPTH {
+            if let Some(found) = self.prop_defs.get(def) {
+                return Some(found);
+            }
+            def = self.prop_parents.get(def)?;
+        }
+        None
     }
 
     /// The branches of the internal canvas `id` that hold the `required_mains` (with the frames
@@ -908,7 +938,7 @@ impl<'a> Mapper<'a> {
         }
         self.prop_refs(&mut o, &view, inst);
         let slot_content = if own == "FRAME" {
-            prop_ref(&view, "SLOT_CONTENT_ID").and_then(|def| inst.and_then(|i| i.slot_contents.get(&def).cloned()))
+            prop_ref(&view, "SLOT_CONTENT_ID").and_then(|def| inst.and_then(|i| i.slot_contents.get(&self.prop_root(&def)).cloned()))
         } else {
             None
         };
@@ -1892,11 +1922,11 @@ impl<'a> Mapper<'a> {
             // Expanded frames must follow their main frame's source link. A direct slot reference
             // makes the engine resolve ownership against the instance, where the property is not defined.
             if !(field == "slot" && inst.is_some())
-                && let Some((name, _)) = self.prop_defs.get(&def)
+                && let Some((name, _)) = self.prop_def(&def)
             {
                 refs.insert(field.into(), json!(name));
             }
-            let Some(val) = inst.and_then(|i| i.props.get(&def)) else { continue };
+            let Some(val) = inst.and_then(|i| i.props.get(&self.prop_root(&def))) else { continue };
             match field {
                 "visible" => {
                     if let Some(b) = val.get("boolValue").and_then(Kv::bool) {
@@ -1911,7 +1941,7 @@ impl<'a> Mapper<'a> {
                         if own_text(v) != Some(t) {
                             o.remove("characterStyleOverrides");
                             o.remove("styleOverrideTable");
-                            if let Some(tv) = val.get("textValue") {
+                            if let Some(tv) = prop_text_data(val) {
                                 let size = o.get("style").and_then(|s| s.get("fontSize")).and_then(Value::as_f64);
                                 char_styles(o, tv, size, &mut |w| self.warn(w));
                             }
@@ -1933,7 +1963,7 @@ impl<'a> Mapper<'a> {
         // An instance swap property value picks the main.
         if let Some(i) = outer
             && let Some(def) = prop_ref(v, "OVERRIDDEN_SYMBOL_ID")
-            && let Some(g) = i.props.get(&def).and_then(|p| p.get("guidValue")).and_then(guid)
+            && let Some(g) = i.props.get(&self.prop_root(&def)).and_then(|p| prop_guid(p))
         {
             sym = Some(g);
         }
@@ -1945,12 +1975,12 @@ impl<'a> Mapper<'a> {
         let assignments = v.list("componentPropAssignments");
         let mut props = Obj::new();
         for a in assignments {
-            let Some((name, ty)) = a.get("defID").and_then(guid).and_then(|d| self.prop_defs.get(&d).cloned()) else { continue };
-            let val = a.get("value");
+            let Some((name, ty)) = a.get("defID").and_then(guid).and_then(|d| self.prop_def(&d).cloned()) else { continue };
+            let val = assigned(a);
             let p = match ty {
                 "BOOL" => val.and_then(|x| x.get("boolValue")).and_then(Kv::bool).map(|b| json!({"type": "BOOLEAN", "value": b})),
                 "TEXT" => val.and_then(prop_text).map(|t| json!({"type": "TEXT", "value": t})),
-                "INSTANCE_SWAP" => val.and_then(|x| x.get("guidValue")).and_then(guid).map(|g| json!({"type": "INSTANCE_SWAP", "value": g})),
+                "INSTANCE_SWAP" => val.and_then(prop_guid).map(|g| json!({"type": "INSTANCE_SWAP", "value": g})),
                 _ => None,
             };
             if let Some(p) = p {
@@ -2027,11 +2057,11 @@ impl<'a> Mapper<'a> {
         let mut all_props: BTreeMap<String, &'a Kv<'a>> = outer.map(|i| (*i.props).clone()).unwrap_or_default();
         let mut slot_contents: BTreeMap<String, String> = outer.map(|i| (*i.slot_contents).clone()).unwrap_or_default();
         for a in assignments {
-            if let (Some(d), Some(val)) = (a.get("defID").and_then(guid), a.get("value")) {
-                all_props.entry(d).or_insert(val);
+            if let (Some(d), Some(val)) = (a.get("defID").and_then(guid), assigned(a)) {
+                all_props.entry(self.prop_root(&d)).or_insert(val);
             }
             let Some(def) = a.get("defID").and_then(guid) else { continue };
-            if self.prop_defs.get(&def).is_none_or(|(_, ty)| *ty != "SLOT") {
+            if self.prop_def(&def).is_none_or(|(_, ty)| *ty != "SLOT") {
                 continue;
             }
             let var_value = a.get("varValue");
@@ -2052,7 +2082,7 @@ impl<'a> Mapper<'a> {
                 self.warn("slot content assignment target is missing or is not slot content");
                 continue;
             }
-            slot_contents.entry(def).or_insert(target);
+            slot_contents.entry(self.prop_root(&def)).or_insert(target);
         }
         let mut symbols = outer.map(|i| i.symbols.clone()).unwrap_or_default();
         symbols.push(sym.clone());
@@ -2777,7 +2807,23 @@ fn char_styles(o: &mut Obj, td: &Kv, size: Option<f64>, warn: &mut dyn FnMut(Str
 
 /// The text of a component property value.
 fn prop_text<'k>(v: &'k Kv) -> Option<&'k str> {
-    v.get("textValue").and_then(|t| t.get("characters")).and_then(Kv::str)
+    prop_text_data(v).and_then(|t| t.get("characters")).and_then(Kv::str)
+}
+
+/// The text data of a component property value: `textValue`, or `textDataValue` in the variable form.
+fn prop_text_data<'k, 's>(v: &'k Kv<'s>) -> Option<&'k Kv<'s>> {
+    v.get("textValue").or_else(|| v.get("textDataValue"))
+}
+
+/// The main an instance swap value names: `guidValue`, or `symbolIdValue` in the variable form.
+fn prop_guid(v: &Kv) -> Option<String> {
+    v.get("guidValue").and_then(guid).or_else(|| v.get("symbolIdValue")?.get("guid").and_then(guid))
+}
+
+/// The value a component property assignment sets: `value`, or the variable form `varValue` holds
+/// when `value` is empty, as current files write many booleans and instance swaps.
+fn assigned<'k, 's>(assignment: &'k Kv<'s>) -> Option<&'k Kv<'s>> {
+    assignment.get("value").filter(|v| !matches!(v, Kv::Object(fields) if fields.is_empty())).or_else(|| assignment.get("varValue")?.get("value"))
 }
 
 /// The property a layer's `field` is bound to (`parameterConsumptionMap`).

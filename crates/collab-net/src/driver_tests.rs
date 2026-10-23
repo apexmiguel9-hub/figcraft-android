@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use figcraft_collab::message::{self, ClientMsg, Presence, ServerMsg};
 use figcraft_collab::{Client, Limits, Outgoing, Server};
 use figcraft_doc::{Document, NodeId};
-use figcraft_engine::live::{Event, Status};
+use figcraft_engine::live::{Event, Status, TOO_LARGE_TO_JOIN};
 use tungstenite::protocol::WebSocket;
 use tungstenite::{Bytes, Message};
 
@@ -262,6 +262,15 @@ fn refusals_and_the_end_of_the_session_are_final() {
         assert!(d.done());
         assert!(matches!(statuses(&inbox.drain()).last(), Some(Status::Failed { reason }) if reason.starts_with("The host refused")));
     }
+    // A message over the size limit: the file is too large for this app, not refused by the host.
+    let inbox = Inbox::new(Arc::new(|| {}));
+    let mut cfg = GuestConfig::new(invite(), "Ada".into());
+    cfg.limits.max_server_message = 2 << 20;
+    let mut d = Driver::start(Script::default(), cfg, inbox.clone(), t0);
+    d.opened(t0);
+    d.message(&vec![0; (2 << 20) + 1], t0);
+    assert!(d.done());
+    assert!(matches!(statuses(&inbox.drain()).last(), Some(Status::Failed { reason }) if *reason == TOO_LARGE_TO_JOIN.replace("{mb}", "2")));
 }
 
 #[test]

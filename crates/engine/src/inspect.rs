@@ -165,6 +165,10 @@ pub fn node_json(doc: &Document, id: NodeId, depth: usize) -> Value {
             o.insert("operandOperation".into(), json!(op));
         }
     }
+    // Layer data written with `node.set {props: {pluginData}}` (pages too).
+    if !n.plugin_data.is_empty() {
+        o.insert("pluginData".into(), json!(n.plugin_data));
+    }
     match &n.kind {
         NodeKind::Text(t) => {
             o.insert("characters".into(), json!(t.characters));

@@ -29,8 +29,12 @@ const CALLOUT_W: f32 = 220.0;
 const CALLOUT_GAP: f32 = 24.0;
 
 /// The status filters of the ready-for-dev list.
-const FILTERS: [(Option<DevStatus>, &str); 3] =
-    [(Some(DevStatus::ReadyForDev), tr_noop("Ready for dev")), (Some(DevStatus::Completed), tr_noop("Completed")), (None, tr_noop("Any status"))];
+const FILTERS: [(Option<DevStatus>, bool, &str); 4] = [
+    (Some(DevStatus::ReadyForDev), false, tr_noop("Ready for dev")),
+    (Some(DevStatus::ReadyForDev), true, tr_noop("Changed")),
+    (Some(DevStatus::Completed), false, tr_noop("Completed")),
+    (None, false, tr_noop("Any status")),
+];
 
 /// Which annotations the canvas shows.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -500,18 +504,18 @@ pub fn status(app: &mut FigApp, ui: &mut Ui, doc: &Document, sel: &[NodeId]) {
     row(ui, 32.0, |ui| crate::section_panel::status_dropdown(app, ui, doc, sel, w));
     if let [id] = sel {
         let changed = doc.node(*id).is_some_and(|n| n.dev_status == DevStatus::ReadyForDev && n.dev_changed);
-        let focused = app.session.ds().ok().and_then(figcraft_engine::DocState::focused) == Some(*id);
+        let ds = app.session.ds().ok();
+        let focused = ds.and_then(figcraft_engine::DocState::focused) == Some(*id);
+        // Unchanged since it was marked (or not ready for dev): compared with the newest saved version.
+        let newest = ds.and_then(|d| d.versions.last()).map(|v| v.id.clone()).filter(|_| !changed);
         row(ui, 32.0, |ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
             if !focused && widgets::button(ui, tr("Focus view"), false, true).on_hover_text(tr("Show only this on the canvas")).clicked() {
                 app.run("dev.focus", json!({"id": id}));
             }
-            if changed
-                && widgets::button(ui, tr("Compare changes"), true, true)
-                    .on_hover_text(tr("What changed since it was marked ready for dev"))
-                    .clicked()
-            {
-                app.run("dev.compare", json!({"id": id, "show": true}));
+            let tip = if changed { tr("What changed since it was marked ready for dev") } else { tr("What changed since a saved version") };
+            if (changed || newest.is_some()) && widgets::button(ui, tr("Compare changes"), changed, true).on_hover_text(tip).clicked() {
+                app.run("dev.compare", json!({"id": id, "version": newest, "show": true}));
             }
         });
     }
@@ -628,7 +632,7 @@ pub fn dev_resources_section(app: &mut FigApp, ui: &mut Ui, doc: &Document, id: 
         }
         icons::paint(ui.painter(), Rect::from_center_size(pos2(r.min.x + PAD + 7.0, r.center().y), vec2(14.0, 14.0)), Icon::Link, t.icon_secondary);
         let x = r.min.x + PAD + 22.0;
-        ui.painter().text(pos2(x, r.center().y - 7.0), Align2::LEFT_CENTER, widgets::elide(ui, name, text_w), semibold(11.0), ACCENT);
+        ui.painter().text(pos2(x, r.center().y - 7.0), Align2::LEFT_CENTER, widgets::elide(ui, name, text_w), semibold(11.0), t.accent_text);
         let below = match item.from.and_then(|f| doc.node(f)) {
             Some(m) => trf("From {name}", &[("name", &m.name)]),
             None => url.clone(),
@@ -819,7 +823,9 @@ pub fn ready_list(app: &mut FigApp, ui: &mut Ui) {
     let filter = app.ui.dev.filter.min(FILTERS.len() - 1);
     let key = (ds.uid, ds.revision, filter);
     if app.ui.dev.ready_key != Some(key) {
-        app.ui.dev.ready = devinspect::dev_items(&ds.doc, FILTERS.get(filter).and_then(|f| f.0), None);
+        let (status, changed_only) = FILTERS.get(filter).map_or((None, false), |f| (f.0, f.1));
+        app.ui.dev.ready = devinspect::dev_items(&ds.doc, status, None);
+        app.ui.dev.ready.retain(|i| i.changed || !changed_only);
         app.ui.dev.ready_key = Some(key);
     }
     let doc = ds.doc.clone();
@@ -827,9 +833,9 @@ pub fn ready_list(app: &mut FigApp, ui: &mut Ui) {
     widgets::section_header(ui, tr("Ready for dev"), &[], app.ui.dev.ready.is_empty());
     let w = ui.available_width() - PAD * 2.0;
     row(ui, 32.0, |ui| {
-        let resp = widgets::dropdown(ui, FILTERS.get(filter).map_or("", |f| tr(f.1)), w, Some(Icon::Code));
+        let resp = widgets::dropdown(ui, FILTERS.get(filter).map_or("", |f| tr(f.2)), w, Some(Icon::Code));
         menu_popup(&resp).show(|ui| {
-            for (i, (_, label)) in FILTERS.iter().enumerate() {
+            for (i, (_, _, label)) in FILTERS.iter().enumerate() {
                 if menu_check(ui, i == filter, tr(label), "") {
                     app.ui.dev.filter = i;
                     ui.close();
@@ -848,15 +854,21 @@ pub fn ready_list(app: &mut FigApp, ui: &mut Ui) {
         if resp.hovered() {
             ui.painter().rect_filled(r.shrink2(vec2(8.0, 0.0)), CornerRadius::same(5), t.hover);
         }
-        let dot = if item.status == DevStatus::ReadyForDev { t.success } else { t.text_tertiary };
+        // The status colours the canvas badges use; a changed one also says so after its name.
+        let n = doc.node(item.id);
+        let dot = n.and_then(crate::canvas::status_label).map_or(t.text_tertiary, |(_, c)| c);
         ui.painter().circle_filled(pos2(r.min.x + PAD + 4.0, r.center().y), 4.0, dot);
         let page = doc.node(item.page).map(|p| p.name.clone()).unwrap_or_default();
         let page_w = ui.painter().layout_no_wrap(page.clone(), regular(10.0), t.text_secondary).size().x.min(90.0);
         let page_r = Rect::from_min_max(pos2(r.max.x - PAD - page_w, r.min.y), pos2(r.max.x - PAD, r.max.y));
         ui.painter().with_clip_rect(page_r).text(page_r.right_center(), Align2::RIGHT_CENTER, page, regular(10.0), t.text_secondary);
         let name_r = Rect::from_min_max(pos2(r.min.x + PAD + 14.0, r.min.y), pos2(page_r.min.x - 8.0, r.max.y));
-        let name = widgets::elide(ui, &item.name, name_r.width());
-        ui.painter().text(name_r.left_center(), Align2::LEFT_CENTER, name, regular(11.0), t.text);
+        // Room for the "Changed" badge (about 60 points) after the name.
+        let name = widgets::elide(ui, &item.name, name_r.width() - if item.changed { 64.0 } else { 0.0 });
+        let name_end = ui.painter().text(name_r.left_center(), Align2::LEFT_CENTER, name, regular(11.0), t.text).max.x;
+        if let Some(n) = n.filter(|_| item.changed) {
+            crate::canvas::status_badge(&ui.painter().with_clip_rect(name_r), n, pos2(name_end + 6.0, r.center().y));
+        }
         // Hovered: a button to open it in the focus view, over the page name.
         let focus_r = Rect::from_center_size(pos2(r.max.x - PAD - 10.0, r.center().y), vec2(22.0, 22.0));
         let over_focus = ui.rect_contains_pointer(focus_r);

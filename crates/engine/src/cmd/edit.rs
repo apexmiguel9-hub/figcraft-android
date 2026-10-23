@@ -18,13 +18,19 @@ pub fn specs() -> Vec<CommandSpec> {
         spec!(
             "edit.duplicate",
             "Duplicate",
-            "{ids?, dx?, dy? (page offset; default: the offset of the last duplicate when ids are its copies, still selected; else top-level frames to the right with a 100 gap, everything else in place)}",
+            "{ids?, dx?, dy? (page offset; default: the offset of the last duplicate when ids are its copies, still selected; else top-level frames to the right with a 100 gap, everything else in place)}  a main component's copy is an instance of it (a variant stays a new variant in its set)",
             true,
             duplicate
         ),
         spec!("edit.copy", "Copy", "{ids?}", false, copy),
         spec!("edit.cut", "Cut", "{ids?}", true, cut),
-        spec!("edit.paste", "Paste", "{parent?, x?, y? (page coordinates of the pasted top-left)}", true, paste),
+        spec!(
+            "edit.paste",
+            "Paste",
+            "{parent?, x?, y? (page coordinates of the pasted top-left)}  a copied main component pastes as an instance of it within its file (cut ones, and pastes into other files, keep the component)",
+            true,
+            paste
+        ),
         spec!(
             "edit.pasteDesignLayers",
             "Paste design layers",
@@ -456,7 +462,7 @@ fn duplicate(s: &mut Session, p: &Value) -> Result<Value> {
         let top_frame = doc.node(parent).is_some_and(Node::is_page) && n.kind.is_frame_like();
         let idx = doc.index_in_parent(i).map(|x| x + 1);
         let w = n.width;
-        let nid = doc.duplicate_into(i, parent, idx)?;
+        let nid = crate::components::copy_in_file(doc, i, parent, idx)?;
         let (dx, dy) = match (num(p, "dx"), num(p, "dy")) {
             (Some(dx), dy) => (dx, dy.unwrap_or(0.0)),
             (None, Some(dy)) => (0.0, dy),
@@ -471,7 +477,8 @@ fn duplicate(s: &mut Session, p: &Value) -> Result<Value> {
                 nn.transform = Affine::translate((dx, dy)) * nn.transform;
             }
         }
-        if rename {
+        // An instance keeps the name instances get by default.
+        if rename && !matches!(doc.get(nid)?.kind, NodeKind::Instance { .. }) {
             let nn = doc.get_mut(nid)?;
             nn.name = bump_name(&nn.name);
         }
@@ -505,6 +512,13 @@ pub fn copy_to_clipboard(s: &mut Session, cmd: &str, ids: &[NodeId]) -> Result<(
     s.clipboard.source = Some(source);
     s.clipboard.source_path = source_path;
     s.clipboard.source_doc = uid;
+    s.clipboard.copied_components = nodes
+        .iter()
+        .filter(|(_, sub)| {
+            cmd == "edit.copy" && sub.first().is_some_and(|n| matches!(n.kind, NodeKind::Component { .. } | NodeKind::ComponentSet { .. }))
+        })
+        .map(|(root, _)| *root)
+        .collect();
     s.clipboard.nodes = nodes;
     s.clipboard.images = images;
     s.clipboard.bounds = bounds;
@@ -583,7 +597,8 @@ fn paste_design_layers(s: &mut Session, p: &Value) -> Result<Value> {
     let (nodes, images, bounds) = copied(&doc, &tops);
     let props = s.clipboard.props.take();
     // No open file has id 0. So paste treats this copy as a copy from a different file.
-    s.clipboard = crate::Clipboard { nodes, images, props, bounds, source_doc: 0, source: Some(doc), source_path: None };
+    s.clipboard =
+        crate::Clipboard { nodes, images, props, bounds, source_doc: 0, source: Some(doc), source_path: None, copied_components: BTreeSet::new() };
     let mut out = paste(s, p)?;
     if !other.issues.is_empty() {
         out["warnings"] = json!(other.issues);
@@ -613,6 +628,7 @@ pub fn paste_into(s: &mut Session, parent: NodeId, at: Option<(f64, f64)>) -> Re
     }
     // From another file: its instances follow the mains this file can have.
     let foreign = clip.source.as_ref().filter(|_| s.ds().is_ok_and(|d| d.uid != clip.source_doc));
+    let copy_local = s.ds()?.uid == clip.source_doc;
     let doc = s.doc_mut()?;
     for (k, v) in &clip.images {
         doc.images.entry(k.clone()).or_insert_with(|| v.clone());
@@ -626,6 +642,16 @@ pub fn paste_into(s: &mut Session, parent: NodeId, at: Option<(f64, f64)>) -> Re
     let mut out = Vec::new();
     let mut all = BTreeMap::new();
     for (root, nodes) in &clip.nodes {
+        if copy_local
+            && clip.copied_components.contains(root)
+            && let Some(n) = nodes.first().filter(|n| matches!(n.kind, NodeKind::Component { .. }))
+            && doc.node(*root).is_some_and(|n| matches!(n.kind, NodeKind::Component { .. }))
+        {
+            let instance = crate::components::create_instance(doc, *root, parent, 0.0, 0.0)?;
+            doc.get_mut(instance)?.transform = doc.world_transform(parent).inverse() * shift * n.transform;
+            out.push(instance);
+            continue;
+        }
         let mut map = BTreeMap::new();
         for n in nodes {
             map.insert(n.id, doc.alloc_id());
@@ -651,10 +677,12 @@ fn paste(s: &mut Session, p: &Value) -> Result<Value> {
     // else in the frame's centre; otherwise in place on the page (or the viewport centre).
     let sel = s.selection();
     let doc = s.doc()?;
+    let copy_local = s.ds()?.uid == s.clipboard.source_doc;
     let target = id(p, "parent").or_else(|| {
         sel.first()
             .copied()
             .filter(|i| sel.len() == 1 && doc.node(*i).is_some_and(|n| n.kind.is_frame_like() && !matches!(n.kind, NodeKind::Instance { .. })))
+            .filter(|i| !copy_local || !s.clipboard.copied_components.iter().any(|root| doc.is_ancestor(*root, *i)))
     });
     let parent = target.unwrap_or(page);
     let at = match (num(p, "x"), num(p, "y")) {
@@ -921,9 +949,13 @@ pub fn opacity_from_digits(digits: &str) -> Option<f32> {
 fn opacity_keys(s: &mut Session, p: &Value) -> Result<Value> {
     let digits = req_string("object.opacityKeys", p, "digits")?;
     let o = opacity_from_digits(&digits).ok_or_else(|| bad("object.opacityKeys", "`digits` must be one or two digits"))?;
-    for i in req_targets("object.opacityKeys", s, p)? {
-        s.doc_mut()?.get_mut(i)?.opacity = o;
+    let ids = req_targets("object.opacityKeys", s, p)?;
+    let doc = s.doc_mut()?;
+    let before = super::styles::bound_before(doc, &ids);
+    for i in ids {
+        doc.get_mut(i)?.opacity = o;
     }
+    super::styles::detach_edited(doc, &before);
     Ok(json!({"opacity": o}))
 }
 
@@ -1171,10 +1203,12 @@ fn set(s: &mut Session, p: &Value) -> Result<Value> {
         }
     }
     let doc = s.doc_mut()?;
+    let before = super::styles::bound_before(doc, &ids);
     for i in ids {
         let props = if skipped.contains(&i) { &without_layout } else { &props };
         super::props::apply("node.set", doc, i, props)?;
     }
+    super::styles::detach_edited(doc, &before);
     if let Some(o) = pivot {
         for (i, q) in pinned {
             let d = o - doc.world_transform(i) * q;
@@ -1332,7 +1366,7 @@ fn paint_set(s: &mut Session, p: &Value, fills: bool) -> Result<Value> {
         if let Some(b) = blend(p, "blend") {
             slot.blend = b;
         }
-        super::lists::remap_stop_bindings(n, fills, at, &old);
+        super::lists::rebind_edited_paint(n, fills, at, &old);
         if fills {
             n.styles.fill = None;
         } else {
@@ -1367,7 +1401,7 @@ fn pattern_fill(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn effect_set(s: &mut Session, p: &Value) -> Result<Value> {
     let i = req_index("effect.set", p, "index")?;
-    let e: Effect = parse("effect.set", p, "effect")?.ok_or_else(|| bad("effect.set", "`effect` required"))?;
+    let e = super::props::effect_from("effect.set", p, "effect")?.ok_or_else(|| bad("effect.set", "`effect` required"))?;
     let glass = matches!(&e.kind, EffectKind::Glass(_));
     let ids = req_targets("effect.set", s, p)?;
     let doc = s.doc_mut()?;
@@ -1384,8 +1418,8 @@ fn effect_set(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn effect_add(s: &mut Session, p: &Value) -> Result<Value> {
-    let e: Effect = match get(p, "effect") {
-        Some(v) => serde_json::from_value(v.clone()).map_err(|e| bad("effect.add", e.to_string()))?,
+    let e: Effect = match super::props::effect_from("effect.add", p, "effect")? {
+        Some(e) => e,
         None => {
             let ty = string(p, "type").unwrap_or_else(|| "dropShadow".into());
             Effect::of_type(&ty).ok_or_else(|| bad("effect.add", format!("unknown effect type `{ty}`")))?

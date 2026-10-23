@@ -401,35 +401,66 @@ fn alignment(app: &mut FigApp, ui: &mut Ui, ids: &[NodeId], l: &AutoLayout) {
     }
 }
 
+/// The Spacing row: the H/V padding pair, or, with Individual padding on, two rows of one field
+/// per side (like Individual corners).
 fn spacing(app: &mut FigApp, ui: &mut Ui, ids: &[NodeId], l: &AutoLayout) {
     let col = widgets::col_width(ui.available_width());
     let [pt, pr, pb, pl] = l.padding;
-    row(ui, 32.0, |ui| {
-        let e = crate::variable_ui::number_field(
-            app,
-            ui,
-            ids,
-            "paddingHorizontal",
-            Id::new("al_padh"),
-            Lead::Icon(Icon::PaddingH, tr("Horizontal padding")),
-            (pl == pr).then_some(pl),
-            "",
-            col,
-        );
-        app.field(ids, "paddingHorizontal", e, |v| json!(v.max(0.0)));
-        let e = crate::variable_ui::number_field(
-            app,
-            ui,
-            ids,
-            "paddingVertical",
-            Id::new("al_padv"),
-            Lead::Icon(Icon::PaddingV, tr("Vertical padding")),
-            (pt == pb).then_some(pt),
-            "",
-            col,
-        );
-        app.field(ids, "paddingVertical", e, |v| json!(v.max(0.0)));
-    });
+    let open = ui.data(|d| d.get_temp::<bool>(Id::new("indep_padding"))).unwrap_or(false);
+    let toggle = |ui: &mut Ui| {
+        if icons::button(ui, Icon::IndependentPadding, 24.0, open, tr("Individual padding")).clicked() {
+            ui.data_mut(|d| d.insert_temp(Id::new("indep_padding"), !open));
+        }
+    };
+    if open {
+        // `l` is the selection's common layout, so its sides are common too. `k` indexes
+        // [top, right, bottom, left].
+        let sides = [
+            ("paddingLeft", tr("Left padding"), Icon::PaddingLeft, pl, 3),
+            ("paddingTop", tr("Top padding"), Icon::PaddingTop, pt, 0),
+            ("paddingRight", tr("Right padding"), Icon::PaddingRight, pr, 1),
+            ("paddingBottom", tr("Bottom padding"), Icon::PaddingBottom, pb, 2),
+        ];
+        for (r, pair) in sides.chunks(2).enumerate() {
+            row(ui, 32.0, |ui| {
+                for (key, name, icon, v, k) in pair {
+                    let e = crate::variable_ui::number_field(app, ui, ids, key, Id::new(("padding", *k)), Lead::Icon(*icon, name), Some(*v), "", col);
+                    app.field(ids, key, e, |v| json!(v.max(0.0)));
+                }
+                if r == 0 {
+                    toggle(ui);
+                }
+            });
+        }
+    } else {
+        row(ui, 32.0, |ui| {
+            let e = crate::variable_ui::number_field(
+                app,
+                ui,
+                ids,
+                "paddingHorizontal",
+                Id::new("al_padh"),
+                Lead::Icon(Icon::PaddingH, tr("Horizontal padding")),
+                (pl == pr).then_some(pl),
+                "",
+                col,
+            );
+            app.field(ids, "paddingHorizontal", e, |v| json!(v.max(0.0)));
+            let e = crate::variable_ui::number_field(
+                app,
+                ui,
+                ids,
+                "paddingVertical",
+                Id::new("al_padv"),
+                Lead::Icon(Icon::PaddingV, tr("Vertical padding")),
+                (pt == pb).then_some(pt),
+                "",
+                col,
+            );
+            app.field(ids, "paddingVertical", e, |v| json!(v.max(0.0)));
+            toggle(ui);
+        });
+    }
     if l.mode != LayoutMode::Grid && l.wrap {
         // Wrapped rows (horizontal) or columns (vertical): the gap between them.
         let vertical = l.mode == LayoutMode::Vertical;

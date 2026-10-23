@@ -1,6 +1,6 @@
 # Localization parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-17 · **Change:** minor (macOS finds its downloadable CJK system fonts (#406); string counts re-measured: 2,272 entries, the drafts at 95–99%; Swedish command labels and menu wordings; Russian, Swedish, Turkish, Czech and Indonesian listed; a duplicated paragraph removed; draft catalogs catch up: every draft translates every string again; Simplified Chinese draft catalog) · **Target:** Figma Design (desktop app 126.10.7)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-23 · **Change:** minor (a missing translation fails no check: `cargo xtask i18n-report` lists them; Russian and Turkish catalogs reviewed by native speakers, Russian one/few/many plurals; Czech and Indonesian drafts; the Japanese draft completed; counts re-measured; Windows UI language from the first preferred language; draft catalogs catch up: every draft translates every string again; Simplified Chinese draft catalog; macOS finds its downloadable CJK system fonts (#406); string counts re-measured: 2,272 entries, the drafts at 95–99%; Swedish command labels and menu wordings; Russian, Swedish, Turkish, Czech and Indonesian listed; a duplicated paragraph removed; draft catalogs catch up: every draft translates every string again; Simplified Chinese draft catalog) · **Target:** Figma Design (desktop app 126.10.7)
 
 FigCraft's interface has a localization layer with an English catalog, a Russian catalog reviewed
 by a native speaker, and Spanish (with a Latin American overlay), French, German, Brazilian
@@ -37,7 +37,8 @@ supported by both apps (CJK, Arabic and Devanagari shaping, IME); Figma has no v
   only the first preferred language counts, since that list also holds the languages added for a
   keyboard; macOS AppleLanguages, `LANGUAGE` then the locale variables on Linux and BSD; a regional
   tag falls back to its language, pt-PT or pt to pt-BR, and es-419, es-MX, es-AR, es-CO and the
-  other Latin American and US Spanish tags to es-419; zh, zh-CN, zh-SG and zh-Hans read zh-Hans,
+  other Latin American and US Spanish tags to es-419; regional ru, tr, cs and id tags (ru-RU,
+  tr-TR, cs-CZ, id-ID) to their catalogs; zh, zh-CN, zh-SG and zh-Hans read zh-Hans,
   while Traditional Chinese (zh-Hant, zh-TW, zh-HK, zh-MO) has no catalog and reads English or the
   next OS language, never Simplified) or the browser's language on the web.
   `pref.language {language}` sets it from the CLI, MCP and the control channel.
@@ -45,11 +46,11 @@ supported by both apps (CJK, Arabic and Devanagari shaping, IME); Figma has no v
   (`es-419.toml` over `es.toml`); its UI strings, command labels and menu wordings read the
   overlay, then the base language, then English.
 - **Check:** `cargo test -p figcraft-ui-egui i18n` fails on keys the code uses that `en.toml`
-  lacks, keys no code uses, unknown command ids, placeholders that differ from English, overlay
-  entries that read as in their base language and, for complete languages (Spanish), anything
-  untranslated. The other catalogs are not held to it: a string added later shows English there
-  until someone translates it. Every draft translated every string on 2026-10-12; by 2026-10-17
-  the strings added since left them at 95–99% (table below).
+  lacks, keys no code uses, unknown command ids, placeholders that differ from English and overlay
+  entries that read as in their base language. No language is held to full coverage: a string
+  added later shows English until someone translates it, and `cargo xtask i18n-report` (part of
+  `cargo xtask ci`) lists what each language lacks. Every draft translated every string on
+  2026-10-12; by 2026-10-17 the strings added since left them at 95–99% (table below).
 - **Not yet localized:** messages the engine writes (errors, a few toasts, Dev Mode property values
   such as "inside"), number formatting (decimal points stay `.`), and decimal plural rules
   (`trn` takes integers: Czech uses one/few/other and Russian one/few/many; French and Brazilian
@@ -63,7 +64,8 @@ supported by both apps (CJK, Arabic and Devanagari shaping, IME); Figma has no v
 - **Script support in the UI:** menus widen to their longest label; dropdowns, the two-column
   labels of the right panel and the home screen's cards keep a long translation on one line with an
   ellipsis and show it in full on hover (checked in German, the longest); no mirrored
-  (right-to-left) layout of panels. CJK translations are shorter than English; the same ellipsis
+  (right-to-left) layout of panels. Cyrillic, Turkish and Czech letters draw from the UI fonts
+  (no font added; Russian checked in screenshots). CJK translations are shorter than English; the same ellipsis
   and tooltip cover the few that don't fit (the sizing dropdowns).
 - **CJK UI fonts:** egui's fonts and Inter have no CJK glyphs. Once the UI language, the open
   file's names or comments, typed text or the language picker needs Japanese kana, Hangul or Han,
@@ -120,6 +122,8 @@ Hindi, Vietnamese and Arabic. Traditional Chinese is not planned (no catalog; it
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-23 | minor | A missing translation fails no check: Spanish is no longer held to full coverage, and the tests of one language's wording, names and plural forms are gone (the plural rules and language-tag tests stay). `cargo xtask i18n-report`, run by `cargo xtask ci`, lists each language's missing UI strings, command labels and menu wordings. Grade unchanged |
+| 2026-10-15 | minor | Community catalogs (#257, #263, #469, #477, #288): Russian (`ru`, Русский, reviewed and approved by VanTan) and Turkish (`tr`, Türkçe, reviewed by a native speaker), Czech (`cs`, Čeština) and Indonesian (`id`, Bahasa Indonesia) drafts, and the Japanese draft caught up; Preferences ▸ Language lists them and System maps their regional tags. Catalogs may give few and many plural forms; Russian picks one, few or many by its integer rule (11–14 take many), the catalog supplying the text choosing the rule. Only Spanish is held to completeness. Counts re-measured: 1,587 UI keys (38 plural), 559 command labels and 31 menu wordings, 2,177 entries; Spanish 100%, Japanese 2,176, Czech and Indonesian 2,166, Russian and Turkish 2,165, the five older drafts 2,088–2,089 (95%). Localization 39% and 29–51 h unchanged at this rounding |
 | 2026-10-17 | minor | Chinese showed as boxes on macOS (#406): the font scan also walks the system's downloaded font assets (`/System/Library/AssetsV2` and the older `/System/Library/Assets`, only their `com_apple_MobileAsset_Font*` folders), where current versions keep PingFang SC, and Hiragino Sans GB and Heiti SC join the Chinese UI faces and the text fallbacks. Tested with a folder laid out the same way; not yet run on a Mac |
 | 2026-10-17 | minor | String counts re-measured from the catalogs: 1,680 UI keys, 561 command labels and 31 menu wordings (2,272 entries); Spanish complete, the other drafts at 95.3–99.2% (strings added since 2026-10-12 show English), es-419 101 entries. Indonesian has a draft (98.8%; it was listed as none); Russian (98.8%, reviewed), Swedish (99.6%, command labels and menu wordings from #599), Turkish (98.7%) and Czech (98.8%) listed with counts; the language picker's list updated; a paragraph repeated by a merge removed. Grade and hours unchanged (Indonesian's draft is offset by the drafts' new gaps) |
 | 2026-10-14 | minor | Windows UI language (#291): the interface language comes from Windows' first preferred language alone; that list is also the input-language list (a German keyboard on a Polish system adds Deutsch), and taking the first entry with a catalog turned the interface German there. A first preferred language without a catalog reads English; macOS AppleLanguages and gettext's `LANGUAGE` still take the first language with a catalog |

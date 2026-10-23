@@ -205,3 +205,157 @@ fn stationary_gap_drag_does_not_change_the_document_again() {
     u.button(p + vec2(20.2 * z, 0.), false);
     assert_eq!(xy(&u, ids[1]), (200., 100.));
 }
+
+#[test]
+fn reorder_ring_drag_inserts_across_grid_rows_as_one_undo_step() {
+    let (mut u, ids) = scene(true);
+    let before = u.app.session.undo_depth().0;
+    let p = u.app.to_screen(125., 130.);
+    let target = u.app.to_screen(205., 230.);
+    let output = u.frame_output(vec![Event::PointerMoved(p)]);
+    assert_eq!(output.platform_output.cursor_icon, egui::CursorIcon::Grab);
+    drag(&mut u, p, target - p, true);
+    assert_eq!(xy(&u, ids[0]), (180., 200.));
+    assert_eq!(xy(&u, ids[3]), (260., 100.));
+    assert_eq!(u.app.session.selection(), ids);
+    assert_eq!(u.app.session.undo_depth().0, before + 1);
+    u.app.run("edit.undo", json!({}));
+    assert_eq!(xy(&u, ids[0]), (100., 100.));
+    u.app.run("edit.redo", json!({}));
+    assert_eq!(xy(&u, ids[0]), (180., 200.));
+}
+
+#[test]
+fn reorder_ring_escape_click_and_returning_home_make_no_undo_step() {
+    for action in [0, 1, 2] {
+        let (mut u, ids) = scene(false);
+        let history = u.app.session.undo_depth().0;
+        let before = u.app.session.doc().unwrap().clone();
+        let p = u.app.to_screen(125., 130.);
+        let target = u.app.to_screen(285., 130.);
+        u.frame(vec![Event::PointerMoved(p)]);
+        if action == 0 {
+            u.button(p, true);
+        } else {
+            drag(&mut u, p, target - p, false);
+            assert_eq!(xy(&u, ids[0]), (260., 100.));
+            if action == 1 {
+                key(&mut u, Key::Escape);
+            } else {
+                u.frame(vec![Event::PointerMoved(p)]);
+            }
+        }
+        u.button(p, false);
+        u.frame(vec![]);
+        assert_eq!(u.app.session.doc().unwrap(), &before);
+        assert_eq!(u.app.session.undo_depth().0, history);
+        assert_eq!(u.app.session.selection(), ids);
+        assert!(u.app.session.ds().unwrap().interaction.is_none());
+    }
+}
+
+#[test]
+fn command_drag_swaps_and_a_stationary_pointer_keeps_the_preview() {
+    let (mut u, ids) = scene(true);
+    let p = u.app.to_screen(125., 130.);
+    let target = u.app.to_screen(205., 230.);
+    // The modifier can already be down when the handle is pressed.
+    let m = Modifiers::COMMAND;
+    u.frame_with(vec![Event::PointerMoved(p)], m);
+    u.frame_with(vec![Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: true, modifiers: m }], m);
+    u.frame_with(vec![Event::PointerMoved(target)], m);
+    assert_eq!(xy(&u, ids[0]), (180., 200.));
+    assert_eq!(xy(&u, ids[4]), (100., 100.));
+    assert_eq!(xy(&u, ids[1]), (180., 100.));
+    let snapshot = u.app.session.ds().unwrap().doc.clone();
+    for _ in 0..5 {
+        u.frame_with(vec![], m);
+    }
+    assert!(std::sync::Arc::ptr_eq(&snapshot, &u.app.session.ds().unwrap().doc));
+    // Changing modifiers without moving the pointer switches to insertion.
+    u.frame(vec![]);
+    assert_eq!(xy(&u, ids[1]), (100., 100.));
+    assert_eq!(xy(&u, ids[4]), (100., 200.));
+    u.button(target, false);
+}
+
+#[test]
+fn switching_documents_during_reordering_rolls_back_its_owner() {
+    let (mut u, ids) = scene(false);
+    let before = u.app.session.doc().unwrap().clone();
+    let p = u.app.to_screen(125., 130.);
+    let target = u.app.to_screen(285., 130.);
+    drag(&mut u, p, target - p, false);
+    u.app.run("file.new", json!({}));
+    u.app.session.begin_interaction("Unrelated").unwrap();
+    u.frame(vec![]);
+    assert!(u.app.session.ds().unwrap().interaction.is_some());
+    u.app.session.active = 0;
+    assert_eq!(u.app.session.doc().unwrap(), &before);
+    assert_eq!(u.app.session.selection(), ids);
+}
+
+#[test]
+fn reorder_release_outside_window_commits_and_undo_while_dragging_cancels() {
+    for undo in [false, true] {
+        let (mut u, ids) = scene(false);
+        let history = u.app.session.undo_depth().0;
+        let p = u.app.to_screen(125., 130.);
+        let target = u.app.to_screen(285., 130.);
+        drag(&mut u, p, target - p, false);
+        if undo {
+            let m = Modifiers::COMMAND;
+            u.frame_with(vec![Event::Key { key: Key::Z, physical_key: None, pressed: true, repeat: false, modifiers: m }], m);
+        }
+        u.frame(vec![Event::PointerGone]);
+        u.button(Pos2::new(-1., -1.), false);
+        u.frame(vec![]);
+        assert_eq!(u.app.session.undo_depth().0, history + usize::from(!undo));
+        assert_eq!(xy(&u, ids[0]), if undo { (100., 100.) } else { (260., 100.) });
+        assert!(u.app.session.ds().unwrap().interaction.is_none());
+    }
+}
+
+#[test]
+fn an_externally_finished_reorder_cannot_resume_on_later_pointer_motion() {
+    let (mut u, ids) = scene(false);
+    let p = u.app.to_screen(125., 130.);
+    let target = u.app.to_screen(285., 130.);
+    drag(&mut u, p, target - p, false);
+    u.app.session.commit_interaction().unwrap();
+    let history = u.app.session.undo_depth().0;
+    let committed = u.app.session.doc().unwrap().clone();
+    let middle = u.app.to_screen(205., 130.);
+    u.frame(vec![Event::PointerMoved(middle)]);
+    u.button(middle, false);
+    u.frame(vec![]);
+    assert_eq!(u.app.session.doc().unwrap(), &committed);
+    assert_eq!(u.app.session.undo_depth().0, history);
+    assert_eq!(xy(&u, ids[0]), (260., 100.));
+}
+
+#[test]
+fn small_layers_on_screen_have_no_reorder_ring_and_drag_the_selection_from_their_middle() {
+    let mut u = Ui::new(Session::new());
+    let z = u.app.session.ds().unwrap().view.zoom;
+    // 12 px squares 36 px apart on screen: a regular row, too small for rings.
+    let ids: Vec<NodeId> = (0..3)
+        .map(|col| {
+            let p = json!({"x": (100. + f64::from(col) * 36.) / z, "y": 100. / z, "width": 12. / z, "height": 12. / z});
+            NodeId(u.app.session.execute("shape.rectangle", &p).unwrap()["id"].as_u64().unwrap())
+        })
+        .collect();
+    u.app.session.execute("select.set", &json!({"ids": ids})).unwrap();
+    let before: Vec<_> = ids.iter().map(|id| xy(&u, *id)).collect();
+    let p = u.app.to_screen(before[0].0 + 6. / z, before[0].1 + 6. / z);
+    let output = u.frame_output(vec![Event::PointerMoved(p)]);
+    assert_ne!(output.platform_output.cursor_icon, egui::CursorIcon::Grab);
+    drag(&mut u, p, vec2(0., 60.), true);
+    let after: Vec<_> = ids.iter().map(|id| xy(&u, *id)).collect();
+    assert!(after[0].1 > before[0].1, "the selection moved: {before:?} -> {after:?}");
+    assert!(
+        before.iter().zip(&after).all(|(b, a)| (a.0 - b.0).abs() < 1e-6 && (a.1 - b.1 - (after[0].1 - before[0].1)).abs() < 1e-6),
+        "all together, in order"
+    );
+    assert_eq!(u.app.session.selection(), ids);
+}

@@ -80,7 +80,7 @@ fn blend_names() {
 #[test]
 fn nan_inputs_are_sanitized() {
     let c = Color::new(f32::NAN, 2.0, -1.0, f32::INFINITY);
-    assert_eq!(c.to_rgba8(), [0, 255, 0, 0]);
+    assert_eq!(c.to_rgba8(), [0, 255, 0, 255]);
 }
 
 #[test]
@@ -105,4 +105,22 @@ fn crop_defaults_to_fill_and_roundtrips() {
     for (a, b) in back.iter().zip(c.iter()) {
         assert!((a - b).abs() < 1e-9);
     }
+}
+
+#[test]
+fn infinite_channels_clamp() {
+    let c = Color::parse_css("rgb(1e40, 0, 0)").unwrap();
+    assert_eq!(c.r, 1.0);
+    let c = Color::new(f32::INFINITY, f32::NEG_INFINITY, f32::NAN, f32::INFINITY);
+    assert_eq!((c.r, c.g, c.b, c.a), (1.0, 0.0, 0.0, 1.0));
+}
+
+#[test]
+fn malformed_alpha_or_extra_args_rejected() {
+    assert_eq!(Color::parse_css("rgba(0,0,0,abc)"), None);
+    assert_eq!(Color::parse_css("hsla(0,0%,0%,abc)"), None);
+    assert_eq!(Color::parse_css("rgb(1,2,3,4,5)"), None);
+    assert_eq!(Color::parse_css("hsl(0,0%,0%,0.5,1)"), None);
+    assert_eq!(Color::parse_css("rgb(1,2,3)").unwrap().a, 1.0);
+    assert_eq!(Color::parse_css("rgba(1,2,3,0.5)").unwrap().a, 0.5);
 }

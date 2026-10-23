@@ -481,3 +481,19 @@ fn selection_after_a_line_break_starts_at_the_line_start() {
     // A break followed by text still doesn't highlight the next line's start.
     assert!(rect_on(&l, &l.selection_rects(0, 6), 1).is_none());
 }
+
+#[test]
+fn the_caret_after_a_line_break_sits_on_the_next_line() {
+    if !have_fonts() {
+        return;
+    }
+    // Before the break: the end of its line; after it: the start of the next (after Enter, the
+    // caret shows on the new line, and Up/Down count from there).
+    let l = layout(&TextData::new("ab\ncd"), None, None);
+    assert_eq!(l.caret(2).1, 0);
+    assert!(l.caret(2).0 > 0.0);
+    assert_eq!(l.caret(3), (0.0, 1));
+    // A trailing break: the caret sits on the empty last line.
+    let l = layout(&TextData::new("ab\n"), None, None);
+    assert_eq!(l.caret(3), (0.0, 1));
+}

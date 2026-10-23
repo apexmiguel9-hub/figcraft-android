@@ -16,7 +16,7 @@ use figcraft_engine::live::{Event, Status};
 use web_time::Instant;
 
 use crate::inbox::Inbox;
-use crate::join::{GuestConfig, Next, Outcome, Resuming, Seen, Taken, after, closed, hello, resolved, take, unresolved};
+use crate::join::{GuestConfig, Next, Outcome, Resuming, Seen, Taken, after, closed, hello, resolved, take, too_large, unresolved};
 use crate::throttle::{PRESENCE_INTERVAL, Throttle, earliest};
 
 /// A WebSocket the driver opens, writes and closes; what it receives comes back through the
@@ -114,6 +114,9 @@ impl<S: Socket> Driver<S> {
     /// A binary message from the host.
     pub(crate) fn message(&mut self, bytes: &[u8], now: Instant) {
         let Some(c) = self.conn.as_mut() else { return };
+        if bytes.len() > self.cfg.limits.max_server_message {
+            return self.end(too_large(&self.cfg.limits), now);
+        }
         c.last_heard = now;
         let taken = match message::decode::<ServerMsg>(bytes, self.cfg.limits.max_server_message) {
             // The join code's answer: join the file it opens, on a new connection.

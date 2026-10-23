@@ -256,9 +256,11 @@ fn rects_of(s: &[Shape], c: egui::Color32) -> usize {
     s.iter().filter(|s| matches!(s, Shape::Rect(r) if r.fill == c)).count()
 }
 
-/// Images drawn (meshes with a texture of their own).
+/// Preview images in the main content area, excluding the branded sidebar icon.
 fn images(s: &[Shape]) -> usize {
-    s.iter().filter(|s| matches!(s, Shape::Mesh(m) if m.texture_id != egui::TextureId::default())).count()
+    s.iter()
+        .filter(|s| matches!(s, Shape::Mesh(m) if m.texture_id != egui::TextureId::default() && m.vertices.iter().any(|v| v.pos.x > 240.0)))
+        .count()
 }
 
 #[test]

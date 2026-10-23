@@ -25,6 +25,7 @@ Release builds embed fonts from the optional craft-fonts build input
 | Family | Licence | Upstream |
 |---|---|---|
 | Inter | SIL Open Font License 1.1 | https://github.com/rsms/inter |
+| Archivo | SIL Open Font License 1.1 | [Google Fonts / Archivo](https://github.com/google/fonts/tree/6c70c829f09ea345d3590406693220ea35c6553f/ofl/archivo) |
 | Roboto, Montserrat, Lato, Open Sans, Poppins, Nunito Sans, Merriweather, Playfair Display, Source Sans 3, Source Serif 4, Carlito, Caladea | SIL Open Font License 1.1 | Google Fonts / upstream repositories (see craft-fonts) |
 | Liberation Sans, Serif, Mono | SIL Open Font License 1.1 | https://github.com/liberationfonts |
 | BIZ UDPGothic, BIZ UDMincho, Shippori Mincho, Noto Sans Arabic | SIL Open Font License 1.1 | Google Fonts (see craft-fonts) |

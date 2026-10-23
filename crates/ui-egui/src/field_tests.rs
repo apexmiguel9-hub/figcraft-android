@@ -549,3 +549,88 @@ fn a_label_too_long_for_its_field_ends_in_an_ellipsis_before_the_value() {
     assert!(field.contains_rect(*l) && field.contains_rect(*v), "both inside the field {field:?}: {l:?} {v:?}");
     assert!(l.max.x < v.min.x, "the label stops before the value: {l:?} {v:?}");
 }
+
+/// The middle of the field with response `id`.
+fn at(u: &Ui, id: Id) -> Pos2 {
+    u.ctx.read_response(id.with("field")).unwrap_or_else(|| panic!("no field {id:?}")).rect.center()
+}
+
+/// Type `text` into the field whose response is `id` and press Enter.
+fn type_at(u: &mut Ui, id: Id, text: &str) {
+    let p = at(u, id);
+    click(u, p);
+    u.frame(vec![Event::Text(text.into())]);
+    key(u, Key::Enter, Modifiers::NONE);
+    u.frame(vec![]);
+}
+
+/// A frame with one layout grid, its settings open in the Design panel.
+fn grid_ui(grid: serde_json::Value) -> (Ui, NodeId) {
+    let mut s = Session::new();
+    let f = id(s.execute("frame.create", &json!({"x": 0, "y": 0, "width": 400, "height": 300})).unwrap());
+    s.execute("node.set", &json!({"ids": [f], "props": {"grids": [grid]}})).unwrap();
+    s.execute("select.set", &json!({"ids": [f]})).unwrap();
+    let mut u = Ui::new(s);
+    u.ctx.data_mut(|d| d.insert_temp(Id::new(("grid_open", 0usize)), true));
+    u.frame(vec![]);
+    (u, f)
+}
+
+/// Scroll the Design panel (over its own field `id`) until that field is on the test screen: the
+/// grid settings sit below the fold.
+fn scroll_to(u: &mut Ui, id: Id) {
+    let wheel = Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: egui::vec2(0.0, -300.0),
+        phase: egui::TouchPhase::Move,
+        modifiers: Modifiers::NONE,
+    };
+    for _ in 0..10 {
+        let p = at(u, id);
+        if p.y < 860.0 {
+            break;
+        }
+        u.frame(vec![Event::PointerMoved(pos2(p.x, 500.0)), wheel.clone()]);
+        // Let the scroll settle.
+        for _ in 0..30 {
+            u.frame(vec![]);
+        }
+    }
+}
+
+/// The word for Auto types 0 only where 0 *is* the automatic value: a fixed layout grid's count
+/// does, an auto layout's gap (Auto there is "Space between") does not. Keying it on the field's
+/// placeholder said 0 everywhere, which turned the gap's mode off.
+#[test]
+fn typing_auto_is_zero_only_where_zero_is_the_automatic_value() {
+    let count_id = Id::new(("grid_field", "count", 0usize));
+    let (mut u, f) = grid_ui(json!({"kind": "columns", "align": "min", "count": 3, "size": 8, "gutter": 10}));
+    let count = |u: &Ui| u.app.session.doc().unwrap().node(f).unwrap().grids[0].count;
+    scroll_to(&mut u, count_id);
+    type_at(&mut u, count_id, "Auto");
+    assert_eq!(count(&u), 0, "a fixed grid's count: Auto is 0");
+    type_at(&mut u, count_id, "4");
+    assert_eq!(count(&u), 4, "and a number is that count");
+    // A stretched grid works its width out from the frame: the field shows Auto and takes no edit.
+    let (mut u, f) = grid_ui(json!({"kind": "columns", "align": "stretch", "count": 3, "size": 0}));
+    let size_id = Id::new(("grid_field", "size", 0usize));
+    scroll_to(&mut u, size_id);
+    type_at(&mut u, size_id, "40");
+    assert_eq!(u.app.session.doc().unwrap().node(f).unwrap().grids[0].size, 0.0, "a stretched grid's width isn't set");
+    // Nor its count: a stretched grid has at least one band, so the word commits nothing.
+    type_at(&mut u, count_id, "Auto");
+    assert_eq!(u.app.session.doc().unwrap().node(f).unwrap().grids[0].count, 3, "a stretched grid keeps its count");
+
+    // The auto layout's gap: its placeholder says Auto, but Auto is a mode, not 0.
+    let mut s = Session::new();
+    let f = id(s.execute("frame.create", &json!({"x": 0, "y": 0, "width": 400, "height": 300})).unwrap());
+    s.execute("layout.add", &json!({"ids": [f], "direction": "vertical"})).unwrap();
+    s.execute("node.set", &json!({"ids": [f], "props": {"mainAlign": "spaceBetween"}})).unwrap();
+    s.execute("select.set", &json!({"ids": [f]})).unwrap();
+    let mut u = Ui::new(s);
+    u.frame(vec![]);
+    let gap = |u: &Ui| u.app.session.doc().unwrap().node(f).unwrap().layout.as_ref().unwrap().gap;
+    let before = gap(&u);
+    type_at(&mut u, Id::new("al_gap"), "Auto");
+    assert_eq!(gap(&u), before, "the word isn't a value where Auto is a mode");
+}

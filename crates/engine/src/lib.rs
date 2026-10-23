@@ -49,6 +49,7 @@ pub mod proto_run;
 pub mod rename;
 pub mod rotation_origin;
 pub mod selection_colors;
+pub mod selection_reorder;
 pub mod selection_spacing;
 pub mod shape_handles;
 pub mod shapebuilder;
@@ -603,6 +604,23 @@ impl DocState {
     }
 }
 
+/// The smallest and largest interface size, relative to the system's display scale (1.0 is the
+/// system's own size).
+pub const UI_SCALE_MIN: f64 = 0.75;
+pub const UI_SCALE_MAX: f64 = 3.0;
+
+/// `scale` kept between [`UI_SCALE_MIN`] and [`UI_SCALE_MAX`]; not a finite number: `None`.
+pub fn clamp_ui_scale(scale: f64) -> Option<f64> {
+    scale.is_finite().then(|| scale.clamp(UI_SCALE_MIN, UI_SCALE_MAX))
+}
+
+/// Reads the saved interface size. Anything but a number reads as 1 (the system's size) and a
+/// number out of range is clamped, so a settings file edited by hand never costs the other
+/// preferences.
+fn read_ui_scale<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<f64, D::Error> {
+    Ok(Value::deserialize(d)?.as_f64().and_then(clamp_ui_scale).unwrap_or(1.0))
+}
+
 /// App-wide preferences that commands read (nudge amounts, behaviours).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -630,9 +648,16 @@ pub struct Prefs {
     /// Reduce motion: the interface's own animations are off (the system's setting turns them off
     /// too). Prototype transitions still play.
     pub reduce_motion: bool,
+    /// How large the whole interface is drawn, relative to the system's display scale: 1.0 is the
+    /// system's own size, 1.25 a quarter larger (kept between [`UI_SCALE_MIN`] and
+    /// [`UI_SCALE_MAX`]). The canvas zoom is separate.
+    #[serde(deserialize_with = "read_ui_scale")]
+    pub ui_scale: f64,
     /// Files that have a path are saved by themselves a few seconds after they change (the app's
     /// timer; off: only File ▸ Save writes them).
     pub auto_save: bool,
+    /// The desktop app starts on the Home screen instead of in a new file.
+    pub start_on_home: bool,
     /// `figcraft://` invite links open this app (`collab.registerLinks`); `None`: on for installed
     /// builds, off for development builds.
     pub invite_links: Option<bool>,
@@ -698,7 +723,9 @@ impl Default for Prefs {
             language: "system".into(),
             user_name: cmd::comment::DEFAULT_AUTHOR.into(),
             reduce_motion: false,
+            ui_scale: 1.0,
             auto_save: false,
+            start_on_home: false,
             invite_links: None,
             plugins: Vec::new(),
             plugin_settings: BTreeMap::new(),
@@ -735,6 +762,8 @@ pub struct Clipboard {
     /// The page-space bounds of the copied selection.
     pub bounds: Option<figcraft_geom::Rect>,
     pub source_doc: u64,
+    /// Copied component/set roots, excluding cuts and originals discarded by undo (ids are reused).
+    pub copied_components: std::collections::BTreeSet<NodeId>,
     /// The document copied from (pastes into other files follow its mains) and its file path.
     pub source: Option<Arc<Document>>,
     pub source_path: Option<String>,
@@ -1033,7 +1062,9 @@ impl Session {
         };
         let Some(ds) = self.docs.iter_mut().find(|d| d.uid == uid) else { return };
         let changed = !Arc::ptr_eq(&ds.doc, &bdoc);
-        if changed {
+        // Saving may adopt the chosen filename as the document title. The encoded snapshot is
+        // already final; normalising it again would detach it from the saved baseline.
+        if changed && !matches!(spec.id, "file.save" | "file.saveAs") {
             normalize(ds.doc_mut(), &bdoc);
         }
         let edit = changed && ds.interaction.is_none();
@@ -1098,8 +1129,11 @@ impl Session {
         let Some(it) = ds.interaction.clone() else { return Err(EngineError::Other("no gesture in progress".into())) };
         let mut doc = (*it.doc).clone();
         let mut sel = it.selection.clone();
+        // What the gesture changes on the selected layers is an explicit edit.
+        let before = cmd::styles::bound_before(&doc, &it.selection);
         let res = f(&mut doc, &mut sel);
         if res.is_ok() {
+            cmd::styles::detach_edited(&mut doc, &before);
             normalize(&mut doc, &it.doc);
             // The same preview again (a handle held still) keeps the document: a new one would
             // re-render the canvas for nothing.
@@ -1166,6 +1200,13 @@ impl Session {
         }
         ds.clean_selection();
         ds.revision += 1;
+        let (uid, doc) = (ds.uid, ds.doc.clone());
+        if self.clipboard.source_doc == uid {
+            self.clipboard.copied_components.retain(|id| {
+                doc.node(*id)
+                    .is_some_and(|n| matches!(n.kind, figcraft_doc::NodeKind::Component { .. } | figcraft_doc::NodeKind::ComponentSet { .. }))
+            });
+        }
         Ok(true)
     }
 
@@ -1460,20 +1501,34 @@ fn affects_layout(before: &Document, doc: &Document, id: NodeId) -> bool {
 }
 
 /// The layers whose variable bindings an edit may have changed: every bound layer when a variable
-/// changed, else the touched layers and everything below those that moved, are new or chose
-/// another variable mode (modes are inherited).
+/// changed, else the touched layers and everything below those that moved, are new, chose
+/// another variable mode or became an instance of another main (modes are inherited, an
+/// instance's from its main too), and the instances of a main that chose another mode.
 fn binding_scope(doc: &Document, before: &Document, touched: &BTreeSet<NodeId>) -> Option<BTreeSet<NodeId>> {
     if doc.variables != before.variables {
         return None;
     }
+    let main = |n: &Node| match n.kind {
+        figcraft_doc::NodeKind::Instance { component, .. } => Some(component),
+        _ => None,
+    };
     let mut out = BTreeSet::new();
     for &id in touched {
         let Some(n) = doc.node(id) else { continue };
-        let inherited = before.node(id).is_none_or(|b| b.var_modes != n.var_modes || b.parent != n.parent);
-        if inherited {
+        let Some(b) = before.node(id) else {
+            out.extend(doc.subtree(id));
+            continue;
+        };
+        let modes = b.var_modes != n.var_modes;
+        if modes || b.parent != n.parent || main(b) != main(n) {
             out.extend(doc.subtree(id));
         } else {
             out.insert(id);
+        }
+        if modes && matches!(n.kind, figcraft_doc::NodeKind::Component { .. }) {
+            for i in components::instances_of(doc, id) {
+                out.extend(doc.subtree(i));
+            }
         }
     }
     Some(out)
@@ -1598,6 +1653,10 @@ mod devfocus_tests;
 #[cfg(test)]
 mod devinspect_tests;
 #[cfg(test)]
+mod devmode_behaviour_tests;
+#[cfg(test)]
+mod devmode_tail_tests;
+#[cfg(test)]
 mod doc_urls_tests;
 #[cfg(test)]
 mod double_click_tests;
@@ -1651,6 +1710,8 @@ mod import_export_tests;
 mod import_journal_tests;
 #[cfg(test)]
 mod inspect_behaviour_tests;
+#[cfg(test)]
+mod instance_modes_tests;
 #[cfg(test)]
 mod instance_resizing_tests;
 #[cfg(test)]
@@ -1719,6 +1780,8 @@ mod pen_overlay_tests;
 mod pixel_preview_tests;
 #[cfg(test)]
 mod playground_tests;
+#[cfg(test)]
+mod plugin_data_tests;
 #[cfg(test)]
 mod plugin_directory_tests;
 #[cfg(test)]
@@ -1824,6 +1887,8 @@ mod variables_import_shapes_tests;
 #[cfg(test)]
 mod variables_io_tests;
 #[cfg(test)]
+mod variants_discovery_tests;
+#[cfg(test)]
 mod vector_behaviour_tests;
 #[cfg(test)]
 mod vector_multi_behaviour_tests;
@@ -1838,5 +1903,7 @@ mod view_behaviour_tests;
 #[cfg(test)]
 mod widgets_tests;
 
+#[cfg(test)]
+mod selection_reorder_tests;
 #[cfg(test)]
 mod selection_spacing_tests;

@@ -507,3 +507,11 @@ fn hosting_commands_check_what_they_are_given() {
     assert!(e.contains("join a file"), "{e}");
     assert!(s.execute("collab.report", &json!({"reason": " \n "})).unwrap_err().to_string().contains("few words"));
 }
+
+#[test]
+fn parse_color_rejects_signs_and_non_hex() {
+    use crate::live::parse_color;
+    assert_eq!(parse_color("#+1+2+3"), None);
+    assert_eq!(parse_color("#-1-2-3"), None);
+    assert_eq!(parse_color("#0D99FF"), Some((13, 153, 255)));
+}

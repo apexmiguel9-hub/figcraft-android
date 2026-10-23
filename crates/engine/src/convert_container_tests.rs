@@ -194,3 +194,26 @@ fn only_frames_on_the_page_or_in_a_section_become_sections() {
     assert!(err.contains("holds sections"), "{err}");
     assert!(matches!(kind(&s, sec), NodeKind::Section { .. }), "nothing changed");
 }
+
+#[test]
+fn wrapping_errors_name_the_command_that_was_run() {
+    // Grouping, framing, auto layout, masks and booleans share one wrapping step; a refusal names
+    // the command that asked, not `object.group`.
+    let mut s = Session::new();
+    let page = s.page().unwrap();
+    for cmd in ["object.group", "object.frameSelection", "layout.add", "bool.union"] {
+        let err = s.execute(cmd, &json!({"ids": [page]})).unwrap_err().to_string();
+        assert!(err.contains(&format!("`{cmd}`")), "{cmd}: {err}");
+    }
+    let r = rect(&mut s, page, 0.0, 0.0);
+    let err = s.execute("object.mask", &json!({"ids": [page, r]})).unwrap_err().to_string();
+    assert!(err.contains("`object.mask`"), "{err}");
+    let section = id(ex(&mut s, "node.create", json!({"type": "section", "x": 300, "y": 0, "width": 100, "height": 100})));
+    ex(&mut s, "node.set", json!({"ids": [section], "props": {"fills": ["#FFFFFF"], "strokes": ["#000000"], "strokeWeight": 1}}));
+    let err = s.execute("vector.outlineStroke", &json!({"ids": [section]})).unwrap_err().to_string();
+    assert!(err.contains("`vector.outlineStroke`"), "{err}");
+    let f = id(ex(&mut s, "frame.create", json!({"x": 100, "y": 0, "width": 100, "height": 100})));
+    let inner = rect(&mut s, f, 10.0, 10.0);
+    let err = s.execute("object.wrapInSection", &json!({"ids": [inner, r]})).unwrap_err().to_string();
+    assert!(err.contains("`object.wrapInSection`"), "{err}");
+}

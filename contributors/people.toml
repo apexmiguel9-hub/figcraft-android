@@ -24,6 +24,10 @@ display_name = "VanTan"
 real_name = "Tyler Jennings"
 display_name = "tylerjenningsw"
 
+[people.SiadeLucas]
+real_name = "Siade Lucas"
+sync_github_name = true
+
 [people.Silvertree2010]
 display_name = "Netter"
 sync_github_name = false
@@ -36,6 +40,11 @@ sync_github_name = true
 real_name = "Justin John"
 
 [people.Losminek]
+
+[people.alrifatsabbir]
+real_name = "Al Rifat Sabbir"
+display_name = "Al Rifat Sabbir"
+sync_github_name = true
 
 [people.RevDonz]
 
@@ -55,4 +64,10 @@ display_name = "krinry"
 sync_github_name = true
 
 [people.pechnikov2026-star]
+sync_github_name = true
+
+[people.MortenHusted]
+sync_github_name = true
+
+[people.AganzeFelicite]
 sync_github_name = true

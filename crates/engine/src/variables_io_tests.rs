@@ -371,3 +371,29 @@ fn variant_properties_follow_string_variables() {
     assert_eq!(main(&s), variants[1]);
     healthy(&s);
 }
+
+#[test]
+fn paints_replaced_through_node_set_keep_unchanged_stop_bindings() {
+    let mut s = Session::new();
+    let r = gradient_rect(&mut s);
+    ex(&mut s, "variable.bind", json!({"ids": [r], "field": "fills/0/stops/2/color", "variable": "brand"}));
+    ex(&mut s, "variable.bind", json!({"ids": [r], "field": "fills/0/stops/1/color", "variable": "ink"}));
+    let cur = |s: &Session| s.doc().unwrap().node(r).unwrap().fills[0].clone();
+    // Removing the first stop moves both bindings down with their stops.
+    let mut p = cur(&s);
+    if let PaintKind::Gradient(g) = &mut p.kind {
+        g.stops.remove(0);
+    }
+    ex(&mut s, "node.set", json!({"ids": [r], "props": {"fills": [p]}}));
+    assert_eq!(bound_keys(&s, r), ["fills/0/stops/0/color", "fills/0/stops/1/color"]);
+    // Recolouring one bound stop detaches that stop only.
+    let mut p = cur(&s);
+    if let PaintKind::Gradient(g) = &mut p.kind {
+        g.stops[0].color = Color::WHITE;
+    }
+    ex(&mut s, "node.set", json!({"ids": [r], "props": {"fills": [p]}}));
+    assert_eq!(bound_keys(&s, r), ["fills/0/stops/1/color"]);
+    ex(&mut s, "variable.set", json!({"variable": "brand", "value": "#0000ff"}));
+    assert_eq!(stops(&s, r), ["FFFFFF", "0000FF"]);
+    healthy(&s);
+}

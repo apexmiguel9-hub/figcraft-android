@@ -214,6 +214,21 @@ pub struct DevItem {
     pub name: String,
     pub page: NodeId,
     pub status: DevStatus,
+    /// Ready for dev and changed since it was marked.
+    pub changed: bool,
+}
+
+/// Whether Dev Mode runs command `id` from the menus and shortcuts: commands that don't edit the
+/// document, and Dev Mode's own edits (annotations, statuses, dev resources, code connections,
+/// comments). Choosing a tool other than moving around and commenting is refused too, and so is
+/// Revert to saved, which isn't an undo step but throws the design's unsaved edits away.
+pub fn dev_mode_allows(id: &str) -> bool {
+    const OWN: [&str; 5] = ["annotation.", "dev.", "devResource.", "codeConnect.", "comment."];
+    match id.strip_prefix("tool.") {
+        Some(t) => matches!(t, "move" | "hand" | "comment"),
+        None if id == "file.revert" => false,
+        None => OWN.iter().any(|p| id.starts_with(p)) || crate::cmd::find_command(id).is_none_or(|c| !c.history),
+    }
 }
 
 /// Most items listed.
@@ -244,7 +259,8 @@ pub fn dev_items(doc: &Document, status: Option<DevStatus>, page: Option<NodeId>
             }
             let Some(n) = doc.node(id) else { continue };
             if !n.dev_status.is_none() && status.is_none_or(|s| s == n.dev_status) && has_status(doc, id) {
-                out.push(DevItem { id, name: n.name.clone(), page: pg, status: n.dev_status });
+                let changed = n.dev_status == DevStatus::ReadyForDev && n.dev_changed;
+                out.push(DevItem { id, name: n.name.clone(), page: pg, status: n.dev_status, changed });
             }
             stack.extend(n.children.iter().rev().copied());
         }
@@ -257,18 +273,21 @@ pub fn specs() -> Vec<CommandSpec> {
         spec!(
             "inspect.readyForDev",
             "Ready for dev",
-            "{status?: readyForDev|completed|any (default readyForDev), page? (page id; default every page)} → {items: [{id, name, page, status}]}  frames and sections by handoff status (set it with `node.set {devStatus}`)",
+            "{status?: readyForDev|changed|completed|any (default readyForDev; changed: ready for dev and changed since marked), page? (page id; default every page)} → {items: [{id, name, page, status, changed}]}  frames and sections by handoff status (set it with `node.set {devStatus}`)",
             false,
             |s, p| {
                 let cmd = "inspect.readyForDev";
-                let status = match string(p, "status").as_deref() {
+                let wanted = string(p, "status");
+                let changed_only = wanted.as_deref().is_some_and(|v| v.eq_ignore_ascii_case("changed"));
+                let status = match wanted.as_deref() {
                     None => Some(DevStatus::ReadyForDev),
+                    _ if changed_only => Some(DevStatus::ReadyForDev),
                     Some(v) if v.eq_ignore_ascii_case("any") || v.eq_ignore_ascii_case("all") => None,
                     Some(v) => Some(
                         DevStatus::ALL
                             .into_iter()
                             .find(|d| !d.is_none() && d.id().eq_ignore_ascii_case(v))
-                            .ok_or_else(|| crate::bad(cmd, "status: readyForDev|completed|any"))?,
+                            .ok_or_else(|| crate::bad(cmd, "status: readyForDev|changed|completed|any"))?,
                     ),
                 };
                 let doc = s.doc()?;
@@ -276,7 +295,9 @@ pub fn specs() -> Vec<CommandSpec> {
                     Some(v) => Some(id_of(v).filter(|pg| doc.pages.contains(pg)).ok_or_else(|| crate::bad(cmd, "page: a page id"))?),
                     None => None,
                 };
-                Ok(json!({"items": serde_json::to_value(dev_items(doc, status, page)).unwrap_or(Value::Null)}))
+                let mut items = dev_items(doc, status, page);
+                items.retain(|i| i.changed || !changed_only);
+                Ok(json!({"items": serde_json::to_value(items).unwrap_or(Value::Null)}))
             }
         ),
         spec!(

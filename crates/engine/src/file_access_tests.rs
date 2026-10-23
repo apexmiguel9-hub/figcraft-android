@@ -348,6 +348,10 @@ fn outside_paths_are_refused_alike_whatever_exists_there() {
     let mut outside = vec![f.p("outside/secret.txt"), f.p("outside/none.txt"), f.p("outside/missing/../x.txt"), f.p("nowhere/deeper/x.txt")];
     if symlink_file(&f.0.join("outside/not-yet.txt"), &f.0.join("outside/dangling.txt")) {
         outside.push(f.p("outside/dangling.txt"));
+        // Reached through a link in the root, it is outside all the same.
+        if symlink_dir(&f.0.join("outside"), &f.0.join("root/escape")) {
+            outside.push(f.p("root/escape/dangling.txt"));
+        }
     }
     for p in &outside {
         let e = refusal(p);
@@ -357,6 +361,19 @@ fn outside_paths_are_refused_alike_whatever_exists_there() {
     if symlink_file(&f.0.join("outside/not-yet.txt"), &f.0.join("root/dangling.txt")) {
         assert!(refusal(&f.p("root/dangling.txt")).contains("leads nowhere"));
     }
+}
+
+#[test]
+fn a_root_given_through_a_link_tells_why_paths_in_it_are_refused() {
+    let f = Fixture::new("linked-root");
+    if !symlink_dir(&f.0.join("root"), &f.0.join("via")) || !symlink_file(&f.0.join("outside/not-yet.txt"), &f.0.join("root/dangling.txt")) {
+        eprintln!("skipped: this system doesn't let tests make symbolic links");
+        return;
+    }
+    // Like `/tmp/work` on macOS, where `/tmp` leads to `/private/tmp`.
+    let r = Roots::new(&[], &[f.p("via")]).unwrap();
+    let e = r.check(Path::new(&f.p("via/dangling.txt")), Access::Write).unwrap_err();
+    assert!(e.contains("leads nowhere"), "{e}");
 }
 
 #[test]

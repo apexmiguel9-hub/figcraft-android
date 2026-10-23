@@ -29,9 +29,20 @@ fn image_format(e: &str) -> Option<ExportFormat> {
     }
 }
 
+/// Writes through [`figcraft_engine::file_access`] when automation roots are in force, so a
+/// confined run can only write inside a write root (#833).
+///
+/// Unconfined it writes with `std::fs::write`, as it always did. `file_access::write` stages the
+/// bytes and renames them into place, which **replaces** a symbolic link at `path` instead of
+/// writing through it to its target -- a change of behaviour for anyone whose output path is a
+/// link, and nothing to do with confinement. Inside a root the staged write is the right one:
+/// `Roots::check` has already refused a link that leads out of the root.
 fn write(path: &str, bytes: &[u8]) -> CliResult<()> {
     if let Some(dir) = Path::new(path).parent().filter(|d| !d.as_os_str().is_empty()) {
-        std::fs::create_dir_all(dir).map_err(|e| CliError::Failed(format!("{}: {e}", dir.display())))?;
+        figcraft_engine::file_access::create_dir_all(dir).map_err(|e| CliError::Failed(e.to_string()))?;
+    }
+    if figcraft_engine::file_access::current().is_some() {
+        return figcraft_engine::file_access::write(path, bytes).map_err(|e| CliError::Failed(e.to_string()));
     }
     std::fs::write(path, bytes).map_err(|e| CliError::Failed(format!("{path}: {e}")))
 }
@@ -244,7 +255,7 @@ pub fn export(file: &str, out: &str, t: &Target) -> CliResult<ExitCode> {
         println!("{out}");
         return Ok(ExitCode::SUCCESS);
     }
-    std::fs::create_dir_all(out).map_err(|e| CliError::Failed(format!("{out}: {e}")))?;
+    figcraft_engine::file_access::create_dir_all(out).map_err(|e| CliError::Failed(e.to_string()))?;
     let ids = match target {
         Some(t) => vec![t],
         None => {
@@ -329,7 +340,8 @@ pub fn parse_script(text: &str) -> Result<Vec<(String, Value)>, String> {
 }
 
 pub fn run_script(script: &str, input: Option<&str>, out: Option<&str>) -> CliResult<ExitCode> {
-    let text = std::fs::read_to_string(script).map_err(|e| CliError::Failed(format!("{script}: {e}")))?;
+    let bytes = figcraft_engine::file_access::read(script).map_err(|e| CliError::Failed(e.to_string()))?;
+    let text = String::from_utf8(bytes).map_err(|_| CliError::Failed(format!("{script}: not UTF-8")))?;
     let steps = parse_script(&text).map_err(|e| CliError::Failed(format!("{script}: {e}")))?;
     let mut s = match input {
         Some(path) => {

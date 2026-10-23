@@ -214,6 +214,26 @@ fn css_for_common_layers() {
     }
 }
 
+/// Individual stroke sides are borders on those sides only: a header with a divider under it isn't
+/// boxed in, and a side bound to a variable names it.
+#[test]
+fn css_borders_follow_individual_stroke_sides() {
+    let mut s = Session::new();
+    let r = rect(&mut s, 0.0, 0.0, 100.0, 50.0, None);
+    set(&mut s, &[r], json!({"strokes": ["#000000"], "strokeWeight": 1, "strokeSides": [0, 0, 2, 0]}));
+    let c = css(&mut s, r);
+    assert!(c.contains("border-bottom: 2px solid #000000;"), "{c}");
+    assert!(!c.contains("border:") && !c.contains("border-top") && !c.contains("border-right") && !c.contains("border-left"), "{c}");
+
+    let col = ex(&mut s, "variable.createCollection", json!({"name": "Borders"}));
+    let col = col["id"].as_str().unwrap().to_string();
+    ex(&mut s, "variable.create", json!({"collection": col, "name": "border/top", "type": "number", "value": 3}));
+    ex(&mut s, "variable.bind", json!({"ids": [r], "field": "strokeTopWeight", "variable": "border/top"}));
+    let c = css(&mut s, r);
+    assert!(c.contains("border-top: var(--border-top, 3px) solid #000000;"), "{c}");
+    assert!(c.contains("border-bottom: 2px solid #000000;"), "{c}");
+}
+
 #[test]
 fn native_code_for_a_simple_layer() {
     let mut s = Session::new();
