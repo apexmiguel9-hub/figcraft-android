@@ -9,6 +9,8 @@ use serde_json::json;
 use crate::{FigApp, NoServices, TitleBar};
 
 const SIZE: egui::Vec2 = vec2(1440.0, 900.0);
+/// Our tab strip keeps Undo/Redo before the tabs (64 px); upstream's tests assume the tabs start there.
+const TABS_AFTER_HISTORY: f32 = 64.0;
 
 struct Ui {
     ctx: egui::Context,
@@ -182,7 +184,7 @@ fn close_button_on_inactive_tab_closes_it_without_switching() {
     u.app.session.execute("file.new", &json!({})).unwrap();
     let active_uid = u.app.session.docs[u.app.session.active].uid;
     let inactive_uid = u.app.session.docs[1].uid;
-    let close_button = pos2(270.0, 20.0);
+    let close_button = pos2(270.0 + TABS_AFTER_HISTORY, 20.0);
     u.frame(vec![Event::PointerMoved(close_button)]);
     u.click(close_button);
     assert!(
@@ -205,7 +207,7 @@ fn closing_a_tab_before_the_active_one_keeps_the_active_file() {
     u.app.session.execute("doc.switch", &json!({"index": 2})).unwrap();
     let active_uid = u.app.session.docs[u.app.session.active].uid;
     let closed_uid = u.app.session.docs[0].uid;
-    let close_button = pos2(156.0, 20.0);
+    let close_button = pos2(156.0 + TABS_AFTER_HISTORY, 20.0);
     u.frame(vec![Event::PointerMoved(close_button)]);
     u.click(close_button);
     assert!(!u.app.session.docs.iter().any(|doc| doc.uid == closed_uid));
@@ -221,7 +223,7 @@ fn dragging_a_tab_along_the_bar_reorders_it_without_detaching() {
     let moved_uid = u.app.session.docs[0].uid;
     let active_uid = u.app.session.docs[u.app.session.active].uid;
     u.frame(vec![]);
-    let commands = u.drag(pos2(100.0, 20.0), vec2(310.0, 0.0));
+    let commands = u.drag(pos2(100.0 + TABS_AFTER_HISTORY, 20.0), vec2(310.0, 0.0));
     assert!(!commands.contains(&ViewportCommand::StartDrag), "{commands:?}");
     assert_eq!(
         u.app.session.docs[2].uid,
