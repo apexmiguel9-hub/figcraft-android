@@ -525,11 +525,14 @@ impl Session {
         let tool = if ev.cmd && ve.tool == VTool::Move { VTool::Bend } else { ve.tool };
         let id = ve.id;
         let w = doc.world_transform(id);
-        // Regions come after everything drawn on the outline: a point, a segment or a Bezier
-        // handle under the pointer wins. MEDIDO en el movil: con el dedo el nodo se dibuja de 7 pt
-        // y el relleno esta debajo, asi que la region se comia el arrastre y se movia la forma
-        // entera en vez del nodo. `region_under` sigue mirando la caja para no pisar su interior.
-        let region = if tool == VTool::Move && h.is_none() { Self::region_under(&doc, ve, h, ev) } else { None };
+        // En Android las regiones vienen despues de todo lo dibujado en el contorno: un punto, un
+        // segmento o una manecilla bajo el dedo gana. MEDIDO en el movil: con el dedo el nodo se
+        // dibuja de 7 pt y el relleno esta debajo, asi que la region se comia el arrastre y se
+        // movia la forma entera en vez del nodo. Con raton se mantiene la prioridad de siempre
+        // (la region gana salvo sobre una manecilla); `region_under` sigue mirando la caja para
+        // no pisar su interior.
+        let region_wins = if cfg!(target_os = "android") { h.is_none() } else { !matches!(h, Some(VHit::Handle { .. })) };
+        let region = if tool == VTool::Move && region_wins { Self::region_under(&doc, ve, h, ev) } else { None };
         // Any press without Shift drops the selected regions, except one on a selected region
         // (which keeps the selection to drag it); no hover hatch while the button is down.
         let keep_regions = ev.shift || region.is_some_and(|r| ve.regions.contains(&r));

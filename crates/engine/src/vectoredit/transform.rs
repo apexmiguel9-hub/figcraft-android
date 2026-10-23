@@ -95,11 +95,12 @@ pub fn box_hit(doc: &Document, ve: &VectorEdit, h: Option<VHit>, p: Point, zoom:
         Some(handle) => {
             let wins = match (handle, h) {
                 (_, Some(VHit::Handle { .. })) => false,
-                // Un nodo bajo el dedo manda sobre el cuadro de la caja. MEDIDO en el Moto: la
-                // esquina del cuadro alcanza 12,8 unidades y el nodo solo 6, asi que al agarrar
-                // el nodo se escalaba la caja en vez de moverlo. Ahora el cuadro solo responde
-                // cuando el toque cae fuera del nodo.
-                (_, Some(VHit::Vertex { .. })) => false,
+                // En Android un nodo bajo el dedo manda sobre el cuadro de la caja. MEDIDO en el
+                // Moto: la esquina del cuadro alcanza 12,8 unidades y el nodo solo 6, asi que al
+                // agarrar el nodo se escalaba la caja en vez de moverlo. Ahora el cuadro solo
+                // responde cuando el toque cae fuera del nodo. Con raton se mantiene la esquina
+                // de la caja por delante, que es lo que permiten los tests de escritorio.
+                (_, Some(VHit::Vertex { .. })) if cfg!(target_os = "android") => false,
                 (Handle::Corner(_), _) => true,
                 (Handle::Edge(e), None | Some(VHit::Segment { .. })) => {
                     if e % 2 == 0 {

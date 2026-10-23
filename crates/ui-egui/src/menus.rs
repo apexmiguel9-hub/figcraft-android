@@ -765,10 +765,13 @@ fn over_menu_at(ctx: &egui::Context, p: egui::Pos2) -> bool {
 /// opened a submenu could be followed by a frame without an interact position, which counted
 /// as "outside" and closed the whole menu before the row ever ran.
 fn released_outside(ctx: &egui::Context, parent: egui::Rect) -> bool {
-    ctx.input(|i| {
-        i.pointer.any_released()
-            && i.pointer.interact_pos().or_else(|| i.pointer.latest_pos()).is_some_and(|p| !parent.contains(p) && !over_menu_at(ctx, p))
-    })
+    // Take the position out before asking the context anything else: `ctx.input` holds the
+    // context's write lock while its closure runs, and `over_menu_at` -> `layer_id_at` locks it
+    // again. egui's own docs warn that calling into `ctx` from an `input` closure deadlocks.
+    // On Android the release of a tap outside the main panel (on a submenu, or on the canvas to
+    // dismiss) hit exactly that, froze the UI for 10 s and aborted the process.
+    let released = ctx.input(|i| i.pointer.any_released().then(|| i.pointer.interact_pos().or_else(|| i.pointer.latest_pos())).flatten());
+    released.is_some_and(|p| !parent.contains(p) && !over_menu_at(ctx, p))
 }
 
 const TOP_MENUS: &[&str] = &[
