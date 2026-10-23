@@ -148,9 +148,9 @@ fn tabs_and_new_tab_keep_their_clicks() {
     assert!(u.click(pos2(176.0, 20.0)).is_empty());
     assert!(!u.app.ui.home);
     // The `+` right of it opens a new file (found by clicking along the bar past the tab and
-    // its close button).
+    // its close button). Upstream's range starts at 176; our Undo/Redo pair moves it 64 px.
     let mut opened = false;
-    for x in (236..320).step_by(4) {
+    for x in (176 + TABS_AFTER_HISTORY as i32..320 + TABS_AFTER_HISTORY as i32).step_by(4) {
         u.time += 1.0;
         assert!(u.click(pos2(x as f32, 20.0)).is_empty(), "{x}");
         if u.app.session.docs.len() > 1 {
