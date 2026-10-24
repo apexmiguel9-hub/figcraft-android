@@ -220,7 +220,8 @@ fn valid_host(s: &str) -> bool {
         return true;
     }
     let Some((name, port)) = s.rsplit_once(':') else { return false };
-    port.parse::<u16>().is_ok_and(|p| p != 0)
+    port.bytes().all(|b| b.is_ascii_digit())
+        && port.parse::<u16>().is_ok_and(|p| p != 0)
         && (1..=253).contains(&name.len())
         && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'.')
         && !name.starts_with(['-', '.'])
@@ -239,6 +240,9 @@ fn percent_decode(s: &str) -> Option<String> {
     while let Some(&b) = bytes.get(i) {
         if b == b'%' {
             let hex = bytes.get(i + 1..i + 3)?;
+            if !hex.iter().all(u8::is_ascii_hexdigit) {
+                return None;
+            }
             out.push(u8::from_str_radix(std::str::from_utf8(hex).ok()?, 16).ok()?);
             i += 3;
         } else {

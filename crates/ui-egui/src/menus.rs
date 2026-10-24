@@ -35,9 +35,13 @@ pub const UI_COMMANDS: &[&str] = &[
 /// `event_text` is the text the platform handed over with the paste event (the browser has no
 /// other way to read it). `at`: the page point to paste at (Paste here); `None` pastes in the
 /// middle of the view.
+/// In Dev Mode only a comment's link pastes (it opens the thread); everything else would edit.
 pub fn paste(app: &mut FigApp, event_text: Option<&str>, at: Option<(f64, f64)>) {
     // Only HTML that holds readable design data takes this path; other HTML pastes as before.
     if let Some(html) = app.services.clipboard_get_html().filter(|h| figcraft_engine::cmd::edit::design_clipboard_buffer(h).is_some()) {
+        if dev_mode_refuses(app, "edit.paste") {
+            return;
+        }
         let mut params = json!({"html": html});
         if let Some((x, y)) = at {
             params["x"] = json!(x);
@@ -58,6 +62,9 @@ pub fn paste(app: &mut FigApp, event_text: Option<&str>, at: Option<(f64, f64)>)
     let (cx, cy) = at.or_else(|| app.session.ds().ok().map(|d| (d.view.cx, d.view.cy))).unwrap_or((0.0, 0.0));
     if !ours {
         if let Some((png, w, h)) = clipboard_png(app) {
+            if dev_mode_refuses(app, "edit.paste") {
+                return;
+            }
             use base64::Engine as _;
             let b64 = base64::engine::general_purpose::STANDARD.encode(png);
             // Centred in the view; Paste here puts its top-left at the point, as it does layers.
@@ -67,20 +74,28 @@ pub fn paste(app: &mut FigApp, event_text: Option<&str>, at: Option<(f64, f64)>)
         }
         // Text from elsewhere when it's newer than our copy, or when we have nothing to paste.
         if let Some(text) = sys_text.filter(|_| app.ui.last_copy.is_some() || app.session.clipboard.nodes.is_empty()) {
-            // A comment's link opens its thread.
-            if text.trim().starts_with("figcraft://comment/") {
-                app.run("comment.open", json!({"link": text.trim()}));
-            } else if figcraft_engine::looks_like_svg(&text) {
-                use base64::Engine as _;
-                let b64 = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
-                app.run_user("file.import", json!({"data": b64, "name": "Pasted SVG.svg", "x": cx, "y": cy, "center": at.is_none()}));
-            } else {
-                app.run("text.create", json!({"text": text, "x": cx, "y": cy}));
-            }
-            return;
+            return paste_text(app, &text, (cx, cy), at.is_none());
         }
     }
-    app.run("edit.paste", at.map_or(json!({}), |(x, y)| json!({"x": x, "y": y})));
+    if !dev_mode_refuses(app, "edit.paste") {
+        app.run("edit.paste", at.map_or(json!({}), |(x, y)| json!({"x": x, "y": y})));
+    }
+}
+
+/// Paste text from another app at `(cx, cy)` (`center`: centred there): a comment's link opens its
+/// thread, SVG imports, anything else becomes a text layer.
+fn paste_text(app: &mut FigApp, text: &str, (cx, cy): (f64, f64), center: bool) {
+    if text.trim().starts_with("figcraft://comment/") {
+        app.run("comment.open", json!({"link": text.trim()}));
+    } else if dev_mode_refuses(app, "edit.paste") {
+        // Dev Mode: the note says why nothing was pasted.
+    } else if figcraft_engine::looks_like_svg(text) {
+        use base64::Engine as _;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
+        app.run_user("file.import", json!({"data": b64, "name": "Pasted SVG.svg", "x": cx, "y": cy, "center": center}));
+    } else {
+        app.run("text.create", json!({"text": text, "x": cx, "y": cy}));
+    }
 }
 
 /// The system clipboard's image as PNG bytes, with its size.
@@ -90,6 +105,18 @@ fn clipboard_png(app: &mut FigApp) -> Option<(Vec<u8>, u32, u32)> {
     let mut out = std::io::Cursor::new(Vec::new());
     img.write_to(&mut out, image::ImageFormat::Png).ok()?;
     Some((out.into_inner(), w, h))
+}
+
+/// Dev Mode (the Inspect tab) refuses command `id` from the menus, shortcuts and clipboard: it
+/// edits the design ([`figcraft_engine::devinspect::dev_mode_allows`]). Says so when it does.
+/// shortcut: the layers panel (rename, reorder, hide, lock) and files dropped on the canvas still
+/// edit in Dev Mode; route them through here if people trip over it.
+pub fn dev_mode_refuses(app: &mut FigApp, id: &str) -> bool {
+    let refused = app.ui.right_tab == crate::RightTab::Inspect && !figcraft_engine::devinspect::dev_mode_allows(id);
+    if refused {
+        app.toast(tr("Dev Mode only inspects: switch to Design (Shift+D) to edit"));
+    }
+    refused
 }
 
 /// The Actions palette's tab.
@@ -112,11 +139,29 @@ pub fn record_recent(app: &mut FigApp, key: &str) {
     r.truncate(figcraft_engine::MAX_RECENT_ACTIONS);
 }
 
+/// Run a menu, shortcut or palette action by id: actions that need the UI (dialogs, panels, the
+/// clipboard) are handled here, the rest go to the engine.
 pub fn invoke(app: &mut FigApp, id: &str) {
+    if dev_mode_refuses(app, id) {
+        return;
+    }
     match id {
         // Edit ▸ Delete (and the Delete binding) with an interaction open in the Prototype tab
         // removes that interaction, not the layer (#767).
         "edit.delete" if app.ui_context.clone().is_some_and(|ctx| crate::proto_panel::delete_selected_interaction(app, &ctx)) => {}
+        // After a click in the Pages list, while the list is on screen and its file open, with no
+        // layers selected, it deletes the current page (#859).
+        "edit.delete" if crate::layers::pages_have_keyboard(app) && app.session.selection().is_empty() => {
+            if let Ok(page) = app.session.page() {
+                crate::layers::delete_page(app, page);
+            }
+        }
+        // Otherwise the list gives up the keyboard: once Delete has taken layers selected since the
+        // click (Select all, say), a second Delete must not take the page.
+        "edit.delete" if app.ui.pages_focus.is_some() => {
+            app.ui.pages_focus = None;
+            app.run(id, json!({}));
+        }
         "file.open" => app.open_dialog(),
         "plugin.import" => crate::plugins_ui::import_dialog(app),
         "file.import" => app.import_dialog(false),
@@ -206,12 +251,13 @@ pub fn invoke(app: &mut FigApp, id: &str) {
         "collab.publish" => crate::live::open_publish(app),
         "edit.copy" | "edit.cut" => {
             let ids = app.session.selection();
-            // SVG for other apps, taken before a cut removes the layers.
-            let svg = app.session.doc().ok().and_then(|d| figcraft_svg_export(d, &ids));
+            // For other apps: text layers' text, other layers as SVG; taken before a cut removes them.
+            let doc = app.session.doc().ok();
+            let mirror = doc.and_then(|d| text_layers_text(d, &ids).or_else(|| figcraft_svg_export(d, &ids)));
             app.run(id, json!({}));
-            // Mirror to the system clipboard (SVG text, else a marker) and remember it, so a later
-            // paste knows whether the clipboard still holds our layers.
-            let text = svg.unwrap_or_else(|| format!("figcraft://clipboard/{}", ids.len()));
+            // Mirror to the system clipboard (text or SVG, else a marker) and remember it, so a
+            // later paste knows whether the clipboard still holds our layers.
+            let text = mirror.unwrap_or_else(|| format!("figcraft://clipboard/{}", ids.len()));
             app.services.clipboard_set_text(&text);
             app.ui.last_copy = Some(text);
         }
@@ -239,6 +285,14 @@ fn export_frames_pdf(app: &mut FigApp) {
     });
 }
 
+/// The text of a selection made only of text layers, one layer per line (None for any other
+/// selection, or when there is no text).
+fn text_layers_text(doc: &figcraft_doc::Document, ids: &[figcraft_doc::NodeId]) -> Option<String> {
+    let texts: Option<Vec<&str>> = ids.iter().map(|i| doc.node(*i).and_then(|n| n.kind.text()).map(|t| t.characters.as_str())).collect();
+    texts.map(|t| t.join("\n")).filter(|t| !t.is_empty())
+}
+
+/// The layers as SVG text for other apps (None when the export fails).
 fn figcraft_svg_export(doc: &figcraft_doc::Document, ids: &[figcraft_doc::NodeId]) -> Option<String> {
     let bytes = figcraft_engine::cmd::file::export_bytes(doc, ids, figcraft_doc::ExportFormat::Svg, 1.0).ok()?;
     String::from_utf8(bytes).ok()
@@ -915,6 +969,14 @@ pub fn popups(app: &mut FigApp, ctx: &egui::Context) {
                         None
                     }
                 });
+                // Two or more main components combine into a component set. Judged on the selection
+                // the command acts on: a layer row right-clicked in a multi-selection passes only itself.
+                let combine = app
+                    .session
+                    .doc()
+                    .ok()
+                    .filter(|doc| figcraft_engine::cmd::component::can_combine_variants(doc, &app.session.selection()))
+                    .map(|_| i18n::command("component.combineVariants", "Combine as variants"));
                 let mut entries: Vec<(&str, &str)> = if has_sel {
                     vec![
                         (tr("Copy"), "edit.copy"),
@@ -971,6 +1033,11 @@ pub fn popups(app: &mut FigApp, ctx: &egui::Context) {
                     && let Some(at) = entries.iter().position(|e| e.1 == "object.wrapInSection")
                 {
                     entries.insert(at + 1, entry);
+                }
+                if let Some(label) = &combine
+                    && let Some(at) = entries.iter().position(|e| e.1 == "component.create")
+                {
+                    entries.insert(at + 1, (label, "component.combineVariants"));
                 }
                 // A right-clicked ruler guide (selected, with no layers) can be removed.
                 if !has_sel && app.session.ds().is_ok_and(|d| d.selected_guide().is_some()) {

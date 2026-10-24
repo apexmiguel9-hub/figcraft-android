@@ -14,9 +14,9 @@ use figcraft_doc::*;
 use serde_json::{Value, json};
 
 use crate::cmd::CommandSpec;
-use crate::codegen::CodeLang;
+use crate::codegen::{CodeLang, Ctx};
 use crate::component_codegen::{Component, Param, ParamKind, describe, instance_values, js_string, main_of, value_expr};
-use crate::components::variant_set;
+use crate::components::{slots_of, variant_set};
 use crate::params::*;
 use crate::{EngineError, Result, Session, bad, spec};
 
@@ -70,14 +70,106 @@ pub fn import_line(link: &CodeLink, lang: CodeLang) -> String {
     }
 }
 
-/// Layer `id`'s code with `link`: the import line and the snippet (an instance's values, else the
-/// defaults). `None` when `id` isn't a component, set or instance.
+/// Layer `id`'s code with `link`: the import lines (its own and those of connected components its
+/// instance swaps place) and the snippet (an instance's values, else the defaults). `None` when
+/// `id` isn't a component, set or instance.
 pub fn connected_code(doc: &Document, id: NodeId, lang: CodeLang, link: &CodeLink) -> Option<String> {
     let c = main_of(doc, id).and_then(|m| describe(doc, m))?;
     let values = instance_values(doc, id, &c).unwrap_or_else(|| c.params.iter().map(|p| (p.prop.clone(), p.default.clone())).collect());
-    let snippet = render(doc, &c, &values, link, lang, "");
-    let import = import_line(link, lang);
-    Some(if import.is_empty() { snippet } else { format!("{import}\n\n{snippet}") })
+    let mut imports = Vec::new();
+    snippet_imports(doc, &c, &values, link, lang, &mut imports);
+    Some(with_imports(&imports, render(doc, &c, &values, link, lang, "")))
+}
+
+/// `code` with `imports` at the top: joined to the import block it starts with, else apart.
+pub fn with_imports(imports: &[String], code: String) -> String {
+    match imports.join("\n") {
+        i if i.is_empty() => code,
+        i if code.starts_with("import ") || code.starts_with("use ") => format!("{i}\n{code}"),
+        i => format!("{i}\n\n{code}"),
+    }
+}
+
+/// Adds `line` to `out` unless it's empty or already there.
+fn add(out: &mut Vec<String>, line: String) {
+    if !line.is_empty() && !out.contains(&line) {
+        out.push(line);
+    }
+}
+
+/// The import lines a connected snippet needs: its own and those of the connected components its
+/// instance swaps place (the ones its template shows).
+fn snippet_imports(doc: &Document, c: &Component, values: &[(String, Value)], link: &CodeLink, lang: CodeLang, out: &mut Vec<String>) {
+    add(out, import_line(link, lang));
+    for piece in pieces(&link.template) {
+        if let Piece::Value { name, .. } = piece
+            && let Some((p, v)) = find(c, values, name)
+            && p.kind == ParamKind::InstanceSwap
+            && let Some(l) = id_of(v).and_then(|i| self::link(doc, i, lang))
+        {
+            add(out, import_line(l, lang));
+        }
+    }
+}
+
+/// The import lines of the connected components the generated code of layer `id` calls
+/// (instances in its tree, in a component's definition and in the slots an instance fills), once
+/// each in tree order. A connected `id` shows its snippet ([`connected_code`]) instead.
+pub fn tree_imports(doc: &Document, id: NodeId, lang: CodeLang) -> Vec<String> {
+    let mut out = Vec::new();
+    let Some(n) = doc.node(id) else { return out };
+    let c = main_of(doc, id).and_then(|m| describe(doc, m));
+    match (&n.kind, &c) {
+        // Its call (the slots it fills), then its component's definition.
+        (NodeKind::Instance { .. }, Some(c)) => {
+            call_imports(doc, id, lang, 0, &mut out);
+            tree(&Ctx { doc, root: c.comp, comp: Some(c), base: 0 }, c.comp, lang, 0, &mut out);
+        }
+        (NodeKind::Component { .. } | NodeKind::ComponentSet { .. }, Some(c)) => {
+            tree(&Ctx { doc, root: c.comp, comp: Some(c), base: 0 }, c.comp, lang, 0, &mut out)
+        }
+        _ => tree(&Ctx::new(doc, id), id, lang, 0, &mut out),
+    }
+    out
+}
+
+/// Imports under layer `id` as the code walk sees it: its visible children, instances as calls
+/// (one an instance swap parameter places is that parameter). shortcut: the depth cap counts from
+/// the tree's root, not from each slot's; align them if a deep slot tree shows a stray import.
+fn tree(ctx: &Ctx, id: NodeId, lang: CodeLang, depth: usize, out: &mut Vec<String>) {
+    let Some(n) = ctx.doc.node(id) else { return };
+    if ctx.too_deep(depth) {
+        return;
+    }
+    for k in ctx.kids(n) {
+        let Some(kn) = ctx.doc.node(k) else { continue };
+        let call = matches!(kn.kind, NodeKind::Instance { .. }) && main_of(ctx.doc, k).is_some();
+        match (call, ctx.param(kn, "mainComponent")) {
+            (true, Some(_)) => {}
+            (true, None) => call_imports(ctx.doc, k, lang, depth + 1, out),
+            (false, _) => tree(ctx, k, lang, depth + 1, out),
+        }
+    }
+}
+
+/// The imports instance `id` placed as a call brings: a connected one's snippet's, else those of
+/// the content it puts in its slots.
+fn call_imports(doc: &Document, id: NodeId, lang: CodeLang, depth: usize, out: &mut Vec<String>) {
+    let Some(c) = main_of(doc, id).and_then(|m| describe(doc, m)) else { return };
+    let Some(values) = instance_values(doc, id, &c) else { return };
+    if let Some(l) = link(doc, id, lang) {
+        return snippet_imports(doc, &c, &values, l, lang, out);
+    }
+    let slots = slots_of(doc, id);
+    for (p, (_, v)) in c.params.iter().zip(&values) {
+        if p.kind == ParamKind::Slot
+            && v.as_bool() == Some(true)
+            && let Some((slot, _)) = slots.iter().find(|(_, name)| *name == p.prop)
+        {
+            // The same depth base as the slot's generated content, so its connected children count.
+            tree(&Ctx { doc, root: *slot, comp: None, base: depth }, *slot, lang, depth + 1, out);
+        }
+    }
 }
 
 // ------------------------------------------------------------------ templates
@@ -180,14 +272,17 @@ fn expr(doc: &Document, c: &Component, p: &Param, v: &Value, lang: CodeLang) -> 
     }
 }
 
+/// Template `t` as pieces. One that doesn't parse, or that skipped `check` (a hand-edited file)
+/// and is far too long, stays as written: parsing rescans after each literal brace.
+fn pieces(t: &str) -> Vec<Piece<'_>> {
+    let checkable = t.len() <= MAX_TEMPLATE * 4;
+    checkable.then(|| parse(t).ok()).flatten().unwrap_or_else(|| vec![Piece::Text(t)])
+}
+
 /// `link`'s template with `values` (one per parameter of `c`), every line prefixed by `pad`.
 pub(crate) fn render(doc: &Document, c: &Component, values: &[(String, Value)], link: &CodeLink, lang: CodeLang, pad: &str) -> String {
-    // A template that skipped `check` (a hand-edited file) and is far too long stays as written:
-    // parsing rescans after each literal brace.
-    let checkable = link.template.len() <= MAX_TEMPLATE * 4;
-    let pieces = checkable.then(|| parse(&link.template).ok()).flatten().unwrap_or_else(|| vec![Piece::Text(&link.template)]);
     let mut out = String::new();
-    for piece in pieces {
+    for piece in pieces(&link.template) {
         match piece {
             Piece::Text(t) => out.push_str(t),
             Piece::Value { name, inner } => match find(c, values, name) {

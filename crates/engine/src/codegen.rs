@@ -231,7 +231,7 @@ impl<'a> Ctx<'a> {
             .collect()
     }
 
-    fn too_deep(&self, depth: usize) -> bool {
+    pub(crate) fn too_deep(&self, depth: usize) -> bool {
         depth > self.base + MAX_DEPTH
     }
 
@@ -257,6 +257,25 @@ fn stroke_color(n: &Node) -> Option<Color> {
         return None;
     }
     n.strokes.iter().filter(|p| p.visible).find_map(|p| p.solid_color())
+}
+
+/// The CSS borders a solid stroke makes: one `border`, or with individual stroke sides a border
+/// on each side that has a weight.
+fn css_borders(doc: &Document, n: &Node, t: &mut Tokens) -> Vec<(String, String)> {
+    let Some(c) = stroke_color(n) else { return Vec::new() };
+    let Some(sides) = n.stroke.sides else {
+        let weight = tok(doc, n, &["strokeWeight"], format!("{}px", num(n.stroke.weight)), t);
+        return vec![("border".into(), format!("{weight} solid {}", tok(doc, n, &["stroke"], c.to_css(), t)))];
+    };
+    let color = tok(doc, n, &["stroke"], c.to_css(), t);
+    let named = ["top", "right", "bottom", "left"].into_iter().zip(crate::cmd::props::STROKE_SIDES);
+    named
+        .zip(sides)
+        .filter(|(_, weight)| *weight > 0.0)
+        .map(|((side, field), weight)| {
+            (format!("border-{side}"), format!("{} solid {color}", tok(doc, n, &[field], format!("{}px", num(weight)), t)))
+        })
+        .collect()
 }
 
 fn drop_shadow(n: &Node) -> Option<&Shadow> {
@@ -452,9 +471,8 @@ pub(crate) fn css_decls(doc: &Document, n: &Node, t: &mut Tokens, hug: (bool, bo
             PaintKind::Pattern(_) => put("background", "url(pattern.png) repeat".into()),
         }
     }
-    if let Some(c) = stroke_color(n) {
-        let weight = tok(doc, n, &["strokeWeight"], px(n.stroke.weight), t);
-        put("border", format!("{weight} solid {}", tok(doc, n, &["stroke"], c.to_css(), t)));
+    for (key, value) in css_borders(doc, n, t) {
+        put(&key, value);
     }
     let shadows: Vec<String> = n
         .effects
@@ -858,11 +876,16 @@ pub(crate) fn swift(ctx: &Ctx, id: NodeId, depth: usize, out: &mut String, extra
     swift_layer(ctx, n, depth, out, extra);
 }
 
+/// A layer name safe for a single-line `//` comment: line breaks become spaces.
+fn one_line(name: &str) -> String {
+    name.replace(['\n', '\r', '\u{85}', '\u{2028}', '\u{2029}'], " ")
+}
+
 fn swift_layer(ctx: &Ctx, n: &Node, depth: usize, out: &mut String, extra: &[String]) {
     let doc = ctx.doc;
     let pad = indent(depth);
     if ctx.too_deep(depth) {
-        out.push_str(&format!("{pad}// {} …\n", n.name));
+        out.push_str(&format!("{pad}// {} …\n", one_line(&n.name)));
         return;
     }
     // Nested instances are calls; an instance swap parameter is a view.
@@ -1035,7 +1058,7 @@ fn compose_layer(ctx: &Ctx, n: &Node, depth: usize, out: &mut String) {
     let doc = ctx.doc;
     let pad = indent(depth);
     if ctx.too_deep(depth) {
-        out.push_str(&format!("{pad}// {} …\n", n.name));
+        out.push_str(&format!("{pad}// {} …\n", one_line(&n.name)));
         return;
     }
     // Nested instances are calls; an instance swap parameter is a composable.
@@ -1167,5 +1190,27 @@ mod tests {
         let kt = code_for(doc, root, CodeLang::Compose);
         assert!(kt.contains("Modifier.offset(7.dp, 9.dp)"));
         assert!(code_for(doc, NodeId(999_999), CodeLang::Css).is_empty());
+    }
+
+    #[test]
+    fn too_deep_placeholder_keeps_a_multiline_layer_name_in_the_comment() {
+        let mut s = Session::new();
+        let name = "deep\nevil()\r\u{2028}more()";
+        let mut parent = id_of(&s.execute("frame.create", &json!({"x": 0, "y": 0, "width": 50, "height": 50, "name": name})).unwrap()["id"]).unwrap();
+        let root = parent;
+        for _ in 0..16 {
+            parent =
+                id_of(&s.execute("frame.create", &json!({"x": 1, "y": 1, "width": 40, "height": 40, "parent": parent, "name": name})).unwrap()["id"])
+                    .unwrap();
+        }
+        let doc = s.doc().unwrap();
+        for lang in [CodeLang::SwiftUi, CodeLang::Compose] {
+            let code = code_for(doc, root, lang);
+            assert!(code.contains("// deep evil()  more() …\n"), "{code}");
+            for line in code.lines() {
+                let t = line.trim_start();
+                assert!(!t.starts_with("evil()") && !t.starts_with("more()"), "layer name leaked as code:\n{code}");
+            }
+        }
     }
 }

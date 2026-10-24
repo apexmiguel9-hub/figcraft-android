@@ -9,7 +9,7 @@
 /// What the app was started with.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Args {
-    /// `--control <port>`: the JSON-lines control server.
+    /// `--control <port>` (or `--control=<port>`): the JSON-lines control server.
     pub control: Option<u16>,
     pub files: Vec<String>,
     /// The last invite link given.
@@ -71,8 +71,8 @@ pub fn parse(args: &[String]) -> Args {
         };
         if let Some(roots) = roots {
             roots.push(inline.or_else(|| it.next().cloned()).unwrap_or_default());
-        } else if a == "--control" {
-            out.control = it.next().and_then(|p| p.parse().ok());
+        } else if flag == "--control" {
+            out.control = inline.or_else(|| it.next().cloned()).and_then(|p| p.parse().ok());
         } else if is_invite(a) {
             out.join = Some(a.clone());
         } else if let Some(path) = file_url_path(a) {

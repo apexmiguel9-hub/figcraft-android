@@ -153,6 +153,28 @@ figcraft-cli run start.json --out dashboard.figcraft
 figcraft-cli export dashboard.figcraft -o dashboard.png
 ```
 
+### Confining a run: `--automation-read-root DIR` / `--automation-write-root DIR`
+
+`info`, `export`, `convert`, `render` and `run` take these two flags, with the same meaning they
+have on [`mcp`](#mcp---attach-port---automation-read-root-dir---automation-write-root-dir): each is
+repeatable, each folder must exist, and together they confine every file that subcommand touches.
+Reads are allowed inside a read or write root, writes only inside a write root, and everything else
+is refused — so a run given only a read root cannot write at all. Without either flag a subcommand
+reads and writes as the user who started it.
+
+```sh
+# Renders in/doc.figcraft to out/ok.png and can touch nothing else.
+figcraft-cli render in/doc.figcraft -o out/ok.png \
+  --automation-read-root in --automation-write-root out
+
+figcraft-cli render in/doc.figcraft -o ./escaped.png \
+  --automation-read-root in --automation-write-root out
+# error: automation path rejected: . is outside the folders that may be written: …/out
+```
+
+This is for driving the CLI from a script or an agent that should not reach the rest of the disk;
+the flags leave the output identical when nothing strays outside the roots.
+
 ### `commands [--json] [--filter TEXT]`
 
 Every command with its label, shortcut, undoable flag (`*`) and parameter docs; `--json` for

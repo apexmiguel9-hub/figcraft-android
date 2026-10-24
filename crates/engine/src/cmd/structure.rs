@@ -10,11 +10,13 @@ use super::{CommandSpec, ok};
 use crate::params::*;
 use crate::{EngineError, Result, Session, bad, spec};
 
+/// The layer structure commands: group, frame, mask, boolean operations, flatten, auto layout
+/// add/remove, move to page and vector path edits.
 pub fn specs() -> Vec<CommandSpec> {
     vec![
-        spec!("object.group", "Group selection", "{ids?, name?}", true, |s, p| wrap(s, p, Wrap::Group)),
+        spec!("object.group", "Group selection", "{ids?, name?}", true, |s, p| wrap(s, p, "object.group", Wrap::Group)),
         spec!("object.ungroup", "Ungroup selection", "{ids?}", true, ungroup),
-        spec!("object.frameSelection", "Frame selection", "{ids?, name?}", true, |s, p| wrap(s, p, Wrap::Frame)),
+        spec!("object.frameSelection", "Frame selection", "{ids?, name?}", true, |s, p| wrap(s, p, "object.frameSelection", Wrap::Frame)),
         spec!("object.removeFrame", "Remove frame", "{ids?}", true, ungroup),
         spec!(
             "object.convertToGroup",
@@ -42,7 +44,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Wrap in new section",
             "{ids?, name?} (layers on the page or in a section; the section wraps them with some room)",
             true,
-            |s, p| wrap(s, p, Wrap::Section)
+            |s, p| wrap(s, p, "object.wrapInSection", Wrap::Section)
         ),
         spec!(
             "object.resizeToFit",
@@ -71,7 +73,9 @@ pub fn specs() -> Vec<CommandSpec> {
                 // Hugging needs auto layout and the children that filled have nothing to fill: both
                 // become fixed (the frame keeps filling its own auto layout parent).
                 let doc = s.doc_mut()?;
-                doc.get_mut(i)?.layout = None;
+                let n = doc.get_mut(i)?;
+                n.layout = None;
+                super::props::drop_layout_bindings(n);
                 figcraft_layout::coherent_sizing(doc, i);
             }
             ok()
@@ -128,26 +132,27 @@ const SECTION_PAD: f64 = 40.0;
 const BOOL_PARAMS: &str = "{ids?} — layers inside boolean groups: sets their own operation (how each combines with the operands below it); one boolean group: sets its operation (every operand follows it); otherwise wraps the layers in a new boolean group";
 
 /// Wrap the selection in a new boolean group doing `op`.
-pub(crate) fn wrap_boolean(s: &mut Session, p: &Value, op: BoolOp) -> Result<Value> {
-    wrap(s, p, Wrap::Bool(op))
+pub(crate) fn wrap_boolean(s: &mut Session, p: &Value, cmd: &str, op: BoolOp) -> Result<Value> {
+    wrap(s, p, cmd, Wrap::Bool(op))
 }
 
-/// Wrap the selection in a new container at the topmost selected layer's place.
-fn wrap(s: &mut Session, p: &Value, w: Wrap) -> Result<Value> {
-    let ids = req_targets("object.group", s, p)?;
+/// Wrap the selection in a new container at the topmost selected layer's place. Errors name `cmd`,
+/// the command that asked.
+fn wrap(s: &mut Session, p: &Value, cmd: &str, w: Wrap) -> Result<Value> {
+    let ids = req_targets(cmd, s, p)?;
     let doc = s.doc_mut()?;
     let ids = z_sorted(doc, &roots(doc, &ids));
-    let top = *ids.last().ok_or_else(|| bad("object.group", "nothing selected"))?;
-    let parent = doc.get(top)?.parent.ok_or_else(|| bad("object.group", "can't group a page"))?;
+    let top = *ids.last().ok_or_else(|| bad(cmd, "nothing selected"))?;
+    let parent = doc.get(top)?.parent.ok_or_else(|| bad(cmd, "can't group a page"))?;
     // Sections sit on the page or in sections, never in frames or groups.
     let board = |doc: &Document, i: NodeId| {
         doc.node(i).and_then(|n| n.parent).and_then(|p| doc.node(p)).is_some_and(|p| p.is_page() || matches!(p.kind, NodeKind::Section { .. }))
     };
     if matches!(w, Wrap::Section) && !ids.iter().all(|i| board(doc, *i)) {
-        return Err(bad("object.wrapInSection", "only layers on the page or in a section can be wrapped in a section"));
+        return Err(bad(cmd, "only layers on the page or in a section can be wrapped in a section"));
     }
     if !matches!(w, Wrap::Section) && ids.iter().any(|i| doc.node(*i).is_some_and(|n| matches!(n.kind, NodeKind::Section { .. }))) {
-        return Err(bad("object.group", "sections can't go in groups or frames"));
+        return Err(bad(cmd, "sections can't go in groups or frames"));
     }
     let index = doc.index_in_parent(top).map(|i| i + 1);
     let mut bounds = doc.bounds_of(&ids).unwrap_or_default();
@@ -285,7 +290,7 @@ fn convert_to_section(s: &mut Session, p: &Value) -> Result<Value> {
         n.grids.clear();
         n.guides.clear();
         n.styles.grid = None;
-        n.bound.retain(|k, _| !k.starts_with("padding") && !matches!(k.as_str(), "gap" | "counterAxisSpacing"));
+        super::props::drop_layout_bindings(n);
         let kids = n.children.clone();
         for k in kids {
             // Out of the flow there is nothing to fill or to be absolute against.
@@ -338,7 +343,7 @@ fn mask(s: &mut Session, p: &Value) -> Result<Value> {
         return ok();
     }
     // Group, then the bottom-most child is the mask.
-    let r = wrap(s, &json!({"ids": ids, "name": "Mask group"}), Wrap::Group)?;
+    let r = wrap(s, &json!({"ids": ids, "name": "Mask group"}), "object.mask", Wrap::Group)?;
     let gid = id_of(&r["id"]).ok_or_else(|| EngineError::Other("group failed".into()))?;
     let doc = s.doc_mut()?;
     if let Some(first) = doc.get(gid)?.children.first().copied() {
@@ -472,7 +477,7 @@ fn outline_stroke(s: &mut Session, p: &Value) -> Result<Value> {
                 let f = doc.get_mut(fill_id)?;
                 f.strokes.clear();
             }
-            let r = wrap(s, &json!({"ids": [fill_id, vid], "name": n.name}), Wrap::Group)?;
+            let r = wrap(s, &json!({"ids": [fill_id, vid], "name": n.name}), "vector.outlineStroke", Wrap::Group)?;
             if let Some(g) = id_of(&r["id"]) {
                 out.push(g);
             }
@@ -519,7 +524,7 @@ fn layout_add(s: &mut Session, p: &Value) -> Result<Value> {
         ids
     } else {
         // Wrap non-frames in a new frame without a fill, then add auto layout to it.
-        let r = wrap(s, &json!({"ids": ids}), Wrap::Frame)?;
+        let r = wrap(s, &json!({"ids": ids}), "layout.add", Wrap::Frame)?;
         let fid = id_of(&r["id"]).ok_or_else(|| EngineError::Other("wrap failed".into()))?;
         let f = s.doc_mut()?.get_mut(fid)?;
         f.fills.clear();

@@ -17,6 +17,14 @@ fn files_and_the_control_port() {
 }
 
 #[test]
+fn the_control_port_accepts_the_equals_form() {
+    let a = parse(&args(&["--control=7980", "a.figcraft"]));
+    assert_eq!(a, Args { control: Some(7980), files: args(&["a.figcraft"]), ..Args::default() });
+    // A bad port is ignored, not taken as a file.
+    assert_eq!(parse(&args(&["--control=nope"])), Args::default());
+}
+
+#[test]
 fn automation_roots_repeat_and_are_never_files() {
     let a = parse(&args(&["--automation-read-root", "in", "--automation-write-root=out", "--automation-read-root=more", "a.figcraft"]));
     assert_eq!(a.read_roots, args(&["in", "more"]));

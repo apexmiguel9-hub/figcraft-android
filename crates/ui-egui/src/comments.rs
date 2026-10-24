@@ -189,10 +189,10 @@ pub fn cluster(points: &[Pos2], r: f32) -> Vec<Vec<usize>> {
 }
 
 /// A message's text with its @mentions of `people` picked out, wrapped at `width`.
-pub fn rich_text(text: &str, people: &[&str], color: Color32, width: f32) -> LayoutJob {
+pub fn rich_text(text: &str, people: &[&str], color: Color32, mention_color: Color32, width: f32) -> LayoutJob {
     let mut job = LayoutJob::default();
     let plain = TextFormat { font_id: regular(12.0), color, ..Default::default() };
-    let mention = TextFormat { font_id: semibold(12.0), color: ACCENT, ..Default::default() };
+    let mention = TextFormat { font_id: semibold(12.0), color: mention_color, ..Default::default() };
     let mut at = 0;
     for r in mention_ranges(text, people) {
         job.append(text.get(at..r.start).unwrap_or(""), 0.0, plain.clone());
@@ -400,7 +400,7 @@ pub fn draw(app: &FigApp, painter: &egui::Painter) {
     if let Some((x, y, _)) = &app.ui.comments.draft {
         let r = pin_rect(app.to_screen(*x, *y));
         painter.rect_filled(r, BUBBLE, ACCENT);
-        painter.circle_filled(r.center(), 3.0, Color32::WHITE);
+        painter.circle_filled(r.center(), 3.0, crate::theme::ACCENT_ON);
     }
 }
 
@@ -729,7 +729,7 @@ fn message(
                     ui.add_space(indent);
                     let mut names: Vec<&str> = cx.people.iter().map(String::as_str).collect();
                     names.push(cx.me);
-                    ui.add(egui::Label::new(rich_text(&m.text, &names, t.text, ui.available_width())).wrap());
+                    ui.add(egui::Label::new(rich_text(&m.text, &names, t.text, t.accent_text, ui.available_width())).wrap());
                 });
             }
         }
@@ -1062,7 +1062,8 @@ pub fn panel(app: &mut FigApp, ui: &mut Ui) {
             ui.add_space(16.0);
             ui.label(egui::RichText::new(tr(app.ui.comments.filter.label())).font(regular(11.0)).color(t.text_secondary));
             ui.add_space(4.0);
-            if ui.add(egui::Label::new(egui::RichText::new(tr("Show open")).font(regular(11.0)).color(ACCENT)).sense(Sense::click())).clicked() {
+            if ui.add(egui::Label::new(egui::RichText::new(tr("Show open")).font(regular(11.0)).color(t.accent_text)).sense(Sense::click())).clicked()
+            {
                 app.ui.comments.filter = Filter::Open;
             }
         });

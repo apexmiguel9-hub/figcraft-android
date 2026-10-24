@@ -27,7 +27,8 @@ pub struct Lang {
     pub code: &'static str,
     /// The language's own name for itself (the language picker shows it untranslated).
     pub name: &'static str,
-    /// Machine-drafted, waiting for a native speaker's review (`[meta] status`).
+    /// A draft (`[meta] status` set): waiting for a native speaker's review, or reviewed and waiting for
+    /// a maintainer's approval.
     pub draft: bool,
     /// Index into [`LANGS`] of the catalog a regional one overlays ("es" under "es-419": it lists
     /// only what differs), else 0 (English).
@@ -171,9 +172,10 @@ fn plural(code: &str, n: usize) -> Plural {
         "cs" if n == 1 => Plural::One,
         "cs" if (2..=4).contains(&n) => Plural::Few,
         "cs" => Plural::Other,
+        "pl" if n == 1 => Plural::One,
         "ru" if n % 10 == 1 && n % 100 != 11 => Plural::One,
-        "ru" if (2..=4).contains(&(n % 10)) && !(12..=14).contains(&(n % 100)) => Plural::Few,
-        "ru" => Plural::Many,
+        "ru" | "pl" if (2..=4).contains(&(n % 10)) && !(12..=14).contains(&(n % 100)) => Plural::Few,
+        "ru" | "pl" => Plural::Many,
         "ja" | "ko" | "zh-Hans" => Plural::Other,
         "fr" | "pt-BR" if n <= 1 => Plural::One,
         _ if n == 1 => Plural::One,
@@ -182,7 +184,7 @@ fn plural(code: &str, n: usize) -> Plural {
 }
 
 // CLDR's million-count "many" in French, Spanish and Portuguese still reads their existing
-// "other" wording. Czech supplies separate few forms; Russian supplies few/many forms.
+// "other" wording. Czech supplies separate few forms; Russian and Polish supply few/many forms.
 
 /// Whether count `n` takes the "one" form: 0 and 1 in French and Brazilian Portuguese, never in
 /// Japanese, Korean and Chinese (no plural forms: always "other"), 1 elsewhere (CLDR's integer rules).

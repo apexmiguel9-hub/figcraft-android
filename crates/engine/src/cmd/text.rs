@@ -18,6 +18,7 @@ fn style(s: &mut Session, p: &Value, f: impl Fn(&mut TextStyle)) -> Result<Value
         let ds = s.ds_mut()?;
         let before = ds.doc.clone();
         let doc = ds.doc_mut();
+        let bound = super::styles::bound_before(doc, &[id]);
         if let NodeKind::Text(t) = &mut doc.get_mut(id)?.kind {
             if a == b {
                 t.restyle(0, t.char_count(), &f);
@@ -25,19 +26,21 @@ fn style(s: &mut Session, p: &Value, f: impl Fn(&mut TextStyle)) -> Result<Value
                 t.restyle(a, b, &f);
             }
         }
+        super::styles::detach_edited(doc, &bound);
         crate::normalize(doc, &before);
         return ok();
     }
     let ids = req_targets("text", s, p)?;
     let doc = s.doc_mut()?;
-    for i in ids {
-        for d in doc.subtree(i) {
-            if let Some(NodeKind::Text(t)) = doc.node_mut(d).map(|n| &mut n.kind) {
-                let n = t.char_count();
-                t.restyle(0, n, &f);
-            }
+    let ids: Vec<NodeId> = ids.into_iter().flat_map(|i| doc.subtree(i)).collect();
+    let before = super::styles::bound_before(doc, &ids);
+    for d in ids {
+        if let Some(NodeKind::Text(t)) = doc.node_mut(d).map(|n| &mut n.kind) {
+            let n = t.char_count();
+            t.restyle(0, n, &f);
         }
     }
+    super::styles::detach_edited(doc, &before);
     ok()
 }
 
@@ -348,11 +351,13 @@ pub fn specs() -> Vec<CommandSpec> {
             let c = string(p, "characters").or_else(|| string(p, "text")).ok_or_else(|| bad("text.set", "`characters` required"))?;
             let ids = req_targets("text.set", s, p)?;
             let doc = s.doc_mut()?;
+            let before = super::styles::bound_before(doc, &ids);
             for i in ids {
                 let mut m = Map::new();
                 m.insert("characters".into(), json!(c));
                 super::props::apply("text.set", doc, i, &m)?;
             }
+            super::styles::detach_edited(doc, &before);
             ok()
         }),
         spec!(
@@ -364,6 +369,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 let ids = req_targets("text.style", s, p)?;
                 let m = p.as_object().cloned().unwrap_or_default();
                 let doc = s.doc_mut()?;
+                let before = super::styles::bound_before(doc, &ids);
                 for i in ids {
                     let n = doc.get_mut(i)?;
                     let NodeKind::Text(t) = &mut n.kind else { return Err(bad("text.style", format!("{i} is not text"))) };
@@ -377,6 +383,7 @@ pub fn specs() -> Vec<CommandSpec> {
                         super::props::apply_text_style("text.style", t, a, b, k, v)?;
                     }
                 }
+                super::styles::detach_edited(doc, &before);
                 ok()
             }
         ),
@@ -472,6 +479,41 @@ pub fn specs() -> Vec<CommandSpec> {
                     Some(f) => json!(figcraft_text::family_styles(&f)),
                     None => json!(figcraft_text::family_names()),
                 })
+            }
+        ),
+        spec!(
+            "text.rescanFonts",
+            "Rescan installed fonts",
+            "{}  walks the system font folders again, for fonts installed while the app runs; the open document's auto-sizing text in the families that gained faces (new ones, or styles installed since) fits them (text.refit) → {added: [families that were unknown], refitted: [ids]}",
+            true,
+            |s, _| {
+                let rescan = figcraft_text::rescan_system_fonts();
+                let refitted = crate::fonts::refit_open(s, None, Some(&rescan.changed));
+                Ok(json!({"added": rescan.added, "refitted": refitted}))
+            }
+        ),
+        spec!(
+            "text.loadFont",
+            "Load font file",
+            "{path | data (base64)}  adds a font file (.ttf, .otf, .ttc, .otc; every face of a collection) to this session's fonts without installing it; the open document's auto-sizing text in its families fits it (text.refit) → {families, refitted: [ids]}",
+            true,
+            |s, p| {
+                let cmd = "text.loadFont";
+                let bytes = if let Some(b64) = string(p, "data") {
+                    use base64::Engine as _;
+                    let b64 = b64.split_once(',').map(|(_, d)| d.to_string()).unwrap_or(b64);
+                    base64::engine::general_purpose::STANDARD.decode(b64.trim()).map_err(|e| bad(cmd, format!("`data`: {e}")))?
+                } else if let Some(path) = string(p, "path") {
+                    super::file::read_capped(&path, figcraft_text::fontdb::MAX_FONT_FILE)?
+                } else {
+                    return Err(bad(cmd, "pass `path` or `data` (base64)"));
+                };
+                let families = figcraft_text::load_font_bytes(bytes);
+                if families.is_empty() {
+                    return Err(bad(cmd, "not a font file"));
+                }
+                let refitted = crate::fonts::refit_open(s, None, Some(&families));
+                Ok(json!({"families": families, "refitted": refitted}))
             }
         ),
     ]

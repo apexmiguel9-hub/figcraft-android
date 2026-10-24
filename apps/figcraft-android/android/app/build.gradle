@@ -40,7 +40,7 @@ android {
         // que Ajustes > Acerca de y el log de arranque (`figcraft-android: arrancando, version`)
         // decian una cosa y el workspace otra. El `Cargo.toml` del port si la hereda
         // (`version.workspace = true`), asi que aqui se pone la del workspace a mano.
-        versionName '0.7.0'
+        versionName '0.10.0'
 
         // MEDIDO, y esto es lo que hace que `adb install -r` funcione: sin `signingConfig`
         // explicito, AGP genera un keystore debug **nuevo en cada runner**, asi que cada APK

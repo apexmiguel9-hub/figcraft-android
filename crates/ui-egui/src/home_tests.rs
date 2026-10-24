@@ -573,6 +573,71 @@ fn dropping_a_file_without_one_on_disk_opens_it_as_a_new_unsaved_document() {
     assert!(!path.exists(), "nothing is written");
 }
 
+/// What a drop's read gives, once it has arrived.
+type Arrival = std::rc::Rc<std::cell::RefCell<Option<Result<Vec<u8>, String>>>>;
+
+/// A drop whose contents arrive later, as every drop in the browser does: pending until `arrived`
+/// holds them.
+fn later(arrived: &Arrival) -> crate::ReadFuture {
+    let arrived = arrived.clone();
+    Box::pin(std::future::poll_fn(move |_| match arrived.borrow_mut().take() {
+        Some(bytes) => std::task::Poll::Ready(bytes),
+        None => std::task::Poll::Pending,
+    }))
+}
+
+#[test]
+fn a_dropped_file_whose_contents_arrive_later_opens_once_they_do() {
+    let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><rect width="40" height="20" fill="red"/></svg>"#.to_vec();
+    let arrived = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let mut u = first_run();
+    u.app.ui.home = true;
+    u.app.ui.pending_opens.push(crate::pending_open::PendingOpen {
+        label: "Browser drop.svg".into(),
+        params: json!({"name": "Browser drop.svg"}),
+        command: "file.open",
+        target: None,
+        read: Some(later(&arrived)),
+    });
+    // egui lays a new card out invisibly on its first frame.
+    u.frame(vec![]);
+    for _ in 0..5 {
+        let s = flat(&u.frame_output(vec![]).shapes);
+        assert!(has_text(&s, "Browser drop.svg"), "the card shows while the contents are read");
+    }
+    assert!(u.app.session.docs.is_empty(), "nothing opens before the contents arrive");
+    *arrived.borrow_mut() = Some(Ok(svg));
+    for _ in 0..3 {
+        u.frame(vec![]);
+    }
+    assert!(u.app.ui.pending_opens.is_empty());
+    assert_eq!(u.app.ui.last_error, None);
+    assert_eq!(u.app.session.docs.len(), 1, "the contents open");
+    assert_eq!(u.app.session.docs[0].path, None);
+    assert!(u.app.session.docs[0].doc.nodes().any(|n| matches!(n.kind, figcraft_doc::NodeKind::Rectangle)), "the SVG's content");
+    assert!(!u.app.ui.home);
+}
+
+#[test]
+fn a_dropped_file_that_cannot_be_read_says_so_and_opens_nothing() {
+    let arrived = std::rc::Rc::new(std::cell::RefCell::new(Some(Err(crate::unreadable("Unreadable.figcraft")))));
+    let mut u = first_run();
+    u.app.ui.home = true;
+    u.app.ui.pending_opens.push(crate::pending_open::PendingOpen {
+        label: "Unreadable.figcraft".into(),
+        params: json!({"name": "Unreadable.figcraft"}),
+        command: "file.open",
+        target: None,
+        read: Some(later(&arrived)),
+    });
+    for _ in 0..3 {
+        u.frame(vec![]);
+    }
+    assert!(u.app.ui.pending_opens.is_empty());
+    assert!(u.app.session.docs.is_empty());
+    assert_eq!(u.app.ui.last_error.as_deref(), Some("Couldn't read Unreadable.figcraft."));
+}
+
 #[test]
 fn dropping_a_native_file_on_the_home_screen_opens_it() {
     let dir = Temp::new();
@@ -603,9 +668,8 @@ fn dropping_a_native_file_on_the_home_screen_opens_it() {
 #[test]
 fn dropping_a_native_file_on_canvas_keeps_its_receiving_document_after_tab_switch() {
     let dir = Temp::new();
-    let path = dir.path("Canvas import.figcraft");
-    let mut source = Session::new();
-    source.execute("file.saveAs", &json!({"path": path.to_string_lossy()})).unwrap();
+    let path = dir.path("Canvas import.svg");
+    std::fs::write(&path, r#"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10"><rect width="20" height="10"/></svg>"#).unwrap();
 
     let mut session = Session::new();
     let target_uid = session.ds().unwrap().uid;
@@ -631,7 +695,82 @@ fn dropping_a_native_file_on_canvas_keeps_its_receiving_document_after_tab_switc
     u.frame(vec![]);
 
     assert_eq!(u.app.session.ds().unwrap().uid, other_uid, "the user's active tab stays in front");
-    assert_eq!(u.app.session.docs.iter().map(|doc| doc.doc.pages.len()).collect::<Vec<_>>(), [2, 1]);
+    let layers = |uid: u64| {
+        let doc = &u.app.session.docs.iter().find(|doc| doc.uid == uid).unwrap().doc;
+        doc.node(doc.pages[0]).unwrap().children.len()
+    };
+    assert_eq!((layers(target_uid), layers(other_uid)), (1, 0), "the drop lands in the tab that received it");
+}
+
+#[test]
+fn dropping_a_document_on_canvas_opens_it_as_a_new_file() {
+    let dir = Temp::new();
+    let path = dir.path("Dropped.figcraft");
+    let mut saved = Session::new();
+    saved.execute("file.saveAs", &json!({"path": path.to_string_lossy()})).unwrap();
+    let mut u = Ui::new(Session::new());
+    u.app.ui.home = false;
+    u.frame(vec![]);
+    let before = u.app.session.doc().unwrap().clone();
+    let s = drop_file(&mut u, &path);
+    assert!(has_text(&s, "Drop to open"), "dragging a document over the canvas says it opens");
+    let s = flat(&u.frame_output(vec![]).shapes);
+    assert!(has_text(&s, "Opening as a new file"), "the card says so too");
+    u.frame(vec![]);
+    assert!(u.app.ui.pending_opens.is_empty());
+    assert_eq!(u.app.session.docs.len(), 2, "a tab of its own");
+    assert_eq!(u.app.session.ds().unwrap().path.as_deref(), Some(path.to_string_lossy().as_ref()), "in front");
+    assert_eq!(u.app.session.docs[0].doc.as_ref(), &before, "the file that was open gets no pages added");
+}
+
+#[test]
+fn a_document_dropped_on_canvas_without_a_file_on_disk_opens_as_a_new_file() {
+    // Every drop in the browser (#916).
+    let dir = Temp::new();
+    let saved = dir.path("Saved.figcraft");
+    Session::new().execute("file.saveAs", &json!({"path": saved.to_string_lossy()})).unwrap();
+    let bytes = std::fs::read(&saved).unwrap();
+    let mut u = Ui::new(Session::new());
+    u.app.ui.home = false;
+    u.frame(vec![]);
+    let pos = u.app.canvas.rect.center();
+    let file: egui::DroppedFileHandle = std::sync::Arc::new(DroppedBytes("Shared.figcraft".into(), bytes));
+    u.frame_raw(egui::RawInput { events: vec![Event::PointerMoved(pos)], dropped_files: vec![file], ..Default::default() });
+    for _ in 0..3 {
+        u.frame(vec![]);
+    }
+    assert!(u.app.ui.pending_opens.is_empty());
+    assert_eq!(u.app.ui.last_error, None);
+    assert_eq!(u.app.session.docs.len(), 2, "a tab of its own");
+    assert_eq!(u.app.session.docs[0].doc.pages.len(), 1, "no pages added to the open file");
+    assert_eq!(u.app.session.docs[1].path, None, "with no save path made up for it");
+}
+
+#[test]
+fn dropping_several_files_on_canvas_places_them_side_by_side() {
+    let dir = Temp::new();
+    let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10"><rect width="20" height="10" fill="#f00"/></svg>"##;
+    let paths: Vec<_> = ["a.svg", "b.svg", "c.svg"].iter().map(|n| dir.path(n)).collect();
+    for path in &paths {
+        std::fs::write(path, svg).unwrap();
+    }
+    let mut u = Ui::new(Session::new());
+    u.app.ui.home = false;
+    u.frame(vec![]);
+    let pos = u.app.canvas.rect.center();
+    let files: Vec<egui::DroppedFileHandle> = paths.iter().map(|p| std::sync::Arc::new(Dropped(p.clone())) as egui::DroppedFileHandle).collect();
+    u.frame_raw(egui::RawInput { events: vec![Event::PointerMoved(pos)], dropped_files: files, ..Default::default() });
+    for _ in 0..4 {
+        u.frame(vec![]);
+    }
+    assert!(u.app.ui.pending_opens.is_empty());
+    let doc = u.app.session.doc().unwrap();
+    let page = u.app.session.page().unwrap();
+    let rects: Vec<_> = doc.node(page).unwrap().children.iter().map(|c| doc.world_bounds(*c).unwrap()).collect();
+    assert_eq!(rects.len(), 3);
+    for pair in rects.windows(2) {
+        assert!(pair[1].x0 > pair[0].x1, "left to right with a gap: {rects:?}");
+    }
 }
 
 #[test]

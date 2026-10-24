@@ -180,31 +180,19 @@ pub fn show(app: &mut FigApp, ui: &mut Ui) {
 fn dropped(app: &mut FigApp, ctx: &egui::Context) {
     let files = ctx.input(|i| i.raw.dropped_files.clone());
     for f in files {
-        let path = f.path().to_path_buf();
-        if !crate::opens(&path) {
+        if !crate::opens(f.path()) {
             app.toast(tr("Drop a .figcraft, .fig, .json, .svg or image file."));
             continue;
         }
-        // `opens` saw an extension, so there is a file name to tell the format by.
-        let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-        let params = if path.exists() {
-            json!({"path": path.to_string_lossy()})
-        } else if let Some(bytes) = crate::dropped_bytes(&f) {
-            use base64::Engine as _;
-            let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
-            json!({"data": data, "name": name})
-        } else {
-            continue;
-        };
-        app.ui.pending_opens.push(crate::pending_open::PendingOpen { label: name, params, command: "file.open", target: None });
+        crate::pending_open::open_dropped(app, &f);
     }
 }
 
 fn sidebar(app: &mut FigApp, ui: &mut Ui, t: &Tokens, left: Rect) {
     let mut y = left.min.y + 20.0;
-    icons::paint(ui.painter(), Rect::from_min_size(pos2(left.min.x + 16.0, y), vec2(20.0, 20.0)), Icon::Logo, ACCENT);
-    ui.painter().text(pos2(left.min.x + 44.0, y + 10.0), Align2::LEFT_CENTER, "FigCraft", semibold(14.0), t.text);
-    y += 48.0;
+    crate::theme::paint_app_icon(ui, Rect::from_min_size(pos2(left.min.x + 12.0, y - 4.0), vec2(32.0, 32.0)));
+    crate::theme::paint_wordmark(ui.painter(), pos2(left.min.x + 52.0, y + 12.0), 16.0, t);
+    y += 52.0;
     let search = Rect::from_min_size(pos2(left.min.x + 8.0, y), vec2(SIDEBAR - 16.0, widgets::FIELD_H));
     ui.scope_builder(egui::UiBuilder::new().max_rect(search), |ui| {
         let response =
@@ -324,8 +312,8 @@ fn action_card(ui: &mut Ui, t: &Tokens, icon: Icon, title: &str, sub: &str) -> b
     }
     card_frame(ui, t, r, &resp);
     let ir = Rect::from_min_size(pos2(r.min.x + 16.0, r.center().y - 16.0), vec2(32.0, 32.0));
-    ui.painter().rect_filled(ir, CornerRadius::same(6), ACCENT);
-    icons::paint(ui.painter(), ir.shrink(8.0), icon, Color32::WHITE);
+    ui.painter().rect_filled(ir, CornerRadius::same(6), t.accent);
+    icons::paint(ui.painter(), ir.shrink(8.0), icon, t.accent_on);
     ui.painter().text(pos2(r.min.x + 60.0, r.center().y - 8.0), Align2::LEFT_CENTER, title_shown, semibold(12.0), t.text);
     ui.painter().text(pos2(r.min.x + 60.0, r.center().y + 9.0), Align2::LEFT_CENTER, sub_shown, regular(11.0), t.text_secondary);
     resp.clicked()

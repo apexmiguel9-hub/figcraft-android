@@ -444,7 +444,20 @@ pub struct FontDb {
     families: BTreeMap<String, (String, Vec<usize>)>,
     /// System faces known by name but not loaded (lower-case family → entries).
     pending: BTreeMap<String, (String, Vec<Pending>)>,
+    /// System faces read from disk (file, face index), so a rescan only offers new ones.
+    loaded_files: std::collections::BTreeSet<(std::path::PathBuf, u32)>,
+    /// Font files added as bytes (hash and length → families), so loading one again adds nothing.
+    loaded_bytes: std::collections::HashMap<(u64, usize), Vec<String>>,
     system_scanned: bool,
+}
+
+/// What a later walk of the font folders found ([`rescan_system_fonts`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Rescan {
+    /// Families that were unknown before.
+    pub added: Vec<String>,
+    /// Every family that gained faces: the new ones and those with styles installed since.
+    pub changed: Vec<String>,
 }
 
 static DB: OnceLock<RwLock<FontDb>> = OnceLock::new();
@@ -580,6 +593,7 @@ impl FontDb {
             };
             if let Some(face) = Face::from_bytes(FontBytes::Shared(bytes), e.index, None, Some(&e.style)) {
                 self.add(face);
+                self.loaded_files.insert((e.path, e.index));
             }
         }
     }
@@ -668,6 +682,35 @@ impl FontDb {
 
     pub fn face_count(&self) -> usize {
         self.faces.len()
+    }
+
+    /// Offer the families of a later walk of the font folders: new families become pending, a
+    /// family not loaded yet takes the walk's files, and a loaded family keeps its faces and gets
+    /// the files it hasn't read (styles installed since) as pending, read when it is next used.
+    fn merge_rescan(&mut self, found: BTreeMap<String, (String, Vec<Pending>)>) -> Rescan {
+        let mut out = Rescan::default();
+        for (k, (display, entries)) in found {
+            if self.families.contains_key(&k) {
+                let waiting = self.pending.get(&k).map(|(_, v)| v.clone()).unwrap_or_default();
+                let new: Vec<Pending> = entries
+                    .into_iter()
+                    .filter(|e| {
+                        !self.loaded_files.contains(&(e.path.clone(), e.index)) && !waiting.iter().any(|w| w.path == e.path && w.index == e.index)
+                    })
+                    .collect();
+                if !new.is_empty() {
+                    out.changed.push(display.clone());
+                    self.pending.entry(k).or_insert_with(|| (display, Vec::new())).1.extend(new);
+                }
+                continue;
+            }
+            if !self.pending.contains_key(&k) {
+                out.added.push(display.clone());
+            }
+            out.changed.push(display.clone());
+            self.pending.insert(k, (display, entries));
+        }
+        out
     }
 
     /// Index the system font directories (desktop only): family names are read now, faces loaded
@@ -776,12 +819,18 @@ fn scan_dir(dir: &std::path::Path, depth: usize, out: &mut BTreeMap<String, (Str
         // Very large files are indexed all the same (Apple Color Emoji is ~180 MB and is where the
         // system's colour emoji live): `index_bytes` reads headers and name tables out of a zeroed
         // buffer, so only those parts are ever touched.
-        let Some(bytes) = usize::try_from(meta.len()).ok().filter(|l| *l <= 256 * 1024 * 1024).and_then(|l| index_bytes(&path, l)) else { continue };
+        if meta.len() > MAX_FONT_FILE {
+            continue;
+        }
+        let Some(bytes) = usize::try_from(meta.len()).ok().and_then(|l| index_bytes(&path, l)) else { continue };
         for (index, family, style) in faces_in(&bytes) {
             out.entry(family.to_lowercase()).or_insert_with(|| (family.clone(), Vec::new())).1.push(Pending { path: path.clone(), index, style });
         }
     }
 }
+
+/// The largest font file read (CJK collections run to ~120 MB, Apple Color Emoji ~180 MB).
+pub const MAX_FONT_FILE: u64 = 256 * 1024 * 1024;
 
 /// The parts of a font file the scan reads: headers, table directories and `name` tables, at their
 /// offsets in a zeroed buffer of the file's length (reading whole files was most of the scan).
@@ -885,6 +934,55 @@ pub fn scan_system_fonts() {
             crate::clear_layout_cache();
         }
     });
+}
+
+/// Walk the system font folders again, for fonts installed while the app runs (the first scan is
+/// once per process): the families that were unknown before, and every family that gained faces.
+/// Before the first scan this is that scan; a no-op on the web or with `FIGCRAFT_NO_SYSTEM_FONTS`.
+pub fn rescan_system_fonts() -> Rescan {
+    #[cfg(not(target_arch = "wasm32"))]
+    if !system_fonts_opted_out() {
+        if SCANNED.get().is_none() {
+            let before: std::collections::BTreeSet<String> =
+                raw_db().read().unwrap_or_else(std::sync::PoisonError::into_inner).families().into_iter().collect();
+            scan_system_fonts();
+            let added: Vec<String> = family_names().into_iter().filter(|f| !before.contains(f)).collect();
+            return Rescan { changed: added.clone(), added };
+        }
+        let mut found: BTreeMap<String, (String, Vec<Pending>)> = BTreeMap::new();
+        for dir in system_font_dirs() {
+            scan_dir(&dir, 0, &mut found);
+        }
+        let rescan = raw_db().write().unwrap_or_else(std::sync::PoisonError::into_inner).merge_rescan(found);
+        if !rescan.changed.is_empty() {
+            crate::clear_layout_cache();
+        }
+        return rescan;
+    }
+    Rescan::default()
+}
+
+/// Load font file bytes (every face of a collection) into the global db, for a font that isn't
+/// installed. Returns the families of its faces (none: not a font file); the same file again
+/// returns them without adding its faces twice.
+pub fn load_font_bytes(bytes: Vec<u8>) -> Vec<String> {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut h);
+    let key = (h.finish(), bytes.len());
+    let mut db = db().write().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(families) = db.loaded_bytes.get(&key) {
+        return families.clone();
+    }
+    let faces = db.add_bytes(bytes);
+    let mut families: Vec<String> = faces.iter().map(|f| f.family.clone()).collect();
+    families.dedup();
+    if !families.is_empty() {
+        db.loaded_bytes.insert(key, families.clone());
+        drop(db);
+        crate::clear_layout_cache();
+    }
+    families
 }
 
 /// `FIGCRAFT_NO_SYSTEM_FONTS` is set (and not `0`): renders use only the embedded fonts.

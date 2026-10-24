@@ -304,3 +304,26 @@ fn escape_closes_prototype_editor_without_deselecting_layer() {
     u.key(pos2(100.0, 100.0), egui::Key::Escape);
     assert!(u.app.session.selection().is_empty(), "selection cleared on third escape");
 }
+
+/// After a click in the Pages list, Delete that removes an interaction ends the list's hold on the
+/// keyboard: with the layer deselected afterwards, Delete doesn't take the page (#859).
+#[test]
+fn deleting_an_interaction_ends_the_pages_list_focus() {
+    let (s, _a, _b, btn) = setup();
+    let mut u = Ui::new(s);
+    let first = u.app.session.page().unwrap();
+    u.run("page.add", json!({}));
+    u.run("page.select", json!({"id": first}));
+    // As after a click on the page's row (layers_keys_tests clicks the real row).
+    u.app.ui.pages_focus = u.app.session.ds().ok().map(|d| d.uid);
+    u.app.ui.right_tab = crate::RightTab::Prototype;
+    u.run("select.set", json!({"ids": [btn]}));
+    crate::proto_panel::open_editor(&u.ctx, Some((btn, 0)));
+    u.frames(1, Vec::new);
+    u.key(pos2(100.0, 100.0), egui::Key::Delete);
+    assert_eq!(u.app.session.doc().unwrap().node(btn).unwrap().interactions.len(), 0);
+    assert!(u.app.ui.pages_focus.is_none());
+    u.run("select.none", json!({}));
+    u.key(pos2(100.0, 100.0), egui::Key::Delete);
+    assert_eq!(u.app.session.doc().unwrap().pages.len(), 2, "the page stays");
+}

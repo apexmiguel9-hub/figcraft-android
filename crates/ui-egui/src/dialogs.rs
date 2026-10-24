@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use egui::{Align2, Color32, Context, CornerRadius, RichText, Sense, Stroke, vec2};
+use egui::{Align2, Context, CornerRadius, RichText, Sense, Stroke, vec2};
 use figcraft_color::ColorProfile;
 use figcraft_doc::{ExportFormat, ExportSetting, ExportSize, NodeId};
 use figcraft_engine::cmd::file::{export_jobs, exportable_layers};
@@ -12,8 +12,7 @@ use serde_json::{Value, json};
 use crate::FigApp;
 use crate::export_panel::{export_layers, save_one, suggested_name};
 use crate::i18n::{self, tr, tr_noop, trf, trn};
-use crate::icons::{self, Icon};
-use crate::theme::{ACCENT, Tokens, regular, semibold};
+use crate::theme::{Tokens, regular, semibold};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -62,7 +61,14 @@ pub(crate) fn window<'a>(title: &'a str, ctx: &Context) -> egui::Window<'a> {
     let screen = ctx.content_rect();
     let max_h = (screen.height() - 24.0).max(160.0);
     let max_w = (screen.width() - 24.0).max(200.0);
-    floating(title, ctx).anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0)).max_height(max_h).max_width(max_w).vscroll(true).constrain(true)
+    let mut window = floating(title, ctx).anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0)).max_height(max_h).max_width(max_w).constrain(true);
+    // En una pantalla corta el scroll es lo que deja llegar a todo. En una normal no se activa:
+    // el `ScrollArea` se queda con las flechas y rompe el recorrido de foco por teclado de los
+    // menus dentro del dialogo (Preferences ▸ Interface size).
+    if screen.height() < 640.0 {
+        window = window.vscroll(true);
+    }
+    window
 }
 
 /// A window styled like the dialogs that the user can move.
@@ -132,10 +138,10 @@ pub(crate) fn tab_strip<T: Copy + PartialEq>(ui: &mut egui::Ui, t: &Tokens, tabs
 fn about_body(ui: &mut egui::Ui, t: &Tokens) {
     ui.horizontal(|ui| {
         let (r, _) = ui.allocate_exact_size(vec2(48.0, 48.0), Sense::hover());
-        ui.painter().rect_filled(r, CornerRadius::same(10), ACCENT);
-        icons::paint(ui.painter(), r.shrink(10.0), Icon::Logo, Color32::WHITE);
+        crate::theme::paint_app_icon(ui, r);
         ui.vertical(|ui| {
-            ui.label(RichText::new("FigCraft").font(semibold(18.0)));
+            let (wordmark, _) = ui.allocate_exact_size(vec2(130.0, 23.0), Sense::hover());
+            crate::theme::paint_wordmark(ui.painter(), egui::pos2(wordmark.min.x, wordmark.center().y), 18.0, t);
             ui.label(RichText::new(trf("Version {version}", &[("version", &VERSION)])).color(t.text_secondary));
         });
     });
@@ -153,8 +159,12 @@ fn about_body(ui: &mut egui::Ui, t: &Tokens) {
 }
 
 /// Escape closes the topmost simple dialog (one without menus of its own), before the canvas's
-/// shortcuts see it (it doesn't deselect), like a system dialog: from one of its fields too.
+/// shortcuts see it (it doesn't deselect), like a system dialog: from one of its fields too. A menu
+/// open over the dialog (Preferences ▸ Interface size) takes the first Escape and closes alone.
 pub fn keys(app: &mut FigApp, ctx: &Context) {
+    if egui::Popup::is_any_open(ctx) {
+        return;
+    }
     let u = &mut app.ui;
     let open = u.color_profile.is_some()
         || u.menu_input.is_some()
@@ -233,6 +243,9 @@ pub fn show(app: &mut FigApp, ctx: &Context) {
             if !cfg!(target_arch = "wasm32") && crate::widgets::checkbox(ui, prefs.auto_save, tr("Save files automatically")) {
                 toggles.push("pref.autoSave");
             }
+            if !cfg!(target_arch = "wasm32") && crate::widgets::checkbox(ui, prefs.start_on_home, tr("Start on the Home screen")) {
+                toggles.push("pref.startOnHome");
+            }
             for c in toggles {
                 app.run(c, json!({}));
             }
@@ -282,6 +295,8 @@ pub fn show(app: &mut FigApp, ctx: &Context) {
                     app.run("pref.nudge", json!({"small": small, "big": big}));
                 }
             });
+            ui.add_space(8.0);
+            interface_size(app, ui, prefs.ui_scale);
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 ui.label(tr("Theme"));
@@ -499,6 +514,46 @@ pub(crate) fn batch_rename_params(b: &BatchRenameUi) -> serde_json::Value {
         p["replace"] = json!(b.to);
     }
     p
+}
+
+/// Preferences ▸ Interface size: a size relative to the system's display scale (100 % is the
+/// system's own), as a drop-down that takes effect at once. The browser has its own zoom, so there
+/// the row only says so.
+fn interface_size(app: &mut FigApp, ui: &mut egui::Ui, chosen: f64) {
+    let t = Tokens::get(ui.ctx());
+    if cfg!(target_arch = "wasm32") {
+        ui.label(tr("Interface size"));
+        crate::widgets::label(ui, tr("Use your browser's zoom to change the interface size."), t.text_secondary);
+        return;
+    }
+    let percent = |size: f64| trf("{percent}%", &[("percent", &crate::ui_scale::percent(size as f32))]);
+    let shown = percent(chosen);
+    ui.horizontal(|ui| {
+        ui.label(tr("Interface size"));
+        let resp = crate::widgets::dropdown(ui, &shown, 120.0, None);
+        crate::a11y::combo(&resp, tr("Interface size"), &shown, crate::a11y::menu_open(&resp));
+        crate::right::menu_popup(&resp).show(|ui| {
+            for size in crate::ui_scale::SIZES {
+                if crate::right::menu_check(ui, (chosen - size).abs() < 1e-6, &percent(size), "") {
+                    app.run("pref.uiScale", json!({"scale": size}));
+                    ui.close();
+                }
+            }
+        });
+    });
+    crate::widgets::label(
+        ui,
+        tr("Relative to your system's display scaling (100% is the system's own size). Document zoom is separate."),
+        t.text_secondary,
+    );
+    // Said in words, not only by the menu's value: the window is too small for the size chosen.
+    if app.ui.ui_scale.limited {
+        let note = trf(
+            "The window is too small for {size}%, so the interface is drawn at {drawn}%. Make the window larger to use {size}%.",
+            &[("size", &crate::ui_scale::percent(chosen as f32)), ("drawn", &crate::ui_scale::percent(app.ui.ui_scale.zoom))],
+        );
+        crate::widgets::label(ui, &note, t.text_secondary);
+    }
 }
 
 /// Rename layers: Match, Rename to with buttons for the current name and numbers, where numbers

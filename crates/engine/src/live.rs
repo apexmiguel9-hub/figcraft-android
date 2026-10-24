@@ -81,10 +81,14 @@ pub const PEOPLE: [&str; 8] = ["#0D99FF", "#9747FF", "#14AE5C", "#F24822", "#D97
 
 /// `#RRGGBB` → (r, g, b); `None` for anything else.
 pub fn parse_color(s: &str) -> Option<(u8, u8, u8)> {
-    let hex = s.strip_prefix('#').filter(|h| h.len() == 6 && h.is_ascii())?;
+    let hex = s.strip_prefix('#').filter(|h| h.len() == 6 && h.bytes().all(|b| b.is_ascii_hexdigit()))?;
     let byte = |i: usize| hex.get(i..i + 2).and_then(|b| u8::from_str_radix(b, 16).ok());
     Some((byte(0)?, byte(2)?, byte(4)?))
 }
+
+/// Why a join failed when a message from the host is over this app's size limit (`{mb}`: the
+/// limit in MB). The UI translates it.
+pub const TOO_LARGE_TO_JOIN: &str = "This file is too large to join here (up to {mb} MB)";
 
 /// The connection to a live session.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]

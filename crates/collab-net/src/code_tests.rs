@@ -141,7 +141,9 @@ fn old_server() -> (Endpoint, std::thread::JoinHandle<()>) {
     let t = std::thread::spawn(move || {
         for stream in listener.incoming().take(2).flatten() {
             let Ok(mut ws) = tungstenite::accept(stream) else { continue };
-            let _ = ws.read();
+            // read() returns Result<Message>, not a lock guard; this test server deliberately
+            // ignores whatever the client sent first.
+            let _ = ws.read(); // NOSONAR
             let refused = ServerMsg::Refused { reason: "that message couldn't be read".into() };
             let _ = ws.send(Message::Binary(Bytes::from(message::encode(&refused).unwrap())));
             let _ = ws.close(None);

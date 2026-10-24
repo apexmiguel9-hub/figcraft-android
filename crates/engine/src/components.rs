@@ -285,9 +285,26 @@ pub fn create_instance_at(doc: &mut Document, component: NodeId, parent: NodeId,
     root.dev_resources.clear();
     // The main's interactions play on its instances in prototypes; the instance's own start empty.
     root.interactions.clear();
+    // So do the variable modes the main sets (see `Document::inherited_modes`).
+    root.var_modes.clear();
     doc.insert(root, parent, index)?;
     sync_instance(doc, id);
     Ok(id)
+}
+
+/// Copy `id` within its own file under `parent` (at `index`), keeping its local transform. A file
+/// has one main per component, so a main component's copy is an instance of it; a variant copied
+/// into its set stays a new variant, and every other layer is deep-copied.
+pub fn copy_in_file(doc: &mut Document, id: NodeId, parent: NodeId, index: Option<usize>) -> Result<NodeId, DocError> {
+    let n = doc.get(id)?;
+    let in_set = doc.node(parent).is_some_and(|p| matches!(p.kind, NodeKind::ComponentSet { .. }));
+    if !matches!(n.kind, NodeKind::Component { .. }) || in_set {
+        return doc.duplicate_into(id, parent, index);
+    }
+    let transform = n.transform;
+    let instance = create_instance_at(doc, id, parent, 0.0, 0.0, index)?;
+    doc.get_mut(instance)?.transform = transform;
+    Ok(instance)
 }
 
 /// Which part of the carried overrides to apply.

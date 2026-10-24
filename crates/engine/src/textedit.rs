@@ -782,6 +782,7 @@ mod tests {
         assert!(r.is_null() || r["axes"].is_array());
     }
 
+    /// No text command panics on junk parameters while a text is being edited.
     #[test]
     fn text_commands_survive_junk_while_editing() {
         let junk = [
@@ -793,7 +794,8 @@ mod tests {
             json!({"variations": {"wght": "heavy", "toolong": 1}, "text": "\u{0}\u{7}", "cursor": 1e300}),
             json!({"variations": {"wght": 1e300, "opsz": -1e300}, "replace": "yes", "text": "日本語", "cursor": -1}),
         ];
-        for spec in crate::cmd::all_commands().iter().filter(|c| c.id.starts_with("text.")) {
+        // `text.rescanFonts` takes no params and walks the font folders: one walk per junk is slow.
+        for spec in crate::cmd::all_commands().iter().filter(|c| c.id.starts_with("text.") && c.id != "text.rescanFonts") {
             for j in &junk {
                 let (mut s, id) = setup("Hi there\nyou");
                 begin(&mut s, id, Some(2), false).unwrap();

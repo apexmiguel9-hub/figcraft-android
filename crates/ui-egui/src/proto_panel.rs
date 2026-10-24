@@ -53,6 +53,8 @@ pub fn delete_selected_interaction(app: &mut FigApp, ctx: &egui::Context) -> boo
         return false;
     }
     open_editor(ctx, None);
+    // Delete went to the interaction, so a later one doesn't go to the Pages list.
+    app.ui.pages_focus = None;
     let ids = targets_for(app, node);
     app.run("proto.interaction.remove", json!({"ids": ids, "index": index}));
     true
@@ -763,7 +765,7 @@ fn trigger_rows(app: &mut FigApp, ui: &mut Ui, node: NodeId, k: usize, it: &Inte
                 let id = capture_id().with("field");
                 ui.painter().rect_filled(r, CornerRadius::same(5), t.field);
                 if cap {
-                    ui.painter().rect_stroke(r, CornerRadius::same(5), Stroke::new(1.0, t.accent), StrokeKind::Inside);
+                    ui.painter().rect_stroke(r, CornerRadius::same(5), Stroke::new(1.0, ACCENT), StrokeKind::Inside);
                     ui.memory_mut(|m| m.request_focus(id));
                     let _ = ui.interact(r, id, Sense::focusable_noninteractive());
                     let pressed = ui.input(|i| {
@@ -924,7 +926,20 @@ pub(crate) fn action_fields(app: &mut FigApp, ui: &mut Ui, doc: &Document, page:
                     let w = ((ui.available_width() - 6.0) / 2.0).max(36.0);
                     for (i, (name, key)) in [("X", "proto_ov_x"), ("Y", "proto_ov_y")].into_iter().enumerate() {
                         let shown = offset.and_then(|o| o.get(i).copied());
-                        let Some(e) = widgets::number_field_bindable(ui, slot.id(key), Lead::Text(name), shown, "", w, 1.0, None, tr("Auto")).0
+                        // "Auto" is no offset (right below the layer), not 0: the word isn't taken
+                        // as a value here.
+                        let Some(e) = widgets::number_field_bindable(
+                            ui,
+                            slot.id(key),
+                            Lead::Text(name),
+                            shown,
+                            "",
+                            w,
+                            1.0,
+                            None,
+                            widgets::Empty::Text(tr("Auto")),
+                        )
+                        .0
                         else {
                             continue;
                         };
@@ -1048,7 +1063,7 @@ fn animation_rows(app: &mut FigApp, ui: &mut Ui, node: NodeId, k: usize, it: &In
                     let w = ui.available_width().max(200.0);
                     let (r, rr) = ui.allocate_exact_size(vec2(w, 26.0), Sense::click());
                     if rr.hovered() {
-                        ui.painter().rect_filled(r, CornerRadius::same(5), ACCENT);
+                        ui.painter().rect_filled(r, CornerRadius::same(5), t.menu_hover);
                     }
                     let col = if rr.hovered() { Color32::WHITE } else { t.text };
                     curve(ui.painter(), Rect::from_min_size(pos2(r.min.x + 6.0, r.min.y + 4.0), vec2(28.0, 18.0)), *e, col, None);

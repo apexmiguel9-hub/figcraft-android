@@ -1,12 +1,13 @@
-//! Dev Mode's compare view: a ready-for-dev frame or section as it was when it was marked next to
-//! how it is now (side by side, or one over the other with a slider), the changed layers outlined,
-//! and the list of what changed (`dev.compare`). Rendered once per document version. The branch
-//! review ([`crate::branch_ui`]) shows two versions with the same pieces.
+//! Dev Mode's compare view: a frame or section as it was when it was marked ready for dev, or in
+//! a saved version picked at the bottom, next to how it is now (side by side, or one over the
+//! other with a slider), the changed layers outlined, and the list of what changed
+//! (`dev.compare`). Rendered once per document version. The branch review ([`crate::branch_ui`])
+//! shows two versions with the same pieces.
 
 use std::sync::Arc;
 
 use egui::{Align2, Color32, CornerRadius, Id, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
-use figcraft_doc::{Document, NodeId};
+use figcraft_doc::{DevStatus, Document, NodeId};
 use figcraft_engine::devcompare::{self, ChangeKind, Comparison, LayerChange};
 use serde_json::json;
 
@@ -38,24 +39,40 @@ pub struct CompareView {
     pub mode: Mode,
     /// Where the overlay slider is (0 = all new, 1 = all old).
     pub split: f32,
+    /// The saved version compared with (its id); `None`: the snapshot from when it was marked
+    /// ready for dev.
+    pub version: Option<String>,
     /// The change row under the pointer (its layer is highlighted).
     hovered: Option<NodeId>,
     cache: Option<Cached>,
 }
 
 impl CompareView {
-    pub fn new(id: NodeId) -> Self {
-        Self { id, mode: Mode::default(), split: 0.5, hovered: None, cache: None }
+    pub fn new(id: NodeId, version: Option<String>) -> Self {
+        Self { id, mode: Mode::default(), split: 0.5, version, hovered: None, cache: None }
+    }
+
+    /// The view `dev.compare {show}` (or `ui.set`) asks for: `data` holds the layer's `id` and the
+    /// `version` to compare with.
+    pub fn requested(data: &serde_json::Value) -> Option<Self> {
+        let id = data.get("id").and_then(figcraft_engine::params::id_of)?;
+        Some(Self::new(id, data.get("version").and_then(serde_json::Value::as_str).map(str::to_string)))
     }
 }
 
-/// What the view shows, built for one version of the document.
+/// What the view shows, built for one version of the document and one "before".
 struct Cached {
     doc: Arc<Document>,
+    version: Option<String>,
+    /// The version's document (read once per version picked).
+    version_doc: Option<Arc<Document>>,
     cmp: Comparison,
     before: Option<Shot>,
     after: Option<Shot>,
 }
+
+/// A saved version as the picker lists it: (id, name, when).
+type VersionRow = (String, String, u64);
 
 /// One version rendered: its texture, the page area it shows and where each listed layer is.
 pub(crate) struct Shot {
@@ -129,15 +146,33 @@ pub fn show(app: &mut FigApp, ctx: &egui::Context) {
     let Some(mut view) = app.ui.dev.compare.take() else { return };
     let Ok(ds) = app.session.ds() else { return };
     let doc = ds.doc.clone();
-    if doc.node(view.id).is_none() {
+    let Some(node) = doc.node(view.id) else { return };
+    let ready = node.dev_status == DevStatus::ReadyForDev;
+    // Newest first; a version deleted meanwhile falls back to the ready-for-dev snapshot (or the
+    // newest version, for a layer that isn't ready for dev).
+    let versions: Vec<VersionRow> = ds.versions.iter().rev().map(|v| (v.id.clone(), v.name.clone(), v.time)).collect();
+    if view.version.as_ref().is_some_and(|v| !versions.iter().any(|(id, ..)| id == v)) || (!ready && view.version.is_none()) {
+        view.version = if ready { None } else { versions.first().map(|(id, ..)| id.clone()) };
+    }
+    if view.version.is_none() && !ready {
         return;
     }
-    if view.cache.as_ref().is_none_or(|c| !Arc::ptr_eq(&c.doc, &doc)) {
-        let cmp = devcompare::compare(&doc, view.id);
-        let before = devcompare::before_doc(&doc, view.id).and_then(|b| Shot::of_changes(ctx, &b, view.id, &cmp.changes, true));
+    if view.cache.as_ref().is_none_or(|c| !Arc::ptr_eq(&c.doc, &doc) || c.version != view.version) {
+        let kept = view.cache.take().filter(|c| c.version == view.version).and_then(|c| c.version_doc);
+        let version_doc = match &view.version {
+            Some(v) => kept.or_else(|| ds.versions.iter().find(|x| x.id == *v).and_then(|x| x.document().ok())),
+            None => None,
+        };
+        let (cmp, before) = match &version_doc {
+            Some(b) => (devcompare::compare_with(b, &doc, view.id), Some(b.clone())),
+            None if view.version.is_some() => (devcompare::empty(&doc, view.id), None),
+            None => (devcompare::compare(&doc, view.id), devcompare::before_doc(&doc, view.id).map(Arc::new)),
+        };
+        let before = before.and_then(|b| Shot::of_changes(ctx, &b, view.id, &cmp.changes, true));
         let after = Shot::of_changes(ctx, &doc, view.id, &cmp.changes, false);
-        view.cache = Some(Cached { doc: doc.clone(), cmp, before, after });
+        view.cache = Some(Cached { doc: doc.clone(), version: view.version.clone(), version_doc, cmp, before, after });
     }
+    let version_name = view.version.as_ref().and_then(|v| versions.iter().find(|(id, ..)| id == v)).map(|(_, name, _)| name.clone());
     let t = Tokens::get(ctx);
     let screen = ctx.content_rect();
     let size = vec2(1120.0_f32.min(screen.width() - 64.0).max(560.0), 700.0_f32.min(screen.height() - 96.0).max(320.0));
@@ -162,27 +197,16 @@ pub fn show(app: &mut FigApp, ctx: &egui::Context) {
             ui.horizontal_top(|ui| {
                 let images_w = size.x - LIST_W - 1.0;
                 let (r, _) = ui.allocate_exact_size(vec2(images_w, body_h), Sense::hover());
-                if !cache.cmp.snapshot {
-                    let msg = if cache.cmp.changed {
-                        tr(
-                            "What this changed from isn't known: it changed before FigCraft kept a copy of ready-for-dev frames. Resolve the change (or mark it ready again) to compare from now on.",
-                        )
-                    } else {
-                        tr("Nothing changed since this was marked ready for dev.")
-                    };
-                    message(ui, &t, r, msg);
-                } else if let (Some(before), Some(after)) = (&cache.before, &cache.after) {
-                    images(ui, &t, r, [(before, tr("Before")), (after, tr("Now"))], view.mode, &mut view.split, view.hovered);
-                }
+                compared(ui, r, cache, version_name.as_deref(), view.mode, &mut view.split, view.hovered);
                 let (line, _) = ui.allocate_exact_size(vec2(1.0, body_h), Sense::hover());
                 ui.painter().rect_filled(line, CornerRadius::ZERO, t.border);
                 ui.allocate_ui_with_layout(vec2(LIST_W, body_h), top_down, |ui| {
-                    if let Some(a) = list(ui, &t, &cache.cmp, &mut view.hovered) {
+                    if let Some(a) = list(ui, &t, &cache.cmp, view.version.is_some(), &mut view.hovered) {
                         action = Some(a);
                     }
                 });
             });
-            if let Some(a) = footer(ui, &t, &cache.cmp) {
+            if let Some(a) = footer(ui, &t, &cache.cmp, ready, &versions, view.version.as_deref()) {
                 action = Some(a);
             }
         });
@@ -197,6 +221,7 @@ pub fn show(app: &mut FigApp, ctx: &egui::Context) {
             }
         }
         Some(Action::Close) => open = false,
+        Some(Action::Against(v)) => view.version = v,
         None => {}
     }
     if open {
@@ -204,10 +229,37 @@ pub fn show(app: &mut FigApp, ctx: &egui::Context) {
     }
 }
 
+/// The images area: before and after, or a note saying why there is nothing to show.
+/// `version_name`: the saved version compared with (`None`: the ready-for-dev snapshot).
+fn compared(ui: &mut Ui, r: Rect, cache: &Cached, version_name: Option<&str>, mode: Mode, split: &mut f32, hovered: Option<NodeId>) {
+    let t = &Tokens::get(ui.ctx());
+    let against = version_name.is_some();
+    if !cache.cmp.snapshot {
+        let msg = if against {
+            tr("This version can't be read.")
+        } else if cache.cmp.changed {
+            tr(
+                "What this changed from isn't known: it changed before FigCraft kept a copy of ready-for-dev frames. Resolve the change (or mark it ready again) to compare from now on.",
+            )
+        } else {
+            tr("Nothing changed since this was marked ready for dev.")
+        };
+        message(ui, t, r, msg);
+    } else if !cache.cmp.changed && against {
+        message(ui, t, r, tr("Nothing changed since this version."));
+    } else if let (Some(before), Some(after)) = (&cache.before, &cache.after) {
+        images(ui, t, r, [(before, version_name.unwrap_or(tr("Before"))), (after, tr("Now"))], mode, split, hovered);
+    } else if against {
+        message(ui, t, r, tr("This version doesn't have it: all of it is new."));
+    }
+}
+
 enum Action {
     Select(NodeId),
     Resolve,
     Close,
+    /// Compare with this saved version (`None`: the snapshot from when it was marked ready).
+    Against(Option<String>),
 }
 
 /// The title row: `title` and `name`, the side by side / overlay switch and the close button.
@@ -325,7 +377,7 @@ fn pane(p: &egui::Painter, t: &Tokens, place: Place, shot: &Shot, hovered: Optio
 }
 
 /// The changed layers with their property changes; a click on a layer selects it.
-fn list(ui: &mut Ui, t: &Tokens, cmp: &Comparison, hovered: &mut Option<NodeId>) -> Option<Action> {
+fn list(ui: &mut Ui, t: &Tokens, cmp: &Comparison, from_version: bool, hovered: &mut Option<NodeId>) -> Option<Action> {
     let mut out = None;
     let summary = if !cmp.snapshot {
         tr("Changes unknown").to_string()
@@ -345,7 +397,11 @@ fn list(ui: &mut Ui, t: &Tokens, cmp: &Comparison, hovered: &mut Option<NodeId>)
     egui::ScrollArea::vertical().id_salt("compare_list").auto_shrink([false, false]).show(ui, |ui| {
         ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
         for c in &cmp.changes {
-            let tip = if c.change == ChangeKind::Removed { tr("Removed since it was marked") } else { tr("Select layer") };
+            let tip = match (c.change, from_version) {
+                (ChangeKind::Removed, false) => tr("Removed since it was marked"),
+                (ChangeKind::Removed, true) => tr("Removed since this version"),
+                _ => tr("Select layer"),
+            };
             let resp = change_row(ui, t, c.change, &c.name, c.depth, c.layers, false, tip);
             if resp.hovered() {
                 now_hovered = Some(c.id);
@@ -419,17 +475,42 @@ pub(crate) fn property_lines<'a>(ui: &mut Ui, t: &Tokens, depth: usize, lines: i
     }
 }
 
-fn footer(ui: &mut Ui, t: &Tokens, cmp: &Comparison) -> Option<Action> {
+/// Resolve and Close, and left of them what it compares with: the snapshot from when it was
+/// marked ready for dev (`ready`) or one of the saved `versions` (`version`, the one picked).
+fn footer(ui: &mut Ui, t: &Tokens, cmp: &Comparison, ready: bool, versions: &[VersionRow], version: Option<&str>) -> Option<Action> {
     let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), BAR_H + 1.0), Sense::hover());
     ui.painter().rect_filled(Rect::from_min_size(r.min, vec2(r.width(), 1.0)), CornerRadius::ZERO, t.border);
     let mut out = None;
     let inner = Rect::from_min_max(pos2(r.min.x + 16.0, r.min.y + 1.0), pos2(r.max.x - 16.0, r.max.y));
+    ui.scope_builder(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        if !versions.is_empty() {
+            widgets::label(ui, tr("Compare with"), t.text_secondary);
+            let picked = version.and_then(|v| versions.iter().find(|(id, ..)| id == v));
+            let label = picked.map_or_else(|| tr("When marked ready").to_string(), |(_, name, _)| name.clone());
+            let resp = widgets::dropdown(ui, &label, 220.0, Some(Icon::Clock));
+            crate::right::menu_popup(&resp).show(|ui| {
+                if ready && crate::right::menu_check(ui, version.is_none(), tr("When marked ready"), "") {
+                    out = Some(Action::Against(None));
+                    ui.close();
+                }
+                for (id, name, time) in versions {
+                    if crate::right::menu_check(ui, version == Some(id.as_str()), name, &crate::comments::ago_long(*time)) {
+                        out = Some(Action::Against(Some(id.clone())));
+                        ui.close();
+                    }
+                }
+            });
+        }
+    });
     ui.scope_builder(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::right_to_left(egui::Align::Center)), |ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
-        let resolve = widgets::button(ui, tr("Resolve change"), true, cmp.changed)
-            .on_hover_text(tr("Back to Ready for dev: the next change compares with how it is now"));
-        if resolve.clicked() {
-            out = Some(Action::Resolve);
+        if version.is_none() {
+            let resolve = widgets::button(ui, tr("Resolve change"), true, cmp.changed)
+                .on_hover_text(tr("Back to Ready for dev: the next change compares with how it is now"));
+            if resolve.clicked() {
+                out = Some(Action::Resolve);
+            }
         }
         if widgets::button(ui, tr("Close"), false, true).clicked() {
             out = Some(Action::Close);

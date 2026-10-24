@@ -239,6 +239,7 @@ pub fn handle(app: &mut FigApp, ctx: &Context, method: &str, p: &Value) -> Resul
             let cmd = p.get("command").and_then(Value::as_str).ok_or("`command` required")?;
             let params = p.get("params").cloned().unwrap_or(json!({}));
             let r = app.session.execute(cmd, &params).map_err(|e| e.to_string());
+            app.clear_comment_draft_after_tool_set(cmd, r.is_ok());
             // Programmatic calls never open dialogs.
             app.session.ui_requests.retain(|u| !u.kind.starts_with("dialog."));
             app.handle_ui_requests();
@@ -636,12 +637,16 @@ pub fn handle(app: &mut FigApp, ctx: &Context, method: &str, p: &Value) -> Resul
             if let Some(v) = p.get("exportPreview").and_then(Value::as_bool) {
                 app.ui.export_thumb = v;
             }
-            // Dev Mode's compare view: a ready-for-dev frame or section opens it, null closes it;
+            // Dev Mode's compare view: a frame or section opens it, null closes it; `devCompareVersion`
+            // the saved version it compares with (null: when it was marked ready for dev),
             // `devCompareMode` is sideBySide or overlay, `devCompareSplit` the overlay slider (0–1).
             if let Some(v) = p.get("devCompare") {
-                app.ui.dev.compare = figcraft_engine::params::id_of(v).map(crate::dev_compare::CompareView::new);
+                app.ui.dev.compare = figcraft_engine::params::id_of(v).map(|id| crate::dev_compare::CompareView::new(id, None));
             }
             if let Some(c) = app.ui.dev.compare.as_mut() {
+                if let Some(v) = p.get("devCompareVersion") {
+                    c.version = v.as_str().map(str::to_string);
+                }
                 match p.get("devCompareMode").and_then(Value::as_str) {
                     Some("overlay") => c.mode = crate::dev_compare::Mode::Overlay,
                     Some("sideBySide") => c.mode = crate::dev_compare::Mode::SideBySide,

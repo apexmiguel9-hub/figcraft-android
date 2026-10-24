@@ -9,7 +9,7 @@ use figcraft_doc::{Document, NodeId, NodeKind, StyleKind};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::cmd::lists::{BoundList, list_binding};
+use crate::cmd::lists::{BoundList, list_binding, rebind_edited_paint};
 use crate::params::*;
 use crate::{CommandSpec, Result, Session, bad, spec};
 
@@ -153,37 +153,6 @@ fn checked_targets(s: &Session, p: &Value, cmd: &str) -> Result<Vec<PaintTarget>
     Ok(ts)
 }
 
-/// Detach variables only where the explicit edit changed their value. In particular, an
-/// opacity edit keeps the color binding and a range edit keeps other characters' node bindings.
-fn unbind_changed(n: &mut figcraft_doc::Node, t: &PaintTarget, old: &Paint, new: &Paint) {
-    // Range fills override the node's paints; the node binding still belongs to other chars.
-    if t.range.is_some() {
-        return;
-    }
-    let list = if t.fills { BoundList::Fills } else { BoundList::Strokes };
-    n.bound.retain(|key, _| {
-        let Some((l, index, field)) = list_binding(key) else { return true };
-        if l != list || index != t.index {
-            return true;
-        }
-        match field {
-            "color" => match (&old.kind, &new.kind) {
-                (PaintKind::Solid { color: a }, PaintKind::Solid { color: b }) => a == b,
-                _ => false,
-            },
-            "opacity" => old.opacity == new.opacity,
-            _ => {
-                let stop = field.strip_prefix("stops/").and_then(|s| s.strip_suffix("/color")).and_then(|s| s.parse::<usize>().ok());
-                match (stop, &old.kind, &new.kind) {
-                    (Some(i), PaintKind::Gradient(a), PaintKind::Gradient(b)) => a.stops.get(i).map(|s| s.color) == b.stops.get(i).map(|s| s.color),
-                    (Some(_), _, _) => false,
-                    _ => old == new,
-                }
-            }
-        }
-    });
-}
-
 fn set_paint(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "selection.setPaint";
     let targets = checked_targets(s, p, CMD)?;
@@ -197,18 +166,22 @@ fn set_paint(s: &mut Session, p: &Value) -> Result<Value> {
         let old = slot.clone();
         *slot = paint.clone();
         let n = s.doc_mut()?.get_mut(target.id)?;
-        unbind_changed(n, target, &old, &paint);
+        // Variables detach only where the edit changed their value; range fills override the node's
+        // paints, whose bindings still belong to the other characters.
         if let Some((start, end)) = target.range {
             if let NodeKind::Text(t) = &mut n.kind {
                 t.restyle(start, end, |style| style.fills = Some(paints.clone()));
             }
-        } else if target.fills {
+            continue;
+        }
+        if target.fills {
             n.fills = paints;
             n.styles.fill = None;
         } else {
             n.strokes = paints;
             n.styles.stroke = None;
         }
+        rebind_edited_paint(n, target.fills, target.index, &old);
     }
     Ok(json!({"ok": true}))
 }

@@ -460,4 +460,6 @@ import what you need from `figcraft`.
   vectors, components or variables).
 - Panels: no images, sliders or free layout inside a panel.
 - Data in the document: plugins keep data on layers (pages included) with `node.set {props:
-  {pluginData: {key: value}}}`; there is no separate per-document store.
+  {pluginData: {key: value}}}` (a `null` value removes a key) and read it back with `node.get`, which
+  reports `pluginData: {key: value}` (values as strings) when a layer has any; there is no separate
+  per-document store.

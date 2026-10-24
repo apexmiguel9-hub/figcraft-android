@@ -8,7 +8,6 @@ use egui::{Color32, CornerRadius, Id, Pos2, Rect, Shape, Stroke, StrokeKind, pos
 use figcraft_doc::{Document, NodeId};
 use serde_json::{Value, json};
 
-use crate::theme::ACCENT;
 use crate::{FigApp, RightTab};
 
 const HANDLE_R: f32 = 7.0;
@@ -140,7 +139,7 @@ fn arrow(painter: &egui::Painter, pts: &[Pos2; 4], col: Color32) {
 }
 
 fn plus_handle(painter: &egui::Painter, c: Pos2, hot: bool) {
-    painter.circle_filled(c, HANDLE_R + if hot { 1.0 } else { 0.0 }, ACCENT);
+    painter.circle_filled(c, HANDLE_R + if hot { 1.0 } else { 0.0 }, crate::theme::canvas_accent(painter.ctx()));
     painter.circle_stroke(c, HANDLE_R + if hot { 1.0 } else { 0.0 }, Stroke::new(1.5, Color32::WHITE));
     painter.line_segment([c - vec2(3.5, 0.0), c + vec2(3.5, 0.0)], Stroke::new(1.5, Color32::WHITE));
     painter.line_segment([c - vec2(0.0, 3.5), c + vec2(0.0, 3.5)], Stroke::new(1.5, Color32::WHITE));
@@ -161,7 +160,11 @@ pub fn draw(app: &FigApp, painter: &egui::Painter) {
         let selected = sel.contains(&nd.source);
         let is_open = open == Some((nd.source, nd.index));
         let near = dragging.is_none() && hover.is_some_and(|q| bezier_distance(&nd.pts, q) < 5.0);
-        let col = if selected || is_open || near { ACCENT } else { ACCENT.gamma_multiply(0.55) };
+        let col = if selected || is_open || near {
+            crate::theme::canvas_accent(painter.ctx())
+        } else {
+            crate::theme::canvas_accent(painter.ctx()).gamma_multiply(0.55)
+        };
         let w = if is_open || near {
             2.5
         } else if selected {
@@ -177,7 +180,12 @@ pub fn draw(app: &FigApp, painter: &egui::Painter) {
                 .and_then(|it| figcraft_doc::proto::walk(&it.actions).find_map(|a| a.dest()))
             && let Some(r) = screen_rect(app, doc, dest)
         {
-            painter.rect_stroke(r, CornerRadius::ZERO, Stroke::new(1.0, ACCENT.gamma_multiply(0.7)), StrokeKind::Outside);
+            painter.rect_stroke(
+                r,
+                CornerRadius::ZERO,
+                Stroke::new(1.0, crate::theme::canvas_accent(painter.ctx()).gamma_multiply(0.7)),
+                StrokeKind::Outside,
+            );
         }
         painter.add(egui::epaint::CubicBezierShape::from_points_stroke(nd.pts, false, Color32::TRANSPARENT, Stroke::new(w, col)));
         painter.circle_filled(nd.pts[0], 3.5, col);
@@ -190,12 +198,17 @@ pub fn draw(app: &FigApp, painter: &egui::Painter) {
                 && doc.top_level_frame(d.source) != Some(f)
                 && let Some(r) = screen_rect(app, doc, f)
             {
-                painter.rect_stroke(r, CornerRadius::ZERO, Stroke::new(2.0, ACCENT), StrokeKind::Outside);
+                painter.rect_stroke(r, CornerRadius::ZERO, Stroke::new(2.0, crate::theme::canvas_accent(painter.ctx())), StrokeKind::Outside);
             }
             let dx = ((d.pos.x - d.from.x).abs() * 0.5).max(30.0) * if d.pos.x >= d.from.x { 1.0 } else { -1.0 };
             let pts = [d.from, d.from + vec2(dx, 0.0), d.pos - vec2(dx, 0.0), d.pos];
-            painter.add(egui::epaint::CubicBezierShape::from_points_stroke(pts, false, Color32::TRANSPARENT, Stroke::new(2.0, ACCENT)));
-            arrow(painter, &pts, ACCENT);
+            painter.add(egui::epaint::CubicBezierShape::from_points_stroke(
+                pts,
+                false,
+                Color32::TRANSPARENT,
+                Stroke::new(2.0, crate::theme::canvas_accent(painter.ctx())),
+            ));
+            arrow(painter, &pts, crate::theme::canvas_accent(painter.ctx()));
             plus_handle(painter, d.from, true);
         }
         None => {
@@ -281,6 +294,26 @@ pub fn input(app: &mut FigApp, ui: &egui::Ui, resp: &egui::Response) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A press on a connection handle takes the keyboard from the Pages list, as a press anywhere
+    /// else on the canvas does, so a later Delete can't take the page (#859).
+    #[test]
+    fn a_press_on_a_connection_handle_ends_the_pages_list_focus() {
+        let mut s = figcraft_engine::Session::new();
+        let a = s.execute("frame.create", &json!({"x": 0, "y": 0, "width": 200, "height": 150})).unwrap();
+        let a = crate::present_tests::id(&a);
+        s.execute("select.set", &json!({"ids": [a]})).unwrap();
+        let mut u = crate::present_tests::Ui::new(s);
+        u.app.ui.right_tab = RightTab::Prototype;
+        u.run("view.zoomSelection", json!({}));
+        u.frames(2, Vec::new);
+        u.app.ui.pages_focus = u.app.session.ds().ok().map(|d| d.uid);
+        let doc = u.app.session.doc().unwrap().clone();
+        let (_, at) = *handles(&u.app, &doc, &[a]).first().unwrap();
+        u.button(at, true);
+        assert!(u.app.ui.pages_focus.is_none());
+        u.button(at, false);
+    }
 
     #[test]
     fn curves_leave_the_facing_side() {

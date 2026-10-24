@@ -17,7 +17,7 @@ use crate::a11y::Tip;
 use crate::i18n::tr;
 use crate::icons::{self, Icon};
 use crate::theme::{Tokens, regular, semibold};
-use crate::widgets::{self, BindEvent, Edit, FieldEdit, Lead};
+use crate::widgets::{self, BindEvent, Edit, Empty, FieldEdit, Lead};
 
 /// What picking a variable does.
 #[derive(Clone)]
@@ -258,7 +258,23 @@ pub fn number_field_or(
     lead: Lead,
     suffix: &str,
 ) -> Option<FieldEdit> {
-    number_field_edit(app, ui, ids, field, id, value, width, empty, lead, suffix)?.settled()
+    number_field_edit(app, ui, ids, field, id, value, width, Empty::Text(empty), lead, suffix)?.settled()
+}
+
+/// [`number_field_or`] for a field where 0 is its automatic value (a layout grid's width or
+/// count): typing the word for Auto sets 0 ([`Empty::Auto`]).
+pub fn number_field_auto(
+    app: &mut FigApp,
+    ui: &mut Ui,
+    ids: &[NodeId],
+    field: &str,
+    id: Id,
+    value: Option<f64>,
+    width: f32,
+    lead: Lead,
+    suffix: &str,
+) -> Option<FieldEdit> {
+    number_field_edit(app, ui, ids, field, id, value, width, Empty::Auto, lead, suffix)?.settled()
 }
 
 /// [`number_field`] over several layers: a relative edit of mixed values comes back as one for
@@ -274,7 +290,7 @@ pub fn number_field_mixed(
     suffix: &str,
     width: f32,
 ) -> Option<Edit> {
-    number_field_edit(app, ui, ids, field, id, value, width, tr("Mixed"), lead, suffix)
+    number_field_edit(app, ui, ids, field, id, value, width, Empty::Text(tr("Mixed")), lead, suffix)
 }
 
 fn number_field_edit(
@@ -285,7 +301,7 @@ fn number_field_edit(
     id: Id,
     value: Option<f64>,
     width: f32,
-    empty: &str,
+    empty: Empty<'_>,
     lead: Lead,
     suffix: &str,
 ) -> Option<Edit> {

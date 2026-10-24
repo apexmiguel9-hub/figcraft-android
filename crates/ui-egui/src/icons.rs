@@ -85,6 +85,8 @@ icons! {
     CornerRadius,
     Angle,
     IndependentCorners,
+    /// Individual padding: a frame with one inward tick per side, each set alone.
+    IndependentPadding,
     LinkOn,
     LinkOff,
     LayoutH,
@@ -139,6 +141,11 @@ icons! {
     Fixed,
     PaddingH,
     PaddingV,
+    /// Individual padding sides: a frame with the controlled side filled.
+    PaddingTop,
+    PaddingRight,
+    PaddingBottom,
+    PaddingLeft,
     Gap,
     Reset,
     Detach,
@@ -421,6 +428,7 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
     draw(&p, icon);
 }
 
+/// Draw `icon` on the 16-unit grid through `p`, which maps grid units to the target box.
 fn draw(p: &P, icon: Icon) {
     use Icon::*;
     match icon {
@@ -446,18 +454,23 @@ fn draw(p: &P, icon: Icon) {
             p.path(&h, false);
         }
         Frame => {
-            p.line(5.5, 2.0, 5.5, 14.0);
-            p.line(10.5, 2.0, 10.5, 14.0);
-            p.line(2.0, 5.5, 14.0, 5.5);
-            p.line(2.0, 10.5, 14.0, 10.5);
+            // Inset a unit from the box: four long hinted strokes read heavier than the
+            // anti-aliased outlines beside them at full size (#737).
+            p.line(5.5, 3.0, 5.5, 13.0);
+            p.line(10.5, 3.0, 10.5, 13.0);
+            p.line(3.0, 5.5, 13.0, 5.5);
+            p.line(3.0, 10.5, 13.0, 10.5);
         }
         Section | Section2 => {
             p.rect(2.5, 5.5, 13.5, 13.5, 1.0);
             p.fill_rect(2.0, 2.0, 9.0, 6.0, 1.0);
         }
         Slice => {
-            p.rect(2.5, 2.5, 13.5, 13.5, 0.0);
-            p.line(2.5, 13.5, 13.5, 2.5);
+            // A knife, one silhouette (#739): a slim blade to the top right, outlined like the
+            // rest of the row, and a solid handle whose end overlaps the blade's base so the two
+            // join at every size.
+            p.poly(&[(13.5, 2.5), (5.0, 8.0), (8.0, 11.0)], true);
+            p.fill(&capsule((2.8, 13.2), (5.9, 10.1), 1.3));
         }
         Bend => {
             // A curve with a smooth point and its handle line.
@@ -523,11 +536,12 @@ fn draw(p: &P, icon: Icon) {
             p.line(9.0, 4.5, 11.5, 7.0);
         }
         Text => {
-            p.line(2.0, 3.5, 13.0, 3.5);
-            p.line(7.5, 3.0, 7.5, 13.0);
-            p.line(2.5, 3.0, 2.5, 6.0);
-            p.line(12.5, 3.0, 12.5, 6.0);
-            p.line(5.0, 12.5, 10.0, 12.5);
+            // Inset like the Frame mark, so its long strokes don't outweigh the outlines (#737).
+            p.line(3.0, 3.5, 12.0, 3.5);
+            p.line(7.5, 3.0, 7.5, 12.5);
+            p.line(3.5, 3.0, 3.5, 5.5);
+            p.line(11.5, 3.0, 11.5, 5.5);
+            p.line(5.5, 12.5, 9.5, 12.5);
         }
         Comment => {
             let mut b: Vec<(f32, f32)> = arc_pts(8.5, 7.5, 5.0, 2.75, TAU + 1.95).collect();
@@ -705,6 +719,14 @@ fn draw(p: &P, icon: Icon) {
             for (x, y, dx, dy) in [(2.5, 2.5, 1.0, 1.0), (13.5, 2.5, -1.0, 1.0), (2.5, 13.5, 1.0, -1.0), (13.5, 13.5, -1.0, -1.0)] {
                 p.corner(x, y, dx, dy, 4.0, 2.0);
             }
+        }
+        IndependentPadding => {
+            // A frame outline with one inward tick per side: each side's padding, set alone.
+            p.rect(2.5, 2.5, 13.5, 13.5, 2.0);
+            p.line(8.0, 2.5, 8.0, 5.0);
+            p.line(13.5, 8.0, 11.0, 8.0);
+            p.line(8.0, 13.5, 8.0, 11.0);
+            p.line(2.5, 8.0, 5.0, 8.0);
         }
         LinkOn | Link => {
             p.path(&capsule((4.0, 12.0), (6.5, 9.5), 2.4), true);
@@ -923,12 +945,32 @@ fn draw(p: &P, icon: Icon) {
             p.line(3.0, 7.5, 13.0, 7.5);
         }
         PaddingH => {
-            p.rect(2.5, 3.5, 13.5, 12.5, 1.0);
-            p.fill_rect(5.0, 6.0, 11.0, 10.0, 0.0);
+            // Horizontal padding: bars down the padded left and right sides in their frame.
+            p.rect(2.5, 2.5, 13.5, 13.5, 1.0);
+            p.fill_rect(2.5, 2.5, 5.5, 13.5, 1.0);
+            p.fill_rect(10.5, 2.5, 13.5, 13.5, 1.0);
         }
         PaddingV => {
-            p.rect(3.5, 2.5, 12.5, 13.5, 1.0);
-            p.fill_rect(6.0, 5.0, 10.0, 11.0, 0.0);
+            // Vertical padding: bars across the padded top and bottom in their frame.
+            p.rect(2.5, 2.5, 13.5, 13.5, 1.0);
+            p.fill_rect(2.5, 2.5, 13.5, 5.5, 1.0);
+            p.fill_rect(2.5, 10.5, 13.5, 13.5, 1.0);
+        }
+        PaddingTop => {
+            p.rect(2.5, 2.5, 13.5, 13.5, 1.0);
+            p.fill_rect(2.5, 2.5, 13.5, 5.5, 1.0);
+        }
+        PaddingRight => {
+            p.rect(2.5, 2.5, 13.5, 13.5, 1.0);
+            p.fill_rect(10.5, 2.5, 13.5, 13.5, 1.0);
+        }
+        PaddingBottom => {
+            p.rect(2.5, 2.5, 13.5, 13.5, 1.0);
+            p.fill_rect(2.5, 10.5, 13.5, 13.5, 1.0);
+        }
+        PaddingLeft => {
+            p.rect(2.5, 2.5, 13.5, 13.5, 1.0);
+            p.fill_rect(2.5, 2.5, 5.5, 13.5, 1.0);
         }
         Online => {
             p.circle(8.0, 8.0, 5.5);
@@ -1225,5 +1267,60 @@ mod tests {
         let (rotation, radius) = (marks(&shapes, lead("pos_rot")), marks(&shapes, lead("ap_rad")));
         assert!(!rotation.is_empty() && !radius.is_empty(), "both draw an icon");
         assert_ne!(rotation, radius);
+    }
+
+    /// The shapes `icon` paints in a 32-point box at the origin: two points per grid unit.
+    fn shapes_at_32(icon: Icon) -> Vec<Shape> {
+        let ctx = egui::Context::default();
+        let mut out =
+            ctx.run_ui(egui::RawInput::default(), |ui| paint(ui.painter(), Rect::from_min_size(Pos2::ZERO, Vec2::splat(32.0)), icon, Color32::WHITE));
+        out.textures_delta.clear();
+        out.shapes.into_iter().map(|c| c.shape).collect()
+    }
+
+    /// Frame and Text stay a grid unit inside the box, so their long hinted strokes don't
+    /// outweigh the outlines beside them in the toolbar (#737).
+    #[test]
+    fn frame_and_text_marks_are_inset() {
+        for icon in [Icon::Frame, Icon::Text] {
+            let pts: Vec<Pos2> = shapes_at_32(icon)
+                .iter()
+                .flat_map(|s| match s {
+                    Shape::LineSegment { points, .. } => points.to_vec(),
+                    other => panic!("{icon:?} draws straight strokes only: {other:?}"),
+                })
+                .collect();
+            assert!(!pts.is_empty());
+            for p in pts {
+                // Grid units 3..13, two points each.
+                assert!((6.0..=26.0).contains(&p.x) && (6.0..=26.0).contains(&p.y), "{icon:?} reaches {p:?}");
+            }
+        }
+    }
+
+    /// Slice is one knife (#739): an outlined blade and a solid handle that covers the middle of
+    /// the blade's base, so the two read as one mark rather than separate pieces.
+    #[test]
+    fn slice_is_one_connected_knife() {
+        let shapes = shapes_at_32(Icon::Slice);
+        let paths: Vec<_> = shapes
+            .iter()
+            .map(|s| match s {
+                Shape::Path(p) => p,
+                other => panic!("Slice draws paths only: {other:?}"),
+            })
+            .collect();
+        let blade = paths.iter().find(|p| p.closed && p.fill == Color32::TRANSPARENT).expect("an outlined blade");
+        let handle = paths.iter().find(|p| p.fill != Color32::TRANSPARENT).expect("a solid handle");
+        assert_eq!((paths.len(), blade.points.len()), (2, 3), "a blade and a handle, nothing else");
+        // The blade's base runs between its second and third points; the handle is convex.
+        let base = blade.points[1] + (blade.points[2] - blade.points[1]) / 2.0;
+        let h = &handle.points;
+        let side = |i: usize| {
+            let (a, b) = (h[i], h[(i + 1) % h.len()]);
+            (b - a).x * (base - a).y - (b - a).y * (base - a).x
+        };
+        let inside = (0..h.len()).all(|i| side(i) >= 0.0) || (0..h.len()).all(|i| side(i) <= 0.0);
+        assert!(inside, "the handle covers the blade's base at {base:?}");
     }
 }

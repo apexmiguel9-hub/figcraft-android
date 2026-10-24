@@ -13,10 +13,11 @@
 //! and it fades a few seconds after the last change (frames are asked for only until then).
 //! Spotlight: your avatar's menu asks everyone to follow you; a banner says so and stops it.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use egui::{Align2, Color32, CornerRadius, Pos2, Rect, Sense, Shape, Stroke, Ui, pos2, vec2};
-use figcraft_engine::live::{Access, PEOPLE, Role, SessionId, Share, Signal, Status, Via, initials, parse_color, presence_page};
+use figcraft_engine::live::{Access, PEOPLE, Role, SessionId, Share, Signal, Status, TOO_LARGE_TO_JOIN, Via, initials, parse_color, presence_page};
 use serde_json::{Value, json};
 
 use crate::FigApp;
@@ -595,7 +596,7 @@ pub fn share_popover(app: &mut FigApp, anchor: &egui::Response) {
                 (Status::Reconnecting { attempt }, _) => {
                     (trf("Connection lost, reconnecting (attempt {attempt})…", &[("attempt", attempt)]), t.text_secondary)
                 }
-                (Status::Failed { .. }, _) => (status.label(), t.danger),
+                (Status::Failed { reason }, _) => (failure_text(reason).into_owned(), t.danger),
                 _ => (tr(&status.label()).to_string(), t.text_secondary),
             };
             if !line.is_empty() {
@@ -695,9 +696,16 @@ pub fn join_field(app: &mut FigApp, ui: &mut Ui, typed: &mut String, id: egui::I
 pub fn join_status(app: &FigApp, ui: &mut Ui, t: &Tokens, session: SessionId) {
     match app.session.live.get(session).map(|l| &l.status) {
         Some(Status::Connecting) => widgets::label(ui, tr("Joining…"), t.text_secondary),
-        Some(Status::Failed { reason }) => widgets::label(ui, reason, t.danger),
+        Some(Status::Failed { reason }) => widgets::label(ui, &failure_text(reason), t.danger),
         _ => {}
     }
+}
+
+/// Why a live session failed, in the UI language when it is a reason the UI knows (the transport's
+/// English otherwise).
+pub(crate) fn failure_text(reason: &str) -> Cow<'_, str> {
+    let mb = TOO_LARGE_TO_JOIN.split_once("{mb}").and_then(|(before, after)| reason.strip_prefix(before)?.strip_suffix(after));
+    mb.map_or(Cow::Borrowed(reason), |mb| Cow::Owned(trf(TOO_LARGE_TO_JOIN, &[("mb", &mb)])))
 }
 
 /// Not in a session: your name, how to share (online or on the local network), start; or join

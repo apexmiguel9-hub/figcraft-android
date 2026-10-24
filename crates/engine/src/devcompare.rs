@@ -1,6 +1,7 @@
 //! Dev Mode "Compare changes": what changed in a ready-for-dev frame or section since it was
-//! marked. The document keeps a snapshot of the layer from just before its first change
-//! ([`figcraft_doc::handoff`]); this compares it with the layer as it is now, layer by layer
+//! marked, or in any frame or section since a saved version. The document keeps a snapshot of a
+//! ready-for-dev layer from just before its first change ([`figcraft_doc::handoff`]); this compares
+//! it (or the layer in the version) with the layer as it is now, layer by layer
 //! (matched by id): layers added and removed, and for the others their properties formatted the
 //! way Inspect shows them (`width 120 → 136`, `fill #FF0000 → #E03030`).
 
@@ -93,20 +94,25 @@ pub struct Comparison {
     pub truncated: bool,
 }
 
-/// The changes to layer `id` since it was marked ready for dev (empty when it hasn't changed).
-pub fn compare(doc: &Document, id: NodeId) -> Comparison {
-    let n = doc.node(id);
-    let mut out = Comparison {
+/// Nothing compared yet for layer `id` of `doc` (`snapshot` false: the before isn't known).
+pub fn empty(doc: &Document, id: NodeId) -> Comparison {
+    Comparison {
         id,
-        name: n.map(|n| n.name.clone()).unwrap_or_default(),
-        changed: n.is_some_and(|n| n.dev_status == DevStatus::ReadyForDev && n.dev_changed),
+        name: doc.node(id).map(|n| n.name.clone()).unwrap_or_default(),
+        changed: false,
         snapshot: false,
         changes: Vec::new(),
         added: 0,
         removed: 0,
         modified: 0,
         truncated: false,
-    };
+    }
+}
+
+/// The changes to layer `id` since it was marked ready for dev (empty when it hasn't changed).
+pub fn compare(doc: &Document, id: NodeId) -> Comparison {
+    let mut out = empty(doc, id);
+    out.changed = doc.node(id).is_some_and(|n| n.dev_status == DevStatus::ReadyForDev && n.dev_changed);
     if !out.changed {
         return out;
     }
@@ -114,6 +120,21 @@ pub fn compare(doc: &Document, id: NodeId) -> Comparison {
     out.snapshot = true;
     let mut w = Walk { before: &before, now: doc, now_ids: bounded_set(doc, id), before_ids: bounded_set(&before, id), out: &mut out };
     w.layer(id, 0);
+    out
+}
+
+/// The changes to layer `id` of `now` since `before` (a saved version of the same file: layers
+/// match by id). A layer the version doesn't have was added as a whole.
+pub fn compare_with(before: &Document, now: &Document, id: NodeId) -> Comparison {
+    let mut out = empty(now, id);
+    out.snapshot = true;
+    let mut w = Walk { before, now, now_ids: bounded_set(now, id), before_ids: bounded_set(before, id), out: &mut out };
+    if before.contains(id) {
+        w.layer(id, 0);
+    } else {
+        w.whole(now, id, 0, ChangeKind::Added);
+    }
+    out.changed = !out.changes.is_empty();
     out
 }
 
@@ -127,17 +148,7 @@ pub fn before_doc(doc: &Document, id: NodeId) -> Option<Document> {
 /// Every layer that changed between two versions of a whole document, page by page (pages added
 /// or removed as a whole), for reviewing a branch.
 pub fn compare_docs(before: &Document, now: &Document) -> Comparison {
-    let mut out = Comparison {
-        id: NodeId(0),
-        name: now.name.clone(),
-        changed: false,
-        snapshot: true,
-        changes: Vec::new(),
-        added: 0,
-        removed: 0,
-        modified: 0,
-        truncated: false,
-    };
+    let mut out = Comparison { name: now.name.clone(), snapshot: true, ..empty(now, NodeId(0)) };
     let mut w = Walk { before, now, now_ids: now.ids().collect(), before_ids: before.ids().collect(), out: &mut out };
     for p in &now.pages {
         if before.contains(*p) {

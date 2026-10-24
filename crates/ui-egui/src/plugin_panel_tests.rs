@@ -13,7 +13,7 @@ use crate::layers_drag_tests::Ui;
 
 /// A plugin whose first call shows a panel with every kind of control and whose later calls (the
 /// panel's events) make a rectangle.
-fn panel_module() -> Vec<u8> {
+pub(crate) fn panel_module() -> Vec<u8> {
     let spec = json!({"title": "Test panel", "controls": [
         {"type": "note", "label": "Hello from the plugin"},
         {"type": "number", "name": "size", "label": "Size", "value": 10},

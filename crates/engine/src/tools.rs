@@ -447,8 +447,10 @@ pub struct ToolState {
     /// removes; Alt merges).
     pub shape_builder: Option<std::sync::Arc<crate::shapebuilder::Arrangement>>,
     pub builder_remove: bool,
-    /// Show distances from the selection on hover without holding Alt (Dev mode inspection).
-    pub redlines: bool,
+    /// Dev Mode: the canvas inspects. Hovering shows distances from the selection without Alt, and
+    /// presses select, pan and comment but never edit the design (no moving, resizing, drawing,
+    /// or editing text or vectors).
+    pub dev_mode: bool,
     /// Pen snap targets, kept while hovering (see `vectoredit::point_snap`).
     pub(crate) pen_targets: Option<crate::vectoredit::point_snap::PenTargets>,
     /// The Scale tool's anchor: column and row (0 start, 1 middle, 2 end) of the point of the
@@ -940,6 +942,21 @@ impl Session {
         }
     }
 
+    /// The tool pointer events go to: in Dev Mode every tool but the hand and comments selects.
+    fn acting_tool(&self) -> ToolId {
+        match self.tool.tool {
+            t if self.tool.dev_mode && !matches!(t, ToolId::Hand | ToolId::Comment) => ToolId::Move,
+            t => t,
+        }
+    }
+
+    /// Drop the gesture under way (a drag, a resize, a shape being drawn), restoring the document
+    /// as Escape does; the UI calls it when Dev Mode starts, where nothing may move.
+    pub fn drop_gesture(&mut self) -> Result<()> {
+        self.tool.gesture = Gesture::None;
+        self.cancel_interaction()
+    }
+
     /// Feed one pointer event to the current tool.
     pub fn pointer(&mut self, ev: &PointerEvent) -> Result<()> {
         // A held button sends the same move every frame: running the gesture again would only
@@ -952,11 +969,12 @@ impl Session {
             }
             self.tool.last_move = Some(ev.clone());
         }
-        let tool = self.tool.tool;
-        if matches!(tool, ToolId::Move | ToolId::Scale) && self.origin_pointer(ev)? {
+        let tool = self.acting_tool();
+        let edits = matches!(tool, ToolId::Move | ToolId::Scale) && !self.tool.dev_mode;
+        if edits && self.origin_pointer(ev)? {
             return Ok(());
         }
-        if matches!(tool, ToolId::Move | ToolId::Scale) && self.ds().is_ok_and(|d| d.vector_edit.is_some()) && self.vector_pointer(ev)? {
+        if edits && self.ds().is_ok_and(|d| d.vector_edit.is_some()) && self.vector_pointer(ev)? {
             return Ok(());
         }
         if tool == ToolId::ShapeBuilder {
@@ -1016,7 +1034,7 @@ impl Session {
     }
 
     fn hover(&mut self, ev: &PointerEvent) -> Result<()> {
-        let tool = self.tool.tool;
+        let tool = self.acting_tool();
         let ds = self.ds()?;
         let (doc, sel, page) = (ds.doc.clone(), ds.selection.clone(), ds.page);
         let mut cursor = tool.cursor();
@@ -1045,7 +1063,7 @@ impl Session {
         if matches!(tool, ToolId::Move | ToolId::Scale) && on_edited {
             cursor = Cursor::Text;
         } else if matches!(tool, ToolId::Move | ToolId::Scale) && arc_hover.is_none() && shape_hover.is_none() {
-            if let Some(h) = handle_at(&doc, &sel, ev.p(), ev.zoom) {
+            if let Some(h) = handle_at(&doc, &sel, ev.p(), ev.zoom).filter(|_| !self.tool.dev_mode) {
                 cursor = resize_cursor(&doc, &sel, h);
             } else {
                 let leaf = self.hit(&doc, page, ev.p(), ev.tol() * 2.0);
@@ -1054,10 +1072,10 @@ impl Session {
                 }
                 hover = label_at(&doc, page, &self.tool.labels, ev.p()).or_else(|| leaf.map(|leaf| select_target(&doc, leaf, &sel, ev.cmd)));
                 // Alt over a selected layer: a drag from here duplicates it.
-                if ev.alt && tool == ToolId::Move && hover.is_some_and(|h| sel.contains(&h) && !locked_in(&doc, h)) {
+                if ev.alt && !self.tool.dev_mode && tool == ToolId::Move && hover.is_some_and(|h| sel.contains(&h) && !locked_in(&doc, h)) {
                     cursor = Cursor::Copy;
                 }
-                if ev.alt || self.tool.redlines {
+                if ev.alt || self.tool.dev_mode {
                     use crate::distance::{Hover, guide_at, hover_lines, padding_frame, parent_of};
                     // Shift+Alt over an auto layout frame: its padding and gaps. Otherwise from the
                     // selection to a ruler guide, the hovered layer or (over empty canvas) the parent.
@@ -1138,6 +1156,7 @@ impl Session {
             textedit::end(self)?;
         }
         // Handles first: a selected ellipse's arc handles (drawn over the box), then the box's.
+        let edits = !self.tool.dev_mode;
         if self.arc_handles_shown()
             && let Some((id, handle)) = crate::arc_handles::hit(&doc, &sel, ev.p(), ev.zoom)
             && let Some(arc) = crate::arc_handles::arc_of(&doc, id)
@@ -1157,7 +1176,7 @@ impl Session {
             self.tool.overlay.shape = shape_hint(&doc, id, handle, ev.zoom);
             return Ok(());
         }
-        if let Some(h) = handle_at(&doc, &sel, ev.p(), ev.zoom) {
+        if let Some(h) = handle_at(&doc, &sel, ev.p(), ev.zoom).filter(|_| edits) {
             let ids = roots(&doc, &sel);
             if let Handle::Rotate(_) = h {
                 let Some(b) = selection_box(&doc, &ids) else { return Ok(()) };
@@ -1216,6 +1235,13 @@ impl Session {
                     vec![target]
                 };
                 self.set_selection(new_sel.clone());
+                // Dev Mode only selects (Shift-click still deselects): nothing moves.
+                if !edits {
+                    if deselect.is_some() {
+                        self.set_selection(without_target());
+                    }
+                    return Ok(());
+                }
                 // Locked layers selected in the layers panel stay put.
                 let ids: Vec<NodeId> = roots(&doc, &new_sel).into_iter().filter(|i| !locked_in(&doc, *i)).collect();
                 if new_sel.is_empty() || doc.node(target).is_some_and(|n| n.locked) || ids.is_empty() {
@@ -1300,7 +1326,7 @@ impl Session {
                         for i in &ids {
                             let parent = doc.get(*i)?.parent.unwrap_or(page);
                             let idx = doc.index_in_parent(*i).map(|x| x + 1);
-                            copies.push(doc.duplicate_into(*i, parent, idx)?);
+                            copies.push(crate::components::copy_in_file(doc, *i, parent, idx)?);
                         }
                         moving = copies;
                         *sel = moving.clone();
@@ -1862,9 +1888,11 @@ impl Session {
         if self.tool.tool == ToolId::Pen {
             return self.pen_finish();
         }
+        let edits = !self.tool.dev_mode;
         // A frame's or section's name label: rename it there (the canvas puts a field over it).
         // Labels come before widgets, as on a press; the second press began a move: undo it.
-        if matches!(self.tool.tool, ToolId::Move | ToolId::Scale)
+        if edits
+            && matches!(self.tool.tool, ToolId::Move | ToolId::Scale)
             && !(ev.shift || ev.cmd || ev.alt)
             && let Some(id) = label_at(&doc, page, &self.tool.labels, ev.p())
         {
@@ -1877,7 +1905,8 @@ impl Session {
             return Ok(());
         }
         // Quick clicks on a widget's clickable part are clicks, one by one.
-        if matches!(self.tool.tool, ToolId::Move | ToolId::Scale)
+        if edits
+            && matches!(self.tool.tool, ToolId::Move | ToolId::Scale)
             && !(ev.shift || ev.cmd || ev.alt)
             && self.hit(&doc, page, ev.p(), ev.tol() * 2.0).and_then(|hit| crate::widgets::target_at(&doc, hit, ev.p())).is_some()
         {
@@ -1895,7 +1924,8 @@ impl Session {
         let Some(leaf) = self.hit(&doc, page, ev.p(), ev.tol() * 2.0) else { return Ok(()) };
         let target = select_target(&doc, leaf, &sel, true);
         // Text: edit at the click.
-        if doc.node(target).is_some_and(|n| matches!(n.kind, NodeKind::Text(_)))
+        if edits
+            && doc.node(target).is_some_and(|n| matches!(n.kind, NodeKind::Text(_)))
             && (sel.contains(&target) || select_target(&doc, leaf, &sel, false) == target)
         {
             // Entering a text selects all of it; in the text being edited, the word.
@@ -1910,7 +1940,7 @@ impl Session {
             return Ok(());
         }
         // Shapes and vectors: enter vector edit mode (every selected shape, the clicked one active).
-        if doc.node(target).is_some_and(|n| n.kind.is_shape()) && sel.contains(&target) {
+        if edits && doc.node(target).is_some_and(|n| n.kind.is_shape()) && sel.contains(&target) {
             let mut ids = crate::vectoredit::enter_targets(&doc, &sel).unwrap_or_default();
             ids.retain(|i| *i != target);
             ids.insert(0, target);
@@ -2263,6 +2293,10 @@ impl Session {
     /// Keys the current mode handles before menu shortcuts (vector edit mode's tools and point
     /// keys, Enter to finish the shape builder). Returns whether the key was used.
     pub fn tool_key(&mut self, name: &str, shift: bool, alt: bool, cmd: bool) -> Result<bool> {
+        // Dev Mode edits nothing: keys go to the commands (which it refuses in the app).
+        if self.tool.dev_mode {
+            return Ok(false);
+        }
         if self.ds().is_ok_and(|d| d.vector_edit.is_some()) {
             return crate::vectoredit::key(self, name, shift, alt, cmd);
         }
@@ -2404,6 +2438,7 @@ impl Session {
     fn arc_handles_shown(&self) -> bool {
         let arc_drag = matches!(self.tool.gesture, Gesture::Arc { .. } | Gesture::Shape { .. });
         self.tool.tool == ToolId::Move
+            && !self.tool.dev_mode
             && (arc_drag || !self.tool.busy())
             && self.ds().is_ok_and(|ds| ds.vector_edit.is_none() && ds.text_edit.is_none())
     }

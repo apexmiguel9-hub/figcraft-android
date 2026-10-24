@@ -65,9 +65,10 @@ fn craft_fonts(dir: &std::path::Path, manifest_rel: &str) -> Result<String, Stri
         if cjk && std::env::var_os("FIGCRAFT_EMBED_CJK").is_none() {
             continue;
         }
-        // Web builds have a size budget: Inter, plus Noto Sans CJK (every CJK script, for CJK UI
-        // text) when asked.
-        if wasm && *family != "Inter" && !cjk {
+        // Web builds have a size budget: Inter, Noto Sans Georgian (small, for the Georgian UI), only the
+        // SemiBold wordmark, and optionally Noto Sans CJK (every CJK script, for CJK UI text).
+        let wordmark = *family == "Archivo" && *style == "SemiBold";
+        if wasm && !matches!(*family, "Inter" | "Noto Sans Georgian") && !wordmark && !cjk {
             continue;
         }
         let path = dir.join(file).canonicalize().map_err(|e| format!("{file}: {e}"))?;

@@ -1019,7 +1019,7 @@ fn saved_preset_row(ui: &mut Ui, name: &str) -> Option<PresetAction> {
     let del_resp = ui.interact(del, ui.id().with(("cp_preset_del", name)), Sense::click()).tip(tr("Delete preset"));
     let hot = resp.hovered() || del_resp.hovered();
     if hot {
-        ui.painter().rect_filled(r, CornerRadius::same(5), crate::theme::ACCENT);
+        ui.painter().rect_filled(r, CornerRadius::same(5), t.menu_hover);
     }
     let col = if hot { Color32::WHITE } else { t.text };
     ui.painter().text(pos2(r.min.x + 8.0, r.center().y), Align2::LEFT_CENTER, name, regular(11.5), col);

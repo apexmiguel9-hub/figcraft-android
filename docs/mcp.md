@@ -234,7 +234,12 @@ Or in a project's `.mcp.json`:
   `text.setVariations {variations, replace?}` merges instead. `text.fonts {family, style?, axes: true}`
   lists a font's axes and named instances (named instances are also valid `fontStyle` values).
   `text.missingFonts` lists the families the document names that aren't installed
-  (`{families: [{family, layers}]}`); their text draws in a fallback font.
+  (`{families: [{family, layers}]}`); their text draws in a fallback font. Fonts are indexed once
+  per process: after installing one, `text.rescanFonts` picks it up (`{added: [families]}`), and
+  `text.loadFont {path | data (base64)}` adds a font file without installing it (`{families}`).
+  Text boxes keep the size they were measured at: both refit the open document's auto-sizing text
+  in the new families (`refitted: [ids]`), and `text.refit {ids?}` does it for any text, e.g. a
+  file saved while its fonts were missing.
   OpenType features: `features {"liga": false, "tnum": true}`.
   Decorations: `textDecorationStyle` (`solid`, `dotted`, `wavy`), `textDecorationThickness` and
   `textDecorationOffset` (`auto`, px, or `"10%"` of the font size; the offset runs from the baseline
@@ -267,7 +272,11 @@ Or in a project's `.mcp.json`:
   `style.duplicate {style}` adds "<name> copy" right below, `style.renameFolder {folder, name}`.
 - **Variables**: `variable.bind` refuses a variable of a type the field doesn't take (a colour on
   `width`); scopes only filter pickers. `variable.delete` / `variable.deleteCollection` unbind the
-  layers using them (they keep their last value) and give aliases to them their values.
+  layers using them (they keep their last value) and give aliases to them their values. An
+  explicit edit that changes a bound field's value (`node.set`, `transform.resize`,
+  `object.opacityKeys`, `text.style`, `text.set`, the text size, weight and
+  tracking shortcuts, a canvas drag) detaches that field's variable; fields the edit
+  left as they were stay bound.
   `variable.addMode {from}` duplicates a mode, `variable.moveMode {collection, mode, to}` reorders
   (index 0 is the default mode, which layers on Auto follow). `variable.update {codeSyntax: {WEB?,
   iOS?, ANDROID?}}` sets code names (`""` clears); generated CSS uses the Web one.
@@ -290,7 +299,7 @@ Or in a project's `.mcp.json`:
 | `create_node {type, x, y, width, height, parent, index, name, text, path, props}` | Create a frame, rectangle, ellipse, polygon, star, line, arrow, text, vector, section, component or slice; returns `{id, node}`. |
 | `set_properties {ids, props}` | `node.set` on layers (geometry, fills, strokes, effects, corner radius, auto layout, sizing, constraints, masks (`isMask`, `maskType: alpha\|vector\|luminance`), handoff status (`devStatus: none\|readyForDev\|completed`; marking again clears "Changed"), a section's `sectionContentsHidden`, text…); returns the updated layers. |
 | `inspect_document {depth, allPages}` | The document as JSON (layer tree, styles, selection, history). |
-| `get_node {id, depth}` | One layer as JSON. |
+| `get_node {id, depth}` | One layer as JSON; `pluginData` (`{key: value}`, values as strings) when the layer or page has layer data written with `set_properties {props: {pluginData}}`. |
 | `select {ids}` | Replace the selection (`[]` deselects). |
 | `export {ids, format, scale \| size, path?, bleed?, cropMarks?, bleedMarks?, cmyk?, contentsOnly?, includeBoundingBox?, svgOutlineText?, svgIdAttribute?, svgSimplifyStroke?}` | png, jpg, svg, webp, pdf, or `fig`: the whole file as `.fig`, experimental (see Exporting `.fig` files below); `size` is `2x`, `512w` or `512h`. The image covers what the layers paint (shadows towards their offset, strokes, unclipped children, a mask group's mask; hidden layers take no room; a slice is its area with everything under it); `contentsOnly: false` also draws every other layer showing in that area, `includeBoundingBox` exports the layers' own boxes; SVG: `svgOutlineText: false` keeps `<text>`, `svgIdAttribute` writes unique ids from layer names, `svgSimplifyStroke: false` writes every stroke as an outline. The same options go in export settings (`export.add` / `export.update`). PDF: frames one page each (sized in points), anything else together on one page; print options: `bleed` (points or a length like `"3mm"`, `"0.125in"`), crop and bleed marks, CMYK colour (see Exports below), also taken by `file.export`, `file.exportLayers`, `file.exportFramesPdf` and stored per export setting by `export.add` / `export.update`; `run_command` `file.exportFramesPdf {page?, path?}` writes every top-level frame of a page. Without `path`, images come back as MCP image content, SVG as text. Layers' own export settings: `run_command` with `export.add` / `export.update {index, size?, suffix?, format?}` / `export.remove` and `file.exportLayers {ids?, dir?, assets?}` (every layer once per setting, named `<layer><suffix>.<format>`, a slash in a layer name making a folder; `assets: true` exports the Inspect tab's assets instead: icons as SVG, images as PNG). |
 | `screenshot {ids?, scale?, maxSize?, window?}` | PNG of the page (with background) or of layers, scaled to fit `maxSize` (default 1600). `window: true` captures the app window in front when attached, a window id (see Windows below) that window. |
@@ -417,10 +426,17 @@ on; `key` resolves keys the way the canvas does. Commands behind keys:
   nested layers), Escape or a click drops it.
 - `pref.reduceMotion {on?}`: reduced motion (the interface's own animations off; the system's
   accessibility setting turns it on too). Prototype transitions still play.
+- `pref.uiScale {scale?}`: how large the whole interface is drawn, relative to the system's display
+  scale: 1 (the default) is the system's own size on every screen, 1.25 means 125 %, not 125; from
+  0.75 to 3 (outside the range it stops at the nearest end; `"auto"` is 1). Omit `scale` to read it.
+  The canvas zoom is separate. A window too small for a size above 100 % draws a smaller one until
+  it is larger; the choice is kept. In the browser the interface always follows the browser's zoom.
 - `pref.autoSave {on?}`: files that have a path save themselves a few seconds after they change
   (off by default; the desktop app's timer does it, so scripts still call `file.save`).
-- `pref.language {language: system|en|cs|ru|es|es-419|fr|de|pt-BR|ja|ko|zh-Hans|…}`: the app's interface language, applied live ("system":
-- `pref.language {language: system|en|es|es-419|fr|de|pt-BR|ja|ko|sv|zh-Hans|…}`: the app's interface language, applied live ("system":
+- `pref.startOnHome {on?}`: the desktop app starts on the Home screen instead of in a new file
+  (off by default; files named on the command line still open, and `--control` starts in a new
+  file anyway, so control callers have a document).
+- `pref.language {language: system|en|cs|ru|es|es-419|fr|de|pt-BR|ja|ka|ko|sv|zh-Hans|…}`: the app's interface language, applied live ("system":
   the OS or browser language; a language without a catalog shows English). Command ids, labels and
   every result stay English.
 
@@ -1286,7 +1302,9 @@ permissions: without it nothing is downloaded); `plugin.directory.publish {path 
   strings, any other `{…}` stays as written (`unknown` lists placeholder names that aren't
   properties). Then `inspect.code` on an instance or the component returns the import line and the
   snippet instead of generated code (`connected: true`), connected instances inside a generated
-  layer tree are their snippet, and `inspect.componentCode` returns `connected: {importPath, name,
+  layer tree (also in a component's definition, in the content an instance puts in its slots, and
+  the components a connected template's instance swaps place) are their snippet with their import
+  lines once each at the top of the code, per language, and `inspect.componentCode` returns `connected: {importPath, name,
   template, import, code}` with the snippet as `usage`. Example: template `<Button
   variant="primary" icon="{Has icon ? "cart" : "none"}">{label}</Button>` with import path
   `@acme/ui` gives `import { Button } from "@acme/ui";` then `<Button variant="primary" icon="none">{"Buy
@@ -1299,7 +1317,8 @@ permissions: without it nothing is downloaded); `plugin.directory.publish {path 
   warning). `get_node` lists a component's links as `codeLinks`. In the app, the Inspect tab's
   Connect to code section edits them in the Code section's language, with a live preview and a
   Connected badge. An editor extension isn't needed: agents and editors read the same snippets
-  through this server. Plugins whose manifest asks only for `read` also run from the Inspect tab.
+  through this server. Plugins whose manifest asks only for `read` also run from the Inspect tab,
+  with their panels (`plugin.ui`); their callbacks can only read.
 - **Dev resources:** links for developers (docs, code, tickets) on any layer, each a URL and a
   name. `devResource.add {id?, url, name?}` → `{id, index}` (no name: the URL without its scheme,
   `www.` and a trailing slash; no page title is looked up), `devResource.edit {id?, index, url?,
@@ -1338,17 +1357,23 @@ permissions: without it nothing is downloaded); `plugin.directory.publish {path 
   tab filters the callouts by category and edits the categories (colour, name, delete, add); each
   note has a category menu.
 - **Ready for dev:** frames at the top of a page or section, and sections, carry a handoff status
-  (`node.set {devStatus: none|readyForDev|completed}`). `inspect.readyForDev {status?:
-  readyForDev|completed|any, page?}` lists them across pages (or on one page) in page and layer
-  order: `{items: [{id, name, page, status}]}`. The Inspect tab sets the status of the selected
-  frames and, with nothing selected, lists them with a status filter (click one to go to it, or its
-  focus button to open it in the focus view).
+  (`node.set {devStatus: none|readyForDev|completed}`; other layers are refused a status).
+  `inspect.readyForDev {status?: readyForDev|changed|completed|any, page?}` lists them across pages
+  (or on one page) in page and layer order: `{items: [{id, name, page, status, changed}]}`
+  (`changed`: ready for dev and edited since). The Inspect tab sets the status of the selected
+  frames and, with nothing selected, lists them with a status filter (Ready for dev, Changed,
+  Completed, Any status; changed ones carry a Changed badge; click one to go to it, or its focus
+  button to open it in the focus view). In the app's Dev Mode the canvas only inspects: presses
+  select (and pan, and comment), never move, resize, draw or edit text and vectors, and the menus
+  and shortcuts refuse commands that edit the design (Dev Mode's own annotations, statuses, dev
+  resources, code connections and comments still work); choosing a drawing tool in the toolbar
+  goes back to the design. Commands sent over MCP or the control channel aren't affected.
 - **Compare changes:** when a layer marked Ready for dev first changes (it turns "Changed"), the
   file keeps a copy of it and everything in it as it was just before that edit (saved in the
   `.figcraft` file only while there is a change; resolving the change, marking it again, another
   status or deleting it drops the copy, so the next change compares with that state).
-  `dev.compare {id?, show?}` → `{id, name, changed, snapshot, added, removed, modified, truncated,
-  changes: [{id, name, type, change: added|removed|changed, depth, layers, properties?: [{section,
+  `dev.compare {id?, version?, show?}` → `{id, name, changed, snapshot, added, removed, modified,
+  truncated, version: {id, name, time} | null, changes: [{id, name, type, change: added|removed|changed, depth, layers, properties?: [{section,
   property, before, after, text}]}]}`: layers matched by id, added and removed ones listed as a
   whole (`layers` counts what's inside), changed ones with their properties formatted like Inspect
   (`width 120 → 136`, `fill #FF0000 → #E03030`, `text “Welcome” → “Hello”`, `parent Badge → Screen`,
@@ -1356,7 +1381,11 @@ permissions: without it nothing is downloaded); `plugin.directory.publish {path 
   opacity, visibility, name), nested layers and instance contents included. `snapshot: false` means
   the frame changed before copies were kept (an older file). `show: true` opens the compare view in
   the app: before and now side by side (or overlaid with a slider), changed layers outlined (added
-  green, changed orange, removed red), the list of changes and Resolve change.
+  green, changed orange, removed red), the list of changes and Resolve change. With `version` (an id
+  from `version.list`) any top-level frame or section, ready for dev or not, is compared with that
+  saved version instead (a layer the version doesn't have was added as a whole); the compare view
+  picks it at the bottom (Compare with: When marked ready, or a version; a frame that isn't ready
+  for dev compares with the newest version), and `ui.set {devCompareVersion}` sets it.
 - **Focus view:** `dev.focus {id? | direction: next|previous}` → `{id, name, page, index, count}`
   shows one top-level frame or section alone on the canvas (fitted, selected, other layers neither
   drawn nor hit), switching page when needed; `direction` steps through the ready-for-dev frames
@@ -1659,7 +1688,7 @@ other key next to `$step` fails the whole batch, which is rolled back. Only an o
 value too) is read as a reference. A step that is itself a `command.batch` is passed on as written,
 so the references in its steps are to its own steps, not the outer batch's.
 
-The end-to-end tests in `crates/mcp/tests/agent_tasks.rs` are worked examples of realistic tasks
+The end-to-end tests in `crates/mcp/tests/it/agent_tasks.rs` are worked examples of realistic tasks
 (auto layout, a card built in one batch with step references, components and overrides, gradients
 and shadows, paint styles, Light/Dark variables, align/distribute/group, boolean subtract + flatten,
 export, undo/redo, drawing with tools).

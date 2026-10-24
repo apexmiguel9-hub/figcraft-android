@@ -41,6 +41,17 @@ fn props_of(s: &mut Session, id: NodeId) -> Vec<Value> {
     ex(s, "component.properties", json!({"id": id}))["properties"].as_array().cloned().unwrap_or_default()
 }
 
+/// A refused slot is reported by `component.makeSlot`, the command that was run, not by the
+/// property command it adds its slot property through.
+#[test]
+fn a_refused_slot_names_make_slot() {
+    let mut s = Session::new();
+    let (c, ..) = slot_card(&mut s);
+    let other = idv(&ex(&mut s, "frame.create", json!({"x": 150, "y": 10, "width": 40, "height": 30, "parent": c, "name": "Other"})));
+    let err = s.execute("component.makeSlot", &json!({"id": other, "name": "Content"})).unwrap_err().to_string();
+    assert!(err.contains("`component.makeSlot`") && err.contains("a property named `Content` already exists"), "{err}");
+}
+
 #[test]
 fn slots_are_frames_of_a_main_with_a_slot_property() {
     let mut s = Session::new();

@@ -949,19 +949,37 @@ impl Document {
         self.styles.iter().find(|s| s.id == id || s.name == id)
     }
 
-    /// The effective variable modes for a node (walking up its ancestors).
+    /// The effective variable modes for a node: the ones it sets over [`Self::inherited_modes`].
     pub fn modes_for(&self, id: NodeId) -> BTreeMap<CollectionId, ModeId> {
-        let mut out = BTreeMap::new();
-        let mut chain = vec![id];
-        chain.extend(self.ancestors(id));
-        for c in chain.into_iter().rev() {
-            if let Some(n) = self.node(c) {
-                for (k, v) in &n.var_modes {
-                    out.insert(k.clone(), v.clone());
-                }
-            }
+        let mut out = self.inherited_modes(id);
+        if let Some(n) = self.node(id) {
+            out.extend(n.var_modes.iter().map(|(k, v)| (k.clone(), v.clone())));
         }
         out
+    }
+
+    /// The modes a node is on where it sets none (Auto): its ancestors', and for an instance the
+    /// ones its main component sets, which are closer than any container's.
+    pub fn inherited_modes(&self, id: NodeId) -> BTreeMap<CollectionId, ModeId> {
+        let mut out = BTreeMap::new();
+        for c in self.ancestors(id).into_iter().rev() {
+            if let Some(n) = self.node(c) {
+                out.extend(self.main_modes(n).chain(&n.var_modes).map(|(k, v)| (k.clone(), v.clone())));
+            }
+        }
+        if let Some(n) = self.node(id) {
+            out.extend(self.main_modes(n).map(|(k, v)| (k.clone(), v.clone())));
+        }
+        out
+    }
+
+    /// The modes an instance's main component sets (none for other layers).
+    fn main_modes<'a>(&'a self, n: &Node) -> impl Iterator<Item = (&'a CollectionId, &'a ModeId)> {
+        let main = match n.kind {
+            NodeKind::Instance { component, .. } => self.node(component),
+            _ => None,
+        };
+        main.into_iter().flat_map(|m| &m.var_modes)
     }
 
     /// Check structural invariants (used by tests and after loading untrusted files).
