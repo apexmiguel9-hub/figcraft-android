@@ -1,8 +1,85 @@
 # FigCraft en Android — TRASPASO de sesión
 
 > **Lee esto primero si eres un agente nuevo en esta sesión.** Todo el contexto está aquí.
-> Última actualización: 2026-10-23, commit `538ad16a`.
-> Las secciones de 2026-10-20 son el estado anterior; la sección de 2026-10-23 manda.
+> **Última actualización: 2026-10-24, commit `b11c6aa3` (main) / `d8955033` (PR #3).**
+> Las secciones de 2026-10-23 y anteriores son historial; **esta sección 2026-10-24 manda**.
+
+---
+
+## Estado al 2026-10-24 — Merge upstream v0.10.0 a main + fix cuadritos editor de nodos
+
+- **Upstream base**: `17ed21d1` (v0.10.0-11) — **ya NO es v0.6.0**; el port selectivo está en `main`.
+- **`main` del port**: commit `b11c6aa3` (PR #2 mergeado). Contiene todo el upstream revisado + fixes:
+  - Permiso almacenamiento (no reaparece si concedido; `.permiso-preguntado` persiste)
+  - Diálogos `vscroll` condicional (< 640 pt)
+  - Titlebar tabs +64 pt por Undo/Redo
+  - Cargo.lock + versionName `0.10.0`
+  - Tests titlebar/ui_scale ajustados
+  - Menú contextual long press queda abierto al soltar
+  - Undo/Redo fuera de `@` > Edit
+  - Preferences autosave + Save
+  - Glass relleno 20 %
+  - Drop `pointer_pos` no `hover_pos`
+  - Caja editor nodos conservada (sin cuadritos) — **ver PR #3**
+  - Cierre menús por release + `context_menu_ignore_release`
+- **Rama de revisión preservada**: `scratch/merge-upstream` (HEAD `26e67307` + `1afcf78d`) para futuros merges.
+- **PR #3 abierto**: `fix/node-editor-handles` → `main` (commit `d8955033`)
+  - Restaura **4 cuadritos** en transform box del editor de nodos (`handles = 4`)
+  - Dibuja box **después** de `vector_overlay` para que cuadritos queden **encima** de círculos de nodos en 4 esquinas
+  - CI (`40059644671`) y `.so` (`40059640716`) en progreso; APK se generará tras éxito `.so`
+- **Móvil**: `192.168.100.51:33293` (pantalla 1080×2400 física, 2400×1080 lógica, densidad 390, rotación 1)
+- **APK actual instalado**: `/tmp/opencode/apk-fix/app-debug.apk` (merge PR #2, sin cuadritos editor nodos)
+- **Ghosting UI**: duplicado vertical ~20-22 px en arranque (SurfaceFlinger `starting_reveal` @ 30 Hz); no es regresión, no bloquea interacción; se mitiga desactivando animaciones globales.
+
+---
+
+### Checklist táctil pendiente (tras PR #3)
+
+| Ítem | Estado | Notas |
+|------|--------|-------|
+| Cuadritos editor de nodos (4 esquinas visibles) | 🔄 En CI | Probar en móvil tras APK PR #3 |
+| Glass (relleno 20 % panel Fill) | ⏳ Pendiente | |
+| Drop documento/imagen | ⏳ Pendiente | |
+| Color personalizado (picker + hex) | ⏳ Pendiente | |
+| Long press fila de capas | ⏳ Pendiente | Menú contextual queda abierto |
+
+---
+
+### Qué hacer al retomar (si reseteas móvil o cambias de sesión)
+
+1. **Clonar / actualizar repo**:
+   ```bash
+   cd /root/figcraft-upstream
+   git fetch --all
+   git status
+   ```
+2. **Ver PRs y CI**:
+   ```bash
+   gh pr list --repo apexmiguel9-hub/figcraft-android
+   gh run list --repo apexmiguel9-hub/figcraft-android --limit 10
+   ```
+3. **Conectar móvil**:
+   ```bash
+   adb connect 192.168.100.51:33293
+   adb devices
+   ```
+4. **Instalar APK más reciente** (buscar en `/tmp/opencode/apk-*/app-debug.apk` o descargar del último `build-apk` success):
+   ```bash
+   adb install -r /tmp/opencode/apk-pr3/app-debug.apk   # ejemplo
+   ```
+5. **Continuar checklist** desde la tabla de arriba.
+6. **Leer `PORT_STATUS.md`** (este repo, raíz) para resumen completo, reglas y comandos.
+
+---
+
+## Reglas innegociables (recordatorio)
+
+- **No tocar `main` sin PR + CI verde + verificación móvil**.
+- **Calidad impecable**: revisar código 1-3 veces antes de commit; auto-revisión del modelo obligatoria.
+- **Verificar 100% antes de pasar de fase**: cada función/feature debe estar probada en CI y móvil antes de ir a la siguiente.
+- **Prioridad**: fluidez y usabilidad táctil > features.
+- **No compilar en local**; solo GitHub Actions.
+- **No `adb kill-server`**; coordenadas reales para `adb shell input` (capturas 2400×1080).
 
 ---
 
