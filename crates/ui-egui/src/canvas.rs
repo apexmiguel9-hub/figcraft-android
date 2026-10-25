@@ -1405,15 +1405,11 @@ fn overlays(app: &FigApp, painter: &egui::Painter, t: &Tokens) -> Vec<(NodeId, [
     {
         // The Variable width tool shows width points in place of the path's points.
         let width_tool = ve.tool == figcraft_engine::vectoredit::VTool::Width;
-        // The box goes **under** the points and shows **no square handles**: on a rectangle the
-        // nodes sit on the corners, so the squares sat on the nodes, did nothing once the node
-        // won the press (see `transform::box_hit`) and only cluttered the view — the "ghost
-        // squares" seen on the phone. In normal selection mode the box keeps its handles, which
-        // do work there.
-        if !width_tool && let Some(c) = app.session.vector_edit_box() {
-            let label = format!("{} × {}", fmt((c[1] - c[0]).hypot()), fmt((c[3] - c[0]).hypot()));
-            size_label = transform_box(app, painter, c.map(|p| app.to_screen(p.x, p.y)), accent(painter), true, 0, Some(label));
-        }
+        // El transform box se dibuja **después** de los overlays de los nodos (vector_overlay),
+        // para que los cuatro cuadrados de las esquinas queden encima de los círculos de los
+        // nodos y no queden tapados en ninguna esquina.
+        let box_corners = app.session.vector_edit_box();
+        let box_label = box_corners.map(|c| format!("{} × {}", fmt((c[1] - c[0]).hypot()), fmt((c[3] - c[0]).hypot())));
         // Other layers edited at once go under the active one; the hover shows on its own layer.
         let ov = &app.session.tool.overlay;
         let hover_on = |id| ov.vector_hover.filter(|_| ov.vector_hover_on.unwrap_or(ve.id) == id);
@@ -1425,6 +1421,10 @@ fn overlays(app: &FigApp, painter: &egui::Painter, t: &Tokens) -> Vec<(NodeId, [
         vector_overlay(app, painter, &o, !width_tool, hover_on(ve.id), true);
         if width_tool {
             width_overlay(app, painter, &doc, &ve, zoom);
+        }
+        // Dibujar el box ahora (después de los nodos): outline + 4 cuadritos + etiqueta.
+        if !width_tool && let Some(c) = box_corners {
+            size_label = transform_box(app, painter, c.map(|p| app.to_screen(p.x, p.y)), accent(painter), true, 4, box_label);
         }
     }
     // Selection.
