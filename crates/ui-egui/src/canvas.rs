@@ -1414,7 +1414,8 @@ fn overlays(app: &FigApp, painter: &egui::Painter, t: &Tokens) -> Vec<(NodeId, [
         if !width_tool && let Some(c) = app.session.vector_edit_box() {
             let label = format!("{} × {}", fmt((c[1] - c[0]).hypot()), fmt((c[3] - c[0]).hypot()));
             vector_edit_corners(app, painter, c.map(|p| app.to_screen(p.x, p.y)), accent(painter));
-            size_label = size_pill(app, painter, c, accent(painter), &label);
+            let c_screen = c.map(|p| app.to_screen(p.x, p.y));
+            size_label = size_pill(app, painter, c_screen, accent(painter), &label);
         }
         // Other layers edited at once go under the active one; the hover shows on its own layer.
         let ov = &app.session.tool.overlay;
@@ -1649,7 +1650,7 @@ fn vector_edit_corners(app: &FigApp, painter: &egui::Painter, q: [Pos2; 4], col:
     let stroke = stroke(col, 1.5);
     let head = 6.0; // arrowhead length in screen points
     for c in q {
-        let (nx, ny) = corner_normal(&q, c);
+        let (nx, ny) = corner_normal(q, c);
         // Arrow shaft: from the corner outward along the normal.
         let tip = c + vec2(nx * head, ny * head);
         painter.line_segment([c, tip], stroke);
