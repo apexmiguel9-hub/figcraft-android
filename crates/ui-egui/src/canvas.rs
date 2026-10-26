@@ -1405,14 +1405,16 @@ fn overlays(app: &FigApp, painter: &egui::Painter, t: &Tokens) -> Vec<(NodeId, [
     {
         // The Variable width tool shows width points in place of the path's points.
         let width_tool = ve.tool == figcraft_engine::vectoredit::VTool::Width;
-        // The box goes **under** the points and shows **no square handles**: on a rectangle the
-        // nodes sit on the corners, so the squares sat on the nodes, did nothing once the node
-        // won the press (see `transform::box_hit`) and only cluttered the view — the "ghost
-        // squares" seen on the phone. In normal selection mode the box keeps its handles, which
-        // do work there.
+        // The box goes **under** the points and draws corner **arrows** instead of square
+        // handles: on a rectangle the nodes sit on the corners, so square handles sat on the
+        // nodes, did nothing once the node won the press (see `transform::box_hit`) and only
+        // cluttered the view — the "ghost squares" seen on the phone. Arrows point outward from
+        // each corner, so they never cover a node, and they still show the box and its scale.
+        // In normal selection mode the box keeps its square handles, which do work there.
         if !width_tool && let Some(c) = app.session.vector_edit_box() {
             let label = format!("{} × {}", fmt((c[1] - c[0]).hypot()), fmt((c[3] - c[0]).hypot()));
-            size_label = transform_box(app, painter, c.map(|p| app.to_screen(p.x, p.y)), accent(painter), true, 0, Some(label));
+            vector_edit_corners(app, painter, c.map(|p| app.to_screen(p.x, p.y)), accent(painter));
+            size_label = size_pill(app, painter, c, accent(painter), &label);
         }
         // Other layers edited at once go under the active one; the hover shows on its own layer.
         let ov = &app.session.tool.overlay;
@@ -1636,6 +1638,48 @@ fn pill(painter: &egui::Painter, at: Pos2, align: Align2, text: String, col: Col
     painter.rect_filled(r, CornerRadius::same(3), crate::theme::under_white(col));
     painter.galley(r.min + vec2(4.0, 2.0), galley, Color32::WHITE);
     r
+}
+
+/// Vector edit mode corner gizmo: four outward-pointing arrows at the corners of the transform
+/// box, instead of square handles that sit on top of the nodes and cover them. Each arrow is a
+/// short line with an arrowhead pointing out from the corner, so the corner itself stays clear
+/// and the node underneath remains tappable. Returns nothing (no size label — that's drawn
+/// separately by `size_pill` below).
+fn vector_edit_corners(app: &FigApp, painter: &egui::Painter, q: [Pos2; 4], col: Color32) {
+    let stroke = stroke(col, 1.5);
+    let head = 6.0; // arrowhead length in screen points
+    for c in q {
+        let (nx, ny) = corner_normal(&q, c);
+        // Arrow shaft: from the corner outward along the normal.
+        let tip = c + vec2(nx * head, ny * head);
+        painter.line_segment([c, tip], stroke);
+        // Arrowhead: two short lines back along the shaft, fanned out.
+        let (hx, hy) = (nx * 3.0, ny * 3.0);
+        painter.line_segment([tip, tip + vec2(-hx - hy * 0.5, -hy + hx * 0.5)], stroke);
+        painter.line_segment([tip, tip + vec2(-hx + hy * 0.5, -hy - hx * 0.5)], stroke);
+    }
+}
+
+/// Outward normal at corner `c` of the transform box `q`: points away from the box centre so the
+/// arrow never covers a node sitting on the corner.
+fn corner_normal(q: [Pos2; 4], c: Pos2) -> (f32, f32) {
+    let cx = q.iter().map(|p| p.x).sum::<f32>() / 4.0;
+    let cy = q.iter().map(|p| p.y).sum::<f32>() / 4.0;
+    let (dx, dy) = (c.x - cx, c.y - cy);
+    let len = (dx * dx + dy * dy).sqrt().max(1e-6);
+    (dx / len, dy / len)
+}
+
+/// Size readout pill for the vector edit transform box: same pill style as `pill`, placed under
+/// the box, showing `W × H`. Called separately from `vector_edit_corners` so the corners stay
+/// clear of nodes.
+fn size_pill(app: &FigApp, painter: &egui::Painter, q: [Pos2; 4], col: Color32, label: &str) -> Option<Rect> {
+    if !app.session.prefs.show_dimensions {
+        return None;
+    }
+    let bottom = q.iter().map(|p| p.y).fold(f32::MIN, f32::max);
+    let cx = q.iter().map(|p| p.x).sum::<f32>() / 4.0;
+    Some(pill(painter, pos2(cx, bottom + 9.0), Align2::CENTER_TOP, label.to_string(), col))
 }
 
 /// The selected ellipse's arc handles (the hovered or dragged one larger, Start with a dot inside)
