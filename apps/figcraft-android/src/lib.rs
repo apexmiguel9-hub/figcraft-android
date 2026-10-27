@@ -42,13 +42,16 @@ pub extern "system" fn Java_ai_storyteller_figcraft_MainActivity_nativeInjectTex
     _this: jni::objects::JClass<'caller>,
     texto: jni::objects::JString<'caller>,
 ) {
-    let Ok(s) = texto.try_to_string(&mut _env) else { return };
-    if s.is_empty() {
-        return;
-    }
-    if let Ok(mut buf) = TEXTO_PENDIENTE.lock() {
-        buf.push_str(&s);
-    }
+    let _ = _env.with_env(|e| -> jni::errors::Result<()> {
+        let s = texto.try_to_string(e)?;
+        if s.is_empty() {
+            return Ok(());
+        }
+        if let Ok(mut buf) = TEXTO_PENDIENTE.lock() {
+            buf.push_str(&s);
+        }
+        Ok(())
+    }).resolve_with::<jni::errors::LogContextErrorAndDefault, _>(|| "no se pudo inyectar texto del teclado blando".to_string());
 }
 
 // MEDIDO, y el punto en el que el port dio la vuelta: con `NativeActivity` Android manda
