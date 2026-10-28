@@ -111,6 +111,20 @@ pub fn handle(app: &mut FigApp, ctx: &Context, typing: bool, swallowed: Swallowe
     // platform's IME off, which drops the composition (macOS then types plain letters).
     let editing = app.session.ds().map(|d| d.text_edit.is_some()).unwrap_or(false);
 
+    #[cfg(target_os = "android")]
+    if editing {
+        let resumen: Vec<String> = events
+            .iter()
+            .filter_map(|e| match e {
+                Event::Text(t) => Some(format!("Text({t:?})")),
+                Event::Ime(i) => Some(format!("Ime({i:?})")),
+                Event::Key { key, pressed: true, .. } => Some(format!("Key({key:?})")),
+                _ => None,
+            })
+            .collect();
+        log::info!("TEXTDBG handle editing typing={typing} eventos={resumen:?}");
+    }
+
     if editing {
         text_keys(app, ctx, &events);
         return;
@@ -451,6 +465,8 @@ fn text_keys(app: &mut FigApp, ctx: &Context, events: &[Event]) {
     for ev in events {
         match ev {
             Event::Text(t) | Event::Ime(egui::ImeEvent::Commit(t)) => {
+                #[cfg(target_os = "android")]
+                log::info!("TEXTDBG insert {t:?}");
                 if skip_text && matches!(ev, Event::Text(_)) {
                     skip_text = false;
                     continue;

@@ -28,13 +28,16 @@ mod browser;
 #[cfg(target_os = "android")]
 mod permiso;
 
-// Texto que Java (teclado blando via `InputConnection.commitText`) entrega por JNI.
-// Se inyecta como `Event::Text` en `raw_input_hook` para que `text_keys` en `shortcuts.rs`
-// lo procese igual que en escritorio. Con `NativeActivity` winit no traduce las pulsaciones
-// del teclado blando a `Event::Text`, así que `MainActivity` llama a `nativeInjectText`
-// cada vez que llega texto compuesto o confirmado.
+// Lo que Java (el `InputConnection` de la vista oculta) entrega por JNI. Se inyecta en
+// `raw_input_hook` como `Event::Ime`: la composición se muestra inline y el commit sustituye
+// la composición por el texto final. Así `text_keys` en `shortcuts.rs` lo procesa igual que
+// en escritorio. Gboard manda primero `setComposingText` y luego `commitText`.
 #[cfg(target_os = "android")]
 static TEXTO_PENDIENTE: Mutex<String> = Mutex::new(String::new());
+#[cfg(target_os = "android")]
+static COMPOSICION_PENDIENTE: Mutex<Option<String>> = Mutex::new(None);
+#[cfg(target_os = "android")]
+static TECLAS_PENDIENTES: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
@@ -55,6 +58,46 @@ pub extern "system" fn Java_ai_storyteller_figcraft_MainActivity_nativeInjectTex
             Ok(())
         })
         .resolve_with::<jni::errors::LogContextErrorAndDefault, _>(|| "no se pudo inyectar texto del teclado blando".to_string());
+}
+
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ai_storyteller_figcraft_MainActivity_nativeInjectComposing<'caller>(
+    mut _env: jni::EnvUnowned<'caller>,
+    _this: jni::objects::JClass<'caller>,
+    texto: jni::objects::JString<'caller>,
+) {
+    let _ = _env
+        .with_env(|e| -> jni::errors::Result<()> {
+            let s = texto.try_to_string(e)?;
+            log::info!("TEXTDBG JNI composing={s:?}");
+            if let Ok(mut buf) = COMPOSICION_PENDIENTE.lock() {
+                *buf = Some(s);
+            }
+            Ok(())
+        })
+        .resolve_with::<jni::errors::LogContextErrorAndDefault, _>(|| {
+            "no se pudo inyectar la composicion del teclado blando".to_string()
+        });
+}
+
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ai_storyteller_figcraft_MainActivity_nativeInjectKey<'caller>(
+    mut _env: jni::EnvUnowned<'caller>,
+    _this: jni::objects::JClass<'caller>,
+    tecla: jni::objects::JString<'caller>,
+) {
+    let _ = _env
+        .with_env(|e| -> jni::errors::Result<()> {
+            let s = tecla.try_to_string(e)?;
+            log::info!("TEXTDBG JNI key={s:?}");
+            if let Ok(mut buf) = TECLAS_PENDIENTES.lock() {
+                buf.push(s);
+            }
+            Ok(())
+        })
+        .resolve_with::<jni::errors::LogContextErrorAndDefault, _>(|| "no se pudo inyectar una tecla del teclado blando".to_string());
 }
 
 // MEDIDO, y el punto en el que el port dio la vuelta: con `NativeActivity` Android manda
@@ -134,14 +177,44 @@ impl eframe::App for App {
     }
 
     fn raw_input_hook(&mut self, _ctx: &egui::Context, _raw: &mut egui::RawInput) {
-        // Inyecta el texto que el teclado blando entrego via JNI (`nativeInjectText`,
-        // llamado desde `MainActivity`). Se pone al principio del frame para que
-        // `text_keys` en `shortcuts.rs` lo procese como `Event::Text` de la tool de texto.
+        // Inyecta lo que el teclado blando entrego via JNI (MainActivity). Se pone al
+        // principio del frame para que `text_keys` en `shortcuts.rs` lo procese como los
+        // eventos de IME de escritorio: preedit mientras se compone, commit al confirmar.
         #[cfg(target_os = "android")]
-        if let Ok(mut buf) = TEXTO_PENDIENTE.lock() {
-            if !buf.is_empty() {
+        {
+            if let Ok(mut comp) = COMPOSICION_PENDIENTE.lock()
+                && let Some(texto) = comp.take()
+            {
+                log::info!("TEXTDBG preedit={texto:?}");
+                _raw.events.push(Event::Ime(egui::ImeEvent::Preedit { text: texto, active_range_chars: None }));
+            }
+            if let Ok(mut teclas) = TECLAS_PENDIENTES.lock() {
+                for nombre in teclas.drain(..) {
+                    let key = match nombre.as_str() {
+                        "Backspace" => Some(egui::Key::Backspace),
+                        "Delete" => Some(egui::Key::Delete),
+                        "Enter" => Some(egui::Key::Enter),
+                        _ => None,
+                    };
+                    if let Some(key) = key {
+                        for pressed in [true, false] {
+                            _raw.events.push(Event::Key {
+                                key,
+                                physical_key: None,
+                                pressed,
+                                repeat: false,
+                                modifiers: egui::Modifiers::NONE,
+                            });
+                        }
+                    }
+                }
+            }
+            if let Ok(mut buf) = TEXTO_PENDIENTE.lock()
+                && !buf.is_empty()
+            {
                 let texto = std::mem::take(&mut *buf);
-                _raw.events.push(Event::Text(texto));
+                log::info!("TEXTDBG commit={texto:?}");
+                _raw.events.push(Event::Ime(egui::ImeEvent::Commit(texto)));
             }
         }
 

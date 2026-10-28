@@ -17,7 +17,6 @@ import android.view.ViewGroup;
 import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
-import android.view.inputmethod.InputMethodManager;
 
 /**
  * La Activity del port (copiada de vectorcraft-android).
@@ -67,9 +66,10 @@ public class MainActivity extends NativeActivity {
     private static native void nativeListo();
     private static native String nativeGetClipboardText();
     private static native void nativeInjectText(String texto);
+    private static native void nativeInjectComposing(String texto);
+    private static native void nativeInjectKey(String tecla);
 
     private static InputView inputView;
-    private static InputMethodManager imm;
 
     // MEDIDO: con `NativeActivity` Android manda **teclas** al `InputConnection` de AOSP, que
     // es justo lo que usa winit. Pero `winit` 0.30.13 no traduce esas teclas a
@@ -116,15 +116,22 @@ public class MainActivity extends NativeActivity {
         }
         Log.i(TAG, "figcraft: Activity creada, permiso=" + hayPermiso());
 
-        // Vista oculta (0x0 px) con foco y su propio InputConnection para recibir el texto
-        // del teclado blando y reenviarlo a Rust vía nativeInjectText.
+        // Vista de 1x1 px transparente, pero VISIBLE: Android no da foco a una vista
+        // INVISIBLE, y sin foco el IME sigue escribiendo en el DecorView y el puente no
+        // recibe nada. El foco se pide en `post`, cuando ya esta enganchada a la ventana.
         inputView = new InputView(this);
-        addContentView(inputView, new ViewGroup.LayoutParams(0, 0));
-        inputView.requestFocus();
+        addContentView(inputView, new ViewGroup.LayoutParams(1, 1));
+        inputView.post(() -> {
+            inputView.requestFocus();
+            Log.i(TAG, "InputView focus=" + inputView.isFocused());
+        });
+    }
 
-        imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
-        if (imm != null) {
-            imm.showSoftInput(inputView, InputMethodManager.SHOW_IMPLICIT);
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus && inputView != null && !inputView.isFocused()) {
+            inputView.requestFocus();
         }
     }
 
@@ -194,17 +201,20 @@ public class MainActivity extends NativeActivity {
     }
 
     /**
-     * Vista oculta (0x0 px) que retiene el foco del teclado y expone un
-     * {@link BaseInputConnection} propio. Cada {@code commitText} que el teclado blando
-     * entregue se reenvía a Rust vía {@link #nativeInjectText}.
+     * Vista de 1x1 px que retiene el foco del teclado y expone un
+     * {@link BaseInputConnection} propio. Gboard entrega primero el texto compuesto
+     * ({@code setComposingText}) y luego el confirmado ({@code commitText}); Rust muestra el
+     * primero como composición inline y lo sustituye por el segundo al confirmar.
      */
     private static class InputView extends View {
+
+        private String composing = "";
 
         public InputView(Context context) {
             super(context);
             setFocusable(true);
             setFocusableInTouchMode(true);
-            setVisibility(View.INVISIBLE);
+            setAlpha(0f);
         }
 
         @Override
@@ -213,16 +223,64 @@ public class MainActivity extends NativeActivity {
             outAttrs.imeOptions = EditorInfo.IME_ACTION_DONE;
             return new BaseInputConnection(this, true) {
                 @Override
+                public boolean setComposingText(CharSequence text, int newCursorPosition) {
+                    composing = text == null ? "" : text.toString();
+                    nativeInjectComposing(composing);
+                    return true;
+                }
+
+                @Override
+                public boolean finishComposingText() {
+                    if (!composing.isEmpty()) {
+                        composing = "";
+                        nativeInjectComposing("");
+                    }
+                    return true;
+                }
+
+                @Override
                 public boolean commitText(CharSequence text, int newCursorPosition) {
-                    if (text != null && text.length() > 0 && instance != null) {
-                        nativeInjectText(text.toString());
+                    String s = text == null ? "" : text.toString();
+                    composing = "";
+                    nativeInjectComposing("");
+                    if (!s.isEmpty()) {
+                        nativeInjectText(s);
+                    }
+                    return true;
+                }
+
+                @Override
+                public boolean deleteSurroundingText(int beforeLength, int afterLength) {
+                    if (!composing.isEmpty()) {
+                        int n = composing.length();
+                        composing = composing.substring(0, Math.max(0, n - Math.max(0, beforeLength)));
+                        nativeInjectComposing(composing);
+                    } else {
+                        for (int i = 0; i < beforeLength; i++) {
+                            nativeInjectKey("Backspace");
+                        }
                     }
                     return true;
                 }
 
                 @Override
                 public boolean sendKeyEvent(KeyEvent event) {
-                    // Dejamos que las teclas sigan su camino normal hacia winit/egui.
+                    if (event.getAction() == KeyEvent.ACTION_DOWN) {
+                        if (event.getKeyCode() == KeyEvent.KEYCODE_DEL) {
+                            if (!composing.isEmpty()) {
+                                composing = composing.substring(0, composing.length() - 1);
+                                nativeInjectComposing(composing);
+                            } else {
+                                nativeInjectKey("Backspace");
+                            }
+                            return true;
+                        }
+                        if (event.getKeyCode() == KeyEvent.KEYCODE_ENTER) {
+                            nativeInjectKey("Enter");
+                            return true;
+                        }
+                    }
+                    // Otras teclas siguen su camino normal hacia winit/egui.
                     return super.sendKeyEvent(event);
                 }
             };
