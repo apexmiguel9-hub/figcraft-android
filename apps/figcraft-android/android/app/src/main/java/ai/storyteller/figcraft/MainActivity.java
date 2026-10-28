@@ -116,23 +116,23 @@ public class MainActivity extends NativeActivity {
         }
         Log.i(TAG, "figcraft: Activity creada, permiso=" + hayPermiso());
 
-        // Vista de 1x1 px transparente, pero VISIBLE: Android no da foco a una vista
-        // INVISIBLE, y sin foco el IME sigue escribiendo en el DecorView y el puente no
-        // recibe nada. El foco se pide en `post`, cuando ya esta enganchada a la ventana.
-        inputView = new InputView(this);
-        addContentView(inputView, new ViewGroup.LayoutParams(1, 1));
-        inputView.post(() -> {
-            inputView.requestFocus();
-            Log.i(TAG, "InputView focus=" + inputView.isFocused());
-        });
+        // MEDIDO: con las fuentes ya dentro del .so, el camino normal de winit
+        // (DecorView -> InputConnection de AOSP -> Event::Text) es el que debe usarse.
+        // La InputView de 1x1 robaba el foco y metia a Gboard en modo extractor, donde
+        // el texto se queda en el editor del teclado hasta pulsar LISTO. Se deja la
+        // clase y el puente JNI como respaldo, pero no se enfoca.
+        // inputView = new InputView(this);
+        // addContentView(inputView, new ViewGroup.LayoutParams(1, 1));
+        // inputView.post(() -> {
+        //     inputView.requestFocus();
+        //     Log.i(TAG, "InputView focus=" + inputView.isFocused());
+        // });
     }
 
     @Override
     public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
-        if (hasFocus && inputView != null && !inputView.isFocused()) {
-            inputView.requestFocus();
-        }
+        // La ventana normal conserva el foco: no se lo devolvemos a la InputView.
     }
 
     private static String getClipboardText() {
