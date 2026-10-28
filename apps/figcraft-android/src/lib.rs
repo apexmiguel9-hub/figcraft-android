@@ -100,17 +100,6 @@ impl eframe::App for App {
     }
 
     fn raw_input_hook(&mut self, _ctx: &egui::Context, _raw: &mut egui::RawInput) {
-        // Inyecta el texto que el teclado blando de Android nos entrego via JNI
-        // (`nativeInjectText`, llamado desde `MainActivity`). Se pone al principio del frame
-        // para que `text_keys` en `shortcuts.rs` lo procese como `Event::Text` de la tool de texto.
-        #[cfg(target_os = "android")]
-        if let Ok(mut buf) = TEXTO_PENDIENTE.lock() {
-            if !buf.is_empty() {
-                let texto = std::mem::take(&mut *buf);
-                _raw.events.push(Event::Text(texto));
-            }
-        }
-
         // MEDIDO: aqui ya no se inyecta nada del teclado. Con `GameActivity` habia que meter a mano
         // el `Event::Text` del `GameTextInput` porque `winit` no lo conecta a egui; con
         // `NativeActivity` las teclas llegan por el `InputConnection` de AOSP y las entrega `winit`.
