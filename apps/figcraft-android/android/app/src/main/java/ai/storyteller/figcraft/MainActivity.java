@@ -8,18 +8,7 @@ import android.content.Intent;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Environment;
-import android.os.Handler;
-import android.os.Looper;
 import android.provider.Settings;
-import android.text.InputType;
-import android.view.KeyEvent;
-import android.view.View;
-import android.view.ViewGroup;
-import android.view.inputmethod.BaseInputConnection;
-import android.view.inputmethod.EditorInfo;
-import android.view.inputmethod.InputConnection;
-import android.view.inputmethod.InputMethodManager;
-import android.widget.LinearLayout;
 import android.util.Log;
 
 /**
@@ -52,13 +41,6 @@ import android.util.Log;
  * que escribir un puente a mano. Con {@code NativeActivity} Android manda <b>teclas</b> al
  * {@code InputConnection} de AOSP, winit las recibe y el texto sale por ahi.
  *
- * <p>El teclado blando entrega texto por {@link InputConnection#commitText}. Como
- * {@code NativeActivity} no expone una {@code View} Java que lo reciba, se añade una
- * {@code InputView} oculta (0x0 px) con el foco y un {@link BaseInputConnection} propio que
- * reenvía cada {@code commitText} a Rust vía {@link #nativeInjectText}. Rust lo inyecta como
- * {@code Event::Text} en {@code raw_input_hook} y la tool de texto del lienzo lo recibe igual que
- * en escritorio.
- *
  * <p>{@code System.loadLibrary} explicito sigue siendo necesario: el load nativo de la Activity no
  * lo ve ART y sin esto las nativas dan {@code UnsatisfiedLinkError}.
  *
@@ -76,10 +58,6 @@ public class MainActivity extends NativeActivity {
     private static MainActivity instance;
     private static native void nativeListo();
     private static native String nativeGetClipboardText();
-    private static native void nativeInjectText(String texto);
-
-    private static InputView inputView;
-    private static InputMethodManager imm;
 
     // MEDIDO: con `NativeActivity` **no** hace falta puente de teclado. Las teclas llegan por el
     // `InputConnection` de AOSP, que es justo lo que usa winit. Los puentes que se llegaron a
@@ -122,20 +100,6 @@ public class MainActivity extends NativeActivity {
             Log.w(TAG, "nativeListo: " + t);
         }
         Log.i(TAG, "figcraft: Activity creada, permiso=" + hayPermiso());
-
-        // Vista oculta (0x0 px) con foco y su propio InputConnection para recibir el texto
-        // del teclado blando y reenviarlo a Rust vía nativeInjectText.
-        inputView = new InputView(this);
-        addContentView(inputView, new ViewGroup.LayoutParams(0, 0));
-        inputView.requestFocus();
-
-        imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
-        if (imm != null) {
-            // El teclado se muestra cuando la app arranca; el usuario puede ocultarlo con el
-            // boton de teclado del sistema. Rust puede pedirlo mostrar/ocultar con
-            // nativeKeyboardRequested cuando entre/salga del modo edicion de texto.
-            imm.showSoftInput(inputView, InputMethodManager.SHOW_IMPLICIT);
-        }
     }
 
     private static String getClipboardText() {
@@ -201,41 +165,5 @@ public class MainActivity extends NativeActivity {
     static {
         // Los nativos se resuelven por nombre al cargar la libreria; no hace falta
         // RegisterNatives aqui.
-    }
-
-    /**
-     * Vista oculta (0x0 px) que retiene el foco del teclado y expone un
-     * {@link BaseInputConnection} propio. Cada {@code commitText} que el teclado blando entregue
-     * se reenvía a Rust vía {@link #nativeInjectText}.
-     */
-    private static class InputView extends View {
-
-        public InputView(Context context) {
-            super(context);
-            setFocusable(true);
-            setFocusableInTouchMode(true);
-            setVisibility(View.INVISIBLE);
-        }
-
-        @Override
-        public InputConnection onCreateInputConnection(EditorInfo outAttrs) {
-            outAttrs.inputType = InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS;
-            outAttrs.imeOptions = EditorInfo.IME_ACTION_DONE;
-            return new BaseInputConnection(this, true) {
-                @Override
-                public boolean commitText(CharSequence text, int newCursorPosition) {
-                    if (text != null && text.length() > 0 && instance != null) {
-                        nativeInjectText(text.toString());
-                    }
-                    return true;
-                }
-
-                @Override
-                public boolean sendKeyEvent(KeyEvent event) {
-                    // Dejamos que las teclas sigan su camino normal hacia winit/egui.
-                    return super.sendKeyEvent(event);
-                }
-            };
-        }
     }
 }

@@ -1642,20 +1642,22 @@ fn pill(painter: &egui::Painter, at: Pos2, align: Align2, text: String, col: Col
 }
 
 /// Vector edit mode corner gizmo: four outward-pointing arrows at the corners of the transform
-/// box, instead of square handles that sit on top of the nodes and cover them. Each arrow is a
-/// short line with an arrowhead pointing out from the corner, so the corner itself stays clear
+/// box, instead of square handles that sit on top of the nodes and cover them. Each arrow starts
+/// outside the corner node and points outward along the box normal, so the corner stays clear
 /// and the node underneath remains tappable. Returns nothing (no size label — that's drawn
 /// separately by `size_pill` below).
 fn vector_edit_corners(app: &FigApp, painter: &egui::Painter, q: [Pos2; 4], col: Color32) {
-    let stroke = stroke(col, 1.5);
-    let head = 6.0; // arrowhead length in screen points
+    let stroke = stroke(col, 2.0);
+    let head = 14.0; // arrow length in screen points — long enough to clear the node circle
+    let offset = 7.0; // start outside the corner so we never draw over the node itself
     for c in q {
         let (nx, ny) = corner_normal(q, c);
-        // Arrow shaft: from the corner outward along the normal.
-        let tip = c + vec2(nx * head, ny * head);
-        painter.line_segment([c, tip], stroke);
+        // Arrow shaft: starts outside the corner node and points outward along the normal.
+        let start = c + vec2(nx * offset, ny * offset);
+        let tip = start + vec2(nx * head, ny * head);
+        painter.line_segment([start, tip], stroke);
         // Arrowhead: two short lines back along the shaft, fanned out.
-        let (hx, hy) = (nx * 3.0, ny * 3.0);
+        let (hx, hy) = (nx * 5.0, ny * 5.0);
         painter.line_segment([tip, tip + vec2(-hx - hy * 0.5, -hy + hx * 0.5)], stroke);
         painter.line_segment([tip, tip + vec2(-hx + hy * 0.5, -hy - hx * 0.5)], stroke);
     }
