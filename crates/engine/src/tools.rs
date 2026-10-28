@@ -576,6 +576,11 @@ impl ToolState {
     }
 }
 
+/// Toque del dedo en Android necesita un alcance mayor que el cursor de ratón.
+#[cfg(target_os = "android")]
+const HANDLE_PX: f64 = 14.0;
+
+#[cfg(not(target_os = "android"))]
 const HANDLE_PX: f64 = 5.0;
 const ROTATE_PX: f64 = 18.0;
 /// Snap distance in screen pixels.

@@ -10,6 +10,13 @@ import android.os.Bundle;
 import android.os.Environment;
 import android.provider.Settings;
 import android.util.Log;
+import android.view.KeyEvent;
+import android.view.View;
+import android.view.ViewGroup;
+import android.view.inputmethod.BaseInputConnection;
+import android.view.inputmethod.EditorInfo;
+import android.view.inputmethod.InputConnection;
+import android.view.inputmethod.InputMethodManager;
 
 /**
  * La Activity del port (copiada de vectorcraft-android).
@@ -58,11 +65,18 @@ public class MainActivity extends NativeActivity {
     private static MainActivity instance;
     private static native void nativeListo();
     private static native String nativeGetClipboardText();
+    private static native void nativeInjectText(String texto);
 
-    // MEDIDO: con `NativeActivity` **no** hace falta puente de teclado. Las teclas llegan por el
-    // `InputConnection` de AOSP, que es justo lo que usa winit. Los puentes que se llegaron a
-    // escribir (`BaseInputConnection`, `nativeTecla`, y despues el de `GameTextInput` con
-    // `set_text_input_state`) se han borrado: no anadian nada.
+    private static InputView inputView;
+    private static InputMethodManager imm;
+
+    // MEDIDO: con `NativeActivity` Android manda **teclas** al `InputConnection` de AOSP, que
+    // es justo lo que usa winit. Pero `winit` 0.30.13 no traduce esas teclas a
+    // `egui::Event::Text`, así que el teclado blando se muestra pero no escribe nada en la
+    // tool de texto. Se añade una `InputView` oculta (0x0 px) con su propio
+    // `BaseInputConnection` que reenvía cada `commitText` a Rust vía `nativeInjectText`.
+    // Rust lo inyecta como `Event::Text` en `raw_input_hook` y `text_keys` lo procesa igual
+    // que en escritorio.
 
     private static boolean hayPermiso() {
         try {
@@ -100,6 +114,17 @@ public class MainActivity extends NativeActivity {
             Log.w(TAG, "nativeListo: " + t);
         }
         Log.i(TAG, "figcraft: Activity creada, permiso=" + hayPermiso());
+
+        // Vista oculta (0x0 px) con foco y su propio InputConnection para recibir el texto
+        // del teclado blando y reenviarlo a Rust vía nativeInjectText.
+        inputView = new InputView(this);
+        addContentView(inputView, new ViewGroup.LayoutParams(0, 0));
+        inputView.requestFocus();
+
+        imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
+        if (imm != null) {
+            imm.showSoftInput(inputView, InputMethodManager.SHOW_IMPLICIT);
+        }
     }
 
     private static String getClipboardText() {
@@ -165,5 +190,41 @@ public class MainActivity extends NativeActivity {
     static {
         // Los nativos se resuelven por nombre al cargar la libreria; no hace falta
         // RegisterNatives aqui.
+    }
+
+    /**
+     * Vista oculta (0x0 px) que retiene el foco del teclado y expone un
+     * {@link BaseInputConnection} propio. Cada {@code commitText} que el teclado blando
+     * entregue se reenvía a Rust vía {@link #nativeInjectText}.
+     */
+    private static class InputView extends View {
+
+        public InputView(Context context) {
+            super(context);
+            setFocusable(true);
+            setFocusableInTouchMode(true);
+            setVisibility(View.INVISIBLE);
+        }
+
+        @Override
+        public InputConnection onCreateInputConnection(EditorInfo outAttrs) {
+            outAttrs.inputType = InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS;
+            outAttrs.imeOptions = EditorInfo.IME_ACTION_DONE;
+            return new BaseInputConnection(this, true) {
+                @Override
+                public boolean commitText(CharSequence text, int newCursorPosition) {
+                    if (text != null && text.length() > 0 && instance != null) {
+                        nativeInjectText(text.toString());
+                    }
+                    return true;
+                }
+
+                @Override
+                public boolean sendKeyEvent(KeyEvent event) {
+                    // Dejamos que las teclas sigan su camino normal hacia winit/egui.
+                    return super.sendKeyEvent(event);
+                }
+            };
+        }
     }
 }

@@ -15,6 +15,9 @@
 //! Bordes: `raw_input_hook` recorta `screen_rect` con los insets que lee Java, porque la
 //! ventana llega edge-to-edge y `winit` 0.30 solo rellena `safe_area_insets` en iOS.
 
+use std::sync::Mutex;
+
+use egui::Event;
 use figcraft_engine::Session;
 use figcraft_ui_egui::FigApp;
 
@@ -22,6 +25,33 @@ use figcraft_ui_egui::FigApp;
 mod browser;
 #[cfg(target_os = "android")]
 mod permiso;
+
+// Texto que Java (teclado blando via `InputConnection.commitText`) entrega por JNI.
+// Se inyecta como `Event::Text` en `raw_input_hook` para que `text_keys` en `shortcuts.rs`
+// lo procese igual que en escritorio. Con `NativeActivity` winit no traduce las pulsaciones
+// del teclado blando a `Event::Text`, así que `MainActivity` llama a `nativeInjectText`
+// cada vez que llega texto compuesto o confirmado.
+static TEXTO_PENDIENTE: Mutex<String> = Mutex::new(String::new());
+
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ai_storyteller_figcraft_MainActivity_nativeInjectText<'caller>(
+    mut _env: jni::EnvUnowned<'caller>,
+    _this: jni::objects::JClass<'caller>,
+    texto: jni::objects::JString<'caller>,
+) {
+    let _ = _env.with_env(|e| -> jni::errors::Result<()> {
+        let s = texto.try_to_string(e)?;
+        if s.is_empty() {
+            return Ok(());
+        }
+        if let Ok(mut buf) = TEXTO_PENDIENTE.lock() {
+            buf.push_str(&s);
+        }
+        Ok(())
+    })
+    .resolve_with::<jni::errors::LogContextErrorAndDefault, _>(|| "no se pudo inyectar texto del teclado blando".to_string());
+}
 
 // MEDIDO, y el punto en el que el port dio la vuelta: con `NativeActivity` Android manda
 // **teclas** al `InputConnection` de AOSP, `winit` las recibe y el texto llega a egui solo.
@@ -100,10 +130,21 @@ impl eframe::App for App {
     }
 
     fn raw_input_hook(&mut self, _ctx: &egui::Context, _raw: &mut egui::RawInput) {
-        // MEDIDO: aqui ya no se inyecta nada del teclado. Con `GameActivity` habia que meter a mano
-        // el `Event::Text` del `GameTextInput` porque `winit` no lo conecta a egui; con
-        // `NativeActivity` las teclas llegan por el `InputConnection` de AOSP y las entrega `winit`.
-        // Ver el comentario de este modulo.
+        // Inyecta el texto que el teclado blando entrego via JNI (`nativeInjectText`,
+        // llamado desde `MainActivity`). Se pone al principio del frame para que
+        // `text_keys` en `shortcuts.rs` lo procese como `Event::Text` de la tool de texto.
+        #[cfg(target_os = "android")]
+        if let Ok(mut buf) = TEXTO_PENDIENTE.lock() {
+            if !buf.is_empty() {
+                let texto = std::mem::take(&mut *buf);
+                _raw.events.push(Event::Text(texto));
+            }
+        }
+
+        // MEDIDO: con `NativeActivity` las teclas llegan por el `InputConnection` de AOSP y
+        // las entrega `winit`. Con `GameActivity` habia que meter a mano el `Event::Text`
+        // del `GameTextInput` porque `winit` no lo conectaba a egui. Ver el comentario
+        // de este modulo.
 
         // Recorta `screen_rect`, no rellena `safe_area_insets`.
         //
