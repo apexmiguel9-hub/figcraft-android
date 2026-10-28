@@ -1413,7 +1413,7 @@ fn overlays(app: &FigApp, painter: &egui::Painter, t: &Tokens) -> Vec<(NodeId, [
         // In normal selection mode the box keeps its square handles, which do work there.
         if !width_tool && let Some(c) = app.session.vector_edit_box() {
             let label = format!("{} × {}", fmt((c[1] - c[0]).hypot()), fmt((c[3] - c[0]).hypot()));
-            vector_edit_corners(app, painter, c.map(|p| app.to_screen(p.x, p.y)), accent(painter));
+            vector_edit_corners(painter, c.map(|p| app.to_screen(p.x, p.y)), accent(painter));
             let c_screen = c.map(|p| app.to_screen(p.x, p.y));
             size_label = size_pill(app, painter, c_screen, accent(painter), &label);
         }
@@ -1646,7 +1646,7 @@ fn pill(painter: &egui::Painter, at: Pos2, align: Align2, text: String, col: Col
 /// outside the corner node and points outward along the box normal, so the corner stays clear
 /// and the node underneath remains tappable. Returns nothing (no size label — that's drawn
 /// separately by `size_pill` below).
-fn vector_edit_corners(app: &FigApp, painter: &egui::Painter, q: [Pos2; 4], col: Color32) {
+fn vector_edit_corners(painter: &egui::Painter, q: [Pos2; 4], col: Color32) {
     let stroke = stroke(col, 2.0);
     let head = 14.0; // arrow length in screen points — long enough to clear the node circle
     let offset = 7.0; // start outside the corner so we never draw over the node itself
