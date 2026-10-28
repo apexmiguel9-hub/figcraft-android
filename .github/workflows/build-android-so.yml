@@ -24,6 +24,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Android no tiene las fuentes del sistema donde las busca el motor de texto
+      # (`/usr/share/fonts`), asi que sin craft-fonts no hay ninguna fuente para el texto
+      # del lienzo: la capa se queda en 1x14 y no se ve lo que se escribe. Es el mismo pin
+      # que usa CI para que el .so y los tests midan con las mismas caras.
+      - name: Check out craft-fonts
+        uses: actions/checkout@v4
+        with:
+          repository: storytold/craft-fonts
+          ref: 43913056ce82a3fdad0ef69f6b88d1dc922a8104
+          path: craft-fonts
+
       - name: Instalar toolchain de Rust
         uses: dtolnay/rust-toolchain@stable
 
@@ -72,6 +83,8 @@ jobs:
       - name: Compilar la libreria nativa
         env:
           ANDROID_NDK_HOME: ${{ env.NDK_DIR }}
+          CRAFT_FONTS_DIR: ${{ github.workspace }}/craft-fonts
+          CRAFT_FONTS_REQUIRED: "1"
         run: |
           cargo ndk -t "$ANDROID_ABI" -o ./target build -p figcraft-android --locked
           SO="target/$ANDROID_TARGET/debug/libfigcraft_android.so"
