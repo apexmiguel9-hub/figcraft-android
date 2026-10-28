@@ -76,9 +76,7 @@ pub extern "system" fn Java_ai_storyteller_figcraft_MainActivity_nativeInjectCom
             }
             Ok(())
         })
-        .resolve_with::<jni::errors::LogContextErrorAndDefault, _>(|| {
-            "no se pudo inyectar la composicion del teclado blando".to_string()
-        });
+        .resolve_with::<jni::errors::LogContextErrorAndDefault, _>(|| "no se pudo inyectar la composicion del teclado blando".to_string());
 }
 
 #[cfg(target_os = "android")]
@@ -198,13 +196,7 @@ impl eframe::App for App {
                     };
                     if let Some(key) = key {
                         for pressed in [true, false] {
-                            _raw.events.push(Event::Key {
-                                key,
-                                physical_key: None,
-                                pressed,
-                                repeat: false,
-                                modifiers: egui::Modifiers::NONE,
-                            });
+                            _raw.events.push(Event::Key { key, physical_key: None, pressed, repeat: false, modifiers: egui::Modifiers::NONE });
                         }
                     }
                 }
