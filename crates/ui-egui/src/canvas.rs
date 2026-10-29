@@ -323,7 +323,7 @@ fn draw_loupe(app: &FigApp, painter: &egui::Painter, rect: Rect, ppp: f32) {
     let uv = Rect::from_center_size(uv_center, uv_half * 2.0);
     let radius = CornerRadius::same(16);
     painter.rect_filled(r.translate(vec2(0.0, 3.0)).expand(2.0), radius, Color32::from_black_alpha(80));
-    painter.image(tex.id(), r, uv, Color32::WHITE);
+    painter.add(egui::epaint::RectShape::filled(r, radius, Color32::WHITE).with_texture(tex.id(), uv));
     painter.rect_stroke(r, radius, Stroke::new(2.0, Color32::from_white_alpha(235)), StrokeKind::Inside);
     painter.rect_stroke(r.expand(1.0), radius, Stroke::new(1.0, Color32::from_black_alpha(90)), StrokeKind::Outside);
     let c = r.center();
@@ -521,6 +521,9 @@ fn describe_box([x0, y0, x1, y1]: [f64; 4]) -> String {
 
 #[cfg(test)]
 mod builder_poly_tests;
+
+#[cfg(test)]
+mod loupe_tests;
 
 #[cfg(test)]
 mod zoom_preview_tests;

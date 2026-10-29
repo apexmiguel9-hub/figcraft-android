@@ -335,6 +335,7 @@ fn pulsacion_larga(app: &mut FigApp, ctx: &egui::Context) -> bool {
             // termine un arrastre que nunca existio.
             app.canvas.long_press = None;
             app.canvas.dragging = false;
+            app.canvas.loupe = None;
             // A long press is not half of a double tap.
             app.canvas.toque = Toque::default();
             open_context_menu(app, pos, false);
