@@ -360,6 +360,31 @@ const LONG_PRESS_MOVEMENT_PX: f32 = 12.0;
 /// 4 eventos, el menu aparece tras un instante real de quietud.
 const LONG_PRESS_EVENTS: usize = 4;
 
+/// Put the magnifier away when no finger is on the canvas or a pinch starts, even if the release
+/// happens off the canvas.
+fn clear_loupe_if_done(app: &mut FigApp, ctx: &egui::Context) {
+    if !ctx.input(|i| i.pointer.primary_down()) || ctx.multi_touch().is_some() {
+        app.canvas.loupe = None;
+    }
+}
+
+/// Show the magnifier when a point or handle is grabbed on a touch screen and move it with the
+/// finger. A mouse has a cursor and doesn't hide the point.
+fn update_loupe(app: &mut FigApp, ctx: &egui::Context, kind: Option<PointerKind>, pos: Pos2, primary_down: bool) {
+    match kind {
+        Some(PointerKind::Down) if primary_down => {
+            let touch = cfg!(target_os = "android") || ctx.input(|i| i.any_touches());
+            app.canvas.loupe = if touch { loupe_target(app, pos) } else { None };
+        }
+        Some(PointerKind::Move) => {
+            if let Some(l) = &mut app.canvas.loupe {
+                l.at = pos;
+            }
+        }
+        _ => {}
+    }
+}
+
 /// The pointer and keys on the canvas. False when something on it with a cursor of its own has
 /// the pointer (a comment pin, a ruler guide, a gradient or padding handle): the tool's cursor
 /// then doesn't show.
@@ -370,11 +395,7 @@ pub(super) fn input(app: &mut FigApp, ui: &mut Ui, resp: &egui::Response) -> boo
         return true;
     }
     let ctx = ui.ctx().clone();
-    // The magnifier only lives while one finger is on the canvas: lifting it, or starting a pinch,
-    // puts it away even when the release happens off the canvas.
-    if !ctx.input(|i| i.pointer.primary_down()) || ctx.multi_touch().is_some() {
-        app.canvas.loupe = None;
-    }
+    clear_loupe_if_done(app, &ctx);
     // Un handle (gradiente, recorte, padding, blur) que ya está arrastrando tiene que ver la
     // suelta **antes** del corte por `hover_pos`. En tactil, egui-winit manda `PointerGone` al
     // levantar el dedo y `hover_pos` queda en `None`; sin esto, el drag se quedaba abierto y el
@@ -557,17 +578,8 @@ pub(super) fn input(app: &mut FigApp, ui: &mut Ui, resp: &egui::Response) -> boo
     if force.is_some() {
         app.canvas.pressure = force;
     }
+    update_loupe(app, &ctx, kind, pos, primary_down);
     if let Some(k) = kind {
-        // The magnifier appears as soon as a point or handle is grabbed on a touch screen, follows
-        // the finger and goes away on release. A mouse has a cursor and doesn't hide the point.
-        if k == PointerKind::Down && primary_down {
-            let touch = cfg!(target_os = "android") || ctx.input(|i| i.any_touches());
-            app.canvas.loupe = if touch { loupe_target(app, pos) } else { None };
-        } else if k == PointerKind::Move
-            && let Some(l) = &mut app.canvas.loupe
-        {
-            l.at = pos;
-        }
         send(app, k, pos, &mods);
         // The pointer also let go within this frame (a quick click, or a slow frame): the tools get
         // the release too, so the press's gesture ends — a quick click with a shape tool still
@@ -576,9 +588,6 @@ pub(super) fn input(app: &mut FigApp, ui: &mut Ui, resp: &egui::Response) -> boo
             app.canvas.dragging = false;
             send(app, PointerKind::Up, pos, &mods);
         }
-    }
-    if !primary_down {
-        app.canvas.loupe = None;
     }
     true
 }
@@ -599,6 +608,7 @@ fn send(app: &mut FigApp, kind: PointerKind, pos: Pos2, m: &egui::Modifiers) {
 /// Right-click at screen `pos`: select what's under the pointer (`deep`: the nested layer), then
 /// open the context menu there.
 pub fn open_context_menu(app: &mut FigApp, pos: Pos2, deep: bool) {
+    app.canvas.loupe = None;
     let p = app.to_page(pos);
     if let Ok(ds) = app.session.ds() {
         let (doc, page, sel, zoom) = (ds.doc.clone(), ds.page, ds.selection.clone(), ds.view.zoom.max(1e-6));

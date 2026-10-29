@@ -94,7 +94,7 @@ pub(super) fn request_render(app: &mut FigApp, worker: &mut Worker, ppp: f32, ma
         fonts: figcraft_text::layout_generation(),
         proof,
         dots,
-        gesture: app.canvas.dragging,
+        gesture: app.canvas.dragging && app.canvas.loupe.is_none(),
     };
     if let Some(previous) = &app.canvas.submitted {
         let previous_origin = (previous.origin.0 as f64 / 1000.0, previous.origin.1 as f64 / 1000.0);
@@ -118,9 +118,9 @@ pub(super) fn request_render(app: &mut FigApp, worker: &mut Worker, ppp: f32, ma
         solo: key.solo,
         proof,
         dots,
-        gesture: app.canvas.dragging,
+        gesture: app.canvas.dragging && app.canvas.loupe.is_none(),
         uid: ds.uid,
-        zoom_preview: ds.view.pixel_preview_scale().is_none(),
+        zoom_preview: ds.view.pixel_preview_scale().is_none() && app.canvas.loupe.is_none(),
         at: web_time::Instant::now(),
     };
     app.canvas.want_view = Some(job.view.clone());

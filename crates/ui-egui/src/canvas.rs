@@ -269,7 +269,7 @@ fn loupe_center(app: &FigApp, l: &Loupe) -> Option<Point> {
 /// Side of the magnifier, in points.
 const LOUPE_SIZE: f32 = 150.0;
 /// How much the magnifier enlarges the canvas.
-const LOUPE_MAG: f32 = 3.0;
+const LOUPE_MAG: f32 = 2.5;
 
 /// Where the magnifier goes: above the finger, below it when there is no room, and inside the
 /// canvas.
@@ -301,6 +301,56 @@ fn loupe_rect(at: Pos2, canvas: Rect, size: f32) -> Rect {
     r.translate(vec2(dx, dy))
 }
 
+/// The edited vector's real geometry inside the magnifier: its segments, handles and points,
+/// mapped from the page to the loupe's magnified space. The texture may lag a frame behind the
+/// drag (or be a coarse preview); this overlay is the current preview, so two points that touch
+/// look touching.
+fn draw_loupe_vectors(app: &FigApp, painter: &egui::Painter, r: Rect, center: Point) {
+    let Ok(ds) = app.session.ds() else { return };
+    let Some(ve) = ds.vector_edit.as_ref() else { return };
+    let Some(l) = app.canvas.loupe else { return };
+    let o = if ve.id == l.id {
+        figcraft_engine::vectoredit::overlay(&ds.doc, ve)
+    } else {
+        ve.others.iter().find(|p| p.id == l.id).and_then(|p| figcraft_engine::vectoredit::overlay(&ds.doc, &ve.view(p)))
+    };
+    let Some(o) = o else { return };
+    let center_screen = app.to_screen(center.x, center.y);
+    let at = |p: [f64; 2]| r.center() + (app.to_screen(p[0], p[1]) - center_screen) * LOUPE_MAG;
+    let col = accent(painter);
+    let lp = painter.with_clip_rect(r.shrink(2.0));
+    for (i, seg) in o.segments.iter().enumerate() {
+        let [a, b, c, d] = [at(seg[0]), at(seg[1]), at(seg[2]), at(seg[3])];
+        if !Rect::from_points(&[a, b, c, d]).intersects(r.expand(8.0)) {
+            continue;
+        }
+        let w = if o.selected_segments.contains(&i) { 2.5 } else { 1.5 };
+        lp.add(egui::epaint::CubicBezierShape::from_points_stroke([a, b, c, d], false, Color32::TRANSPARENT, Stroke::new(w, col)));
+    }
+    for h in &o.handles {
+        let v = at(h.vertex);
+        let e = at(h.handle);
+        if !Rect::from_two_pos(v, e).intersects(r.expand(8.0)) {
+            continue;
+        }
+        let on = o.selected_handles.contains(&(h.seg, h.start));
+        lp.line_segment([v, e], Stroke::new(1.0, col));
+        lp.circle_filled(e, 3.0, if on { col } else { Color32::WHITE });
+        lp.circle_stroke(e, 3.0, Stroke::new(1.0, col));
+    }
+    for (i, v) in o.vertices.iter().enumerate() {
+        let p = at(*v);
+        if !r.expand(8.0).contains(p) {
+            continue;
+        }
+        let on = o.selected_vertices.contains(&i);
+        let size = if on { 7.0 } else { 5.5 };
+        let q = Rect::from_center_size(p, vec2(size, size));
+        lp.rect_filled(q, CornerRadius::same(4), if on { col } else { Color32::WHITE });
+        lp.rect_stroke(q, CornerRadius::same(4), Stroke::new(1.0, col), StrokeKind::Inside);
+    }
+}
+
 /// The magnifier over the finger: the canvas texture around the dragged point at [`LOUPE_MAG`],
 /// with a crosshair on the point. It uses the texture already on screen, so a reference image and
 /// every other layer are included, and it costs no extra render.
@@ -324,17 +374,21 @@ fn draw_loupe(app: &FigApp, painter: &egui::Painter, rect: Rect, ppp: f32) {
     let radius = CornerRadius::same(16);
     painter.rect_filled(r.translate(vec2(0.0, 3.0)).expand(2.0), radius, Color32::from_black_alpha(80));
     painter.add(egui::epaint::RectShape::filled(r, radius, Color32::WHITE).with_texture(tex.id(), uv));
+    draw_loupe_vectors(app, painter, r, center);
     painter.rect_stroke(r, radius, Stroke::new(2.0, Color32::from_white_alpha(235)), StrokeKind::Inside);
     painter.rect_stroke(r.expand(1.0), radius, Stroke::new(1.0, Color32::from_black_alpha(90)), StrokeKind::Outside);
     let c = r.center();
-    let shadow = Stroke::new(3.0, Color32::from_black_alpha(150));
-    let light = Stroke::new(1.0, Color32::WHITE);
-    for (a, b) in [(vec2(-9.0, 0.0), vec2(9.0, 0.0)), (vec2(0.0, -9.0), vec2(0.0, 9.0))] {
+    let shadow = Stroke::new(4.0, Color32::from_black_alpha(160));
+    let light = Stroke::new(1.6, Color32::WHITE);
+    // The crosshair leaves the centre clear: the point (and its node) is what it marks.
+    for (a, b) in
+        [(vec2(-9.0, 0.0), vec2(-3.0, 0.0)), (vec2(3.0, 0.0), vec2(9.0, 0.0)), (vec2(0.0, -9.0), vec2(0.0, -3.0)), (vec2(0.0, 3.0), vec2(0.0, 9.0))]
+    {
         painter.line_segment([c + a, c + b], shadow);
         painter.line_segment([c + a, c + b], light);
     }
-    painter.circle_stroke(c, 6.0, shadow);
-    painter.circle_stroke(c, 6.0, light);
+    painter.circle_stroke(c, 7.0, shadow);
+    painter.circle_stroke(c, 7.0, light);
 }
 
 /// Run one canvas pass: update the viewport size and first-fit zoom; handle pointer/key input
