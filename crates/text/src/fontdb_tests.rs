@@ -247,6 +247,21 @@ fn a_rescan_offers_fonts_installed_since() {
     assert_eq!(waiting(&db), ["Black"]);
 }
 
+/// The app's own font folder loads its files and ignores anything that isn't one.
+#[test]
+fn font_folder_loads_its_files() {
+    let Some(f) = CRAFT_FONTS.first() else { return };
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+    let dir = std::env::temp_dir().join(format!("figcraft-fonts-{}-{stamp}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("Test.ttf"), f.bytes).unwrap();
+    std::fs::write(dir.join("notes.txt"), b"not a font").unwrap();
+    let families = load_fonts_dir(&dir);
+    assert!(!families.is_empty());
+    assert!(families.iter().all(|f| has_family(f)));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Font file bytes add their faces once; junk adds nothing.
 #[test]
 fn font_bytes_load_into_the_db() {

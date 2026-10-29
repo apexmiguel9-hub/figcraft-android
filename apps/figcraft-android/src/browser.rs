@@ -306,6 +306,11 @@ fn state_path() -> Option<PathBuf> {
     DATA_DIR.get().map(|dir| dir.join("state.json"))
 }
 
+/// The app's own folder for imported fonts, under its private files.
+pub fn fonts_dir() -> Option<PathBuf> {
+    DATA_DIR.get().map(|dir| dir.join("fonts"))
+}
+
 /// Read the preferences saved by an earlier run, if any. The engine's `Prefs` is the part of
 /// `state.json` this port keeps; a missing or unreadable file simply means defaults (dark).
 pub fn load_prefs() -> Option<Prefs> {

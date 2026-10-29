@@ -962,6 +962,34 @@ pub fn rescan_system_fonts() -> Rescan {
     Rescan::default()
 }
 
+/// Load every font file in `dir` (not its subfolders) into the global db: the app's own folder for
+/// imported fonts, read at startup. Returns the families its faces provide.
+pub fn load_fonts_dir(dir: &std::path::Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    let mut families = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        // The listing's own metadata (free on Windows); a symlink's target needs a lookup.
+        let meta = match entry.file_type() {
+            Ok(t) if !t.is_symlink() => entry.metadata(),
+            _ => std::fs::metadata(&path),
+        };
+        let Ok(meta) = meta else { continue };
+        if !meta.is_file() || meta.len() > MAX_FONT_FILE {
+            continue;
+        }
+        let ext = path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).unwrap_or_default();
+        if !matches!(ext.as_str(), "ttf" | "otf" | "ttc" | "otc") {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(&path) else { continue };
+        families.extend(load_font_bytes(bytes));
+    }
+    families.sort_by_key(|f| f.to_ascii_lowercase());
+    families.dedup();
+    families
+}
+
 /// Load font file bytes (every face of a collection) into the global db, for a font that isn't
 /// installed. Returns the families of its faces (none: not a font file); the same file again
 /// returns them without adding its faces twice.

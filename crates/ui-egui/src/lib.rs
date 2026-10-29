@@ -788,6 +788,8 @@ pub struct FigApp {
     pub canvas: canvas::CanvasState,
     pub services: Box<dyn Services>,
     worker: Option<render_worker::Worker>,
+    /// Where imported fonts are kept and read at startup (`None`: this build keeps none).
+    fonts_dir: Option<PathBuf>,
     fonts_installed: bool,
     /// System faces for scripts the built-in fonts lack were added (after the font scan), with
     /// faces for these CJK scripts ([`cjk`]) in this UI language's order.
@@ -835,6 +837,7 @@ impl FigApp {
             canvas: canvas::CanvasState::default(),
             services,
             worker: None,
+            fonts_dir: None,
             fonts_installed: false,
             script_fonts: None,
             cjk_checked: None,
@@ -851,6 +854,23 @@ impl FigApp {
             ui_context: None,
             automation_roots: None,
         }
+    }
+
+    /// Keep imported fonts in `dir` and load the ones already there (the app calls this at
+    /// startup). `None`: this build keeps none (the web).
+    pub fn set_fonts_dir(&mut self, dir: Option<PathBuf>) {
+        self.fonts_dir = dir;
+        let Some(dir) = &self.fonts_dir else { return };
+        let families = figcraft_text::load_fonts_dir(dir);
+        if !families.is_empty() {
+            log::info!("fonts: loaded {} families from {}", families.len(), dir.display());
+            font_preview::clear();
+        }
+    }
+
+    /// The folder imported fonts are kept in (`None`: this build keeps none).
+    pub fn fonts_dir(&self) -> Option<&Path> {
+        self.fonts_dir.as_deref()
     }
 
     /// Dismiss the composer after a successful switch away from the Comment tool.

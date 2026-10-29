@@ -202,6 +202,17 @@ pub fn build(cc: &eframe::CreationContext<'_>) -> std::result::Result<Box<dyn ef
     #[cfg(not(target_os = "android"))]
     let services: Box<dyn figcraft_ui_egui::Services> = Box::new(figcraft_ui_egui::NoServices);
 
+    // Imported fonts live with the app's private files and load before the first frame.
+    #[cfg(target_os = "android")]
+    let app = {
+        // Android has no `/usr/share/fonts`: this marks the (empty) system scan done, so the
+        // Missing fonts window stops waiting for it. Imported fonts live in the app's own folder.
+        figcraft_text::scan_system_fonts();
+        let mut app = FigApp::new(session, services);
+        app.set_fonts_dir(browser::fonts_dir());
+        app
+    };
+    #[cfg(not(target_os = "android"))]
     let app = FigApp::new(session, services);
     Ok(Box::new(App(app)))
 }

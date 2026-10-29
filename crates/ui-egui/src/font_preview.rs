@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use egui::Id;
@@ -16,9 +17,19 @@ const MAX: usize = 2000;
 #[derive(Clone, Default)]
 struct Cache(Arc<Mutex<HashMap<u64, Option<egui::TextureHandle>>>>);
 
+/// Bumped when the font catalog changes, so previews drawn in a fallback font aren't reused.
+static GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// Forget the previews drawn so far: a font was installed or loaded, and the same family may now
+/// draw in its own face.
+pub fn clear() {
+    GENERATION.fetch_add(1, Ordering::Relaxed);
+}
+
 /// What a preview looks like: the typography that shows plus the text and the screen's scale.
 fn key(style: &TextStyle, text: &str, ppp: f32) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
+    GENERATION.load(Ordering::Relaxed).hash(&mut h);
     (&style.font_family, &style.font_style, style.font_size.to_bits(), text, ppp.to_bits()).hash(&mut h);
     (style.line_height.label(), style.letter_spacing.label(), style.decoration as u8, style.case as u8).hash(&mut h);
     for (k, v) in &style.variations {

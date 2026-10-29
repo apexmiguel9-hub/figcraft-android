@@ -199,6 +199,8 @@ fn main() -> eframe::Result {
     // open (no frame then).
     figcraft_ui_egui::i18n::set(&session.prefs.language, figcraft_ui_egui::Services::system_language(&svc).as_deref());
     let mut fig = FigApp::new(session, Box::new(svc));
+    // Imported fonts live with the user's settings and load before the first frame.
+    fig.set_fonts_dir(services::config_dir().map(|d| d.join("Fonts")));
     fig.automation_roots = roots;
     fig.ui.home = false;
     // Files named on the command line are the user's too: their missing fonts are listed.
