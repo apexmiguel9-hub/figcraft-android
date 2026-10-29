@@ -112,6 +112,26 @@ public class MainActivity extends NativeActivity {
         return null;
     }
 
+    /**
+     * Abre una URL en el navegador del sistema.
+     *
+     * <p>La llama Rust ({@code permiso::open_url}) para el "Open link" de los prototipos y el
+     * menu Help. No hace falta el permiso {@code INTERNET}: quien sale a la red es el navegador.
+     */
+    private static void openUrl(String url) {
+        try {
+            if (instance == null) {
+                Log.w(TAG, "openUrl: la Activity todavia no esta lista");
+                return;
+            }
+            Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            instance.startActivity(i);
+        } catch (Throwable t) {
+            Log.w(TAG, "openUrl: " + t);
+        }
+    }
+
     private static String insets() {
         try {
             if (instance == null) {
