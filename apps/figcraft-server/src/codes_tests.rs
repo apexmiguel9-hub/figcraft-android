@@ -64,6 +64,16 @@ fn is_code(shown: &str) -> bool {
     shown.len() == 11 && matches!(code::parse(shown), Ok(code::Code::Online(_)))
 }
 
+/// The links file keeps hashes only, never the codes or the token they wrap.
+fn only_hashes_on_disk(dir: &std::path::Path, file: &str, wrapped: &str, edit: &str, view: &str) {
+    let links = std::fs::read_to_string(dir.join("files").join(file).join("links.json")).unwrap();
+    for secret in [edit, view, &edit.replace('-', ""), &view.replace('-', "")] {
+        assert!(!links.contains(secret), "{links}");
+    }
+    assert!(!links.contains(wrapped.rsplit('=').next().unwrap()), "the wrapped token isn't the token");
+    assert_eq!(links.matches("\"code\"").count(), 2);
+}
+
 #[test]
 fn a_file_shared_online_is_joined_by_its_codes() {
     let dir = TempDir::new("codes-share");
@@ -90,12 +100,7 @@ fn a_file_shared_online_is_joined_by_its_codes() {
     let before_stop = ids(dir.path());
     assert_eq!(before_stop.len(), 4);
     // On disk: hashes only, of the codes as of the links' tokens.
-    let links = std::fs::read_to_string(dir.path().join("files").join(&p.file).join("links.json")).unwrap();
-    for secret in [edit.as_str(), view.as_str(), &edit.replace('-', ""), &view.replace('-', "")] {
-        assert!(!links.contains(secret), "{links}");
-    }
-    assert!(!links.contains(p.edit.rsplit('=').next().unwrap()), "the wrapped token isn't the token");
-    assert_eq!(links.matches("\"code\"").count(), 2);
+    only_hashes_on_disk(dir.path(), &p.file, &p.edit, &edit, &view);
     // Someone types the edit code, the way people type.
     let mut b = app("Bo", &url);
     assert_eq!(ex(&mut b, "collab.join", json!({"code": edit.to_lowercase().replace('-', " ")}))["status"], "connecting");
@@ -262,17 +267,21 @@ fn the_limits_on_codes_over_time() {
     let t0 = Instant::now();
     let me = ip("198.51.100.9");
     let mut abuse = Abuse::new(AbuseConfig { open: false, connects_per_minute: 30, publishes_per_hour: 10, messages_per_second: 200 });
-    // A right code forgives the wrong ones before it.
+    // A right code, even from a neighbour in the same /64, doesn't forgive the wrong ones.
+    let a = ip("2001:db8:1:2::1");
+    let b = ip("2001:db8:1:2::2");
     for _ in 0..WRONG_CODES - 1 {
+        abuse.code_tried(a, false, t0);
+    }
+    abuse.code_tried(b, true, t0);
+    abuse.code_tried(a, true, t0);
+    assert_eq!(abuse.code_locked(a, t0), None);
+    abuse.code_tried(a, false, t0);
+    assert_eq!(abuse.code_locked(a, t0), Some(CODE_LOCKOUT));
+    // Wrong codes: locked for the lockout, then free again.
+    for _ in 0..WRONG_CODES {
         abuse.code_tried(me, false, t0);
     }
-    abuse.code_tried(me, true, t0);
-    for _ in 0..WRONG_CODES - 1 {
-        abuse.code_tried(me, false, t0);
-    }
-    assert_eq!(abuse.code_locked(me, t0), None);
-    // One more: locked for the lockout, then free again.
-    abuse.code_tried(me, false, t0);
     assert_eq!(abuse.code_locked(me, t0), Some(CODE_LOCKOUT));
     assert!(abuse.code_locked(me, t0 + CODE_LOCKOUT - Duration::from_secs(1)).is_some());
     assert_eq!(abuse.code_locked(me, t0 + CODE_LOCKOUT), None);

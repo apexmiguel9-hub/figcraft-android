@@ -14,6 +14,38 @@ fn tmp(name: &str) -> std::path::PathBuf {
 }
 
 #[test]
+fn option_terminator_allows_dash_prefixed_filenames() {
+    let dir = tmp("option-terminator");
+    let doc = figcraft_doc::Document::new("Dash-prefixed file");
+    let bytes = figcraft_format::save_bytes(&doc, None).unwrap();
+    for name in ["--drawing.figcraft", "-h", "--json", "--no-system-fonts", "--"] {
+        std::fs::write(dir.join(name), &bytes).unwrap();
+        let output = bin().current_dir(&dir).args(["info", "--json", "--no-system-fonts", "--", name]).output().unwrap();
+        assert!(output.status.success(), "{name}: {}", String::from_utf8_lossy(&output.stderr));
+        let info: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(info["file"], name);
+        assert_eq!(info["name"], "Dash-prefixed file");
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn global_font_flag_respects_option_values() {
+    for filter in ["--", "--no-system-fonts"] {
+        let output = bin().args(["commands", "--filter", filter, "--no-system-fonts", "--json"]).output().unwrap();
+        assert!(output.status.success(), "{filter}: {}", String::from_utf8_lossy(&output.stderr));
+        assert!(serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap().is_array());
+    }
+}
+
+#[test]
+fn global_font_flag_can_precede_the_subcommand() {
+    let output = bin().args(["--no-system-fonts", "commands", "--json"]).output().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(!serde_json::from_slice::<Vec<serde_json::Value>>(&output.stdout).unwrap().is_empty());
+}
+
+#[test]
 fn bad_arguments_exit_2_without_panicking() {
     for args in [
         &[][..],
@@ -37,6 +69,40 @@ fn bad_arguments_exit_2_without_panicking() {
     }
     let out = bin().args(["info", "/no/such/file.figcraft"]).output().unwrap();
     assert_eq!(out.status.code(), Some(1));
+}
+
+/// `--help` / `-h` after a subcommand prints the usage on stdout and exits 0, as it does first
+/// (#1155), whatever else is on the line; nothing runs.
+#[test]
+fn help_after_a_subcommand_prints_the_usage() {
+    for args in [
+        &["--help"][..],
+        &["-h"],
+        &["help"],
+        &["mcp", "--help"],
+        &["mcp", "-h"],
+        &["info", "--help"],
+        &["export", "--help"],
+        &["export", "x.figcraft", "-o", "out", "--help"],
+        &["convert", "-h"],
+        &["render", "--help"],
+        &["run", "--help"],
+        &["commands", "--help"],
+        &["plugin", "publish", "--help"],
+        &["perf", "--help"],
+        &["mcp", "--attach", "notaport", "--help"],
+        &["mcp", "--bogus", "--help"],
+    ] {
+        let out = bin().args(args).stdin(Stdio::null()).output().unwrap();
+        assert_eq!(out.status.code(), Some(0), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(text.contains("USAGE") && text.contains("figcraft-cli mcp"), "{args:?}: {text}");
+        assert!(out.stderr.is_empty(), "{args:?}: nothing on stderr, got {}", String::from_utf8_lossy(&out.stderr));
+    }
+    // A value that happens to be `-h` is still a value, not a request for help.
+    let out = bin().args(["commands", "--filter", "--help"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("USAGE"), "--filter took `--help` as its text");
 }
 
 #[test]
@@ -77,6 +143,30 @@ fn run_export_info_convert() {
     let out = bin().arg("run").arg(&bad).output().unwrap();
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stdout).contains("\"ok\":false"));
+    std::fs::remove_dir_all(&d).ok();
+}
+
+/// `export` into a folder names the files as the app's export does (#1154): brackets, `+`, `&`,
+/// `%`, `#` and commas stay, what file systems refuse becomes `_`.
+#[test]
+fn export_file_names_keep_what_the_app_keeps() {
+    let d = tmp("names");
+    let script = d.join("s.json");
+    let names = ["Homepage - desktop (live + verbeteringen)", "Q&A, 50% #1 [v2]", "a:b*c?d|e"];
+    let steps: Vec<serde_json::Value> = names
+        .iter()
+        .enumerate()
+        .map(|(i, n)| serde_json::json!({"command": "frame.create", "params": {"x": i * 200, "y": 0, "width": 20, "height": 20, "name": n}}))
+        .collect();
+    std::fs::write(&script, serde_json::to_string(&steps).unwrap()).unwrap();
+    let file = d.join("doc.figcraft");
+    assert!(bin().arg("run").arg(&script).arg("--out").arg(&file).output().unwrap().status.success());
+    let dir = d.join("out");
+    let out = bin().arg("export").arg(&file).arg("-o").arg(&dir).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    for want in ["Homepage - desktop (live + verbeteringen).png", "Q&A, 50% #1 [v2].png", "a_b_c_d_e.png"] {
+        assert!(dir.join(want).is_file(), "{want} in {:?}", std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name()).collect::<Vec<_>>());
+    }
     std::fs::remove_dir_all(&d).ok();
 }
 

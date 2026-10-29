@@ -100,7 +100,9 @@ impl eframe::App for App {
         // retraso, que en un movil de 120 fps se ve.
         #[cfg(target_os = "android")]
         browser::logic(ctx);
-        self.0.logic(ctx);
+        // Upstream v0.12.1 split the old `FigApp::logic` into `background_tick` (deadlines,
+        // control queues, autosave) and the frame itself, and the desktop app guards it.
+        figcraft_ui_egui::windows::guard(&mut self.0, ctx, |fig| fig.background_tick(ctx));
     }
 
     fn raw_input_hook(&mut self, _ctx: &egui::Context, _raw: &mut egui::RawInput) {
@@ -131,7 +133,8 @@ impl eframe::App for App {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        self.0.ui(ui);
+        let ctx = ui.ctx().clone();
+        figcraft_ui_egui::windows::guard(&mut self.0, &ctx, |fig| fig.ui(ui));
         // MEDIDO: el aviso va en una `Window` propia y **no** en el `Ui` del editor, porque
         // en el `Ui` sale pegado a la barra de estado, encima del texto de ayuda.
         //

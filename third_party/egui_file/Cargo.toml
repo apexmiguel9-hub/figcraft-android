@@ -1,0 +1,26 @@
+# `egui_file` 0.28.0 (MIT), vendored for the Android port.
+#
+# The only published version asks for `egui = "0.36"`; FigCraft moved to egui 0.37
+# (the reviewed fork in `[patch.crates-io]`). Keeping both would compile two egui
+# versions and the dialog's `Context` would not match the app's. The source is
+# unchanged; only the requirement below follows the workspace.
+[package]
+name = "egui_file"
+version = "0.28.0"
+edition = "2024"
+rust-version = "1.85.0"
+license = "MIT"
+description = "File dialog for egui"
+repository = "https://codeberg.org/Barugon/egui_file"
+readme = "README.md"
+
+[lib]
+name = "egui_file"
+path = "src/lib.rs"
+
+[dependencies]
+dyn-clone = "1.0"
+egui = "0.37"
+
+# Standalone: it lives under the FigCraft workspace but is not one of its members.
+[workspace]

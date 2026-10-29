@@ -1,11 +1,11 @@
 //! Pages.
 
 use figcraft_doc::proto::Flow;
-use figcraft_doc::*;
+use figcraft_doc::{Guide, NodeId, NodeKind};
 use serde_json::{Value, json};
 
 use super::{CommandSpec, ok};
-use crate::params::*;
+use crate::params::{boolean, color, id, req_index, req_num, req_string, string};
 use crate::{Session, bad, spec};
 
 /// After a page edit: the file keeps a page that isn't a divider, and the canvas shows one (the

@@ -21,11 +21,10 @@ jobs:
     # Tracks @main so suite-wide CI fixes reach every app without a PR in each repository.
     uses: storytold/craft-common-actions/.github/workflows/gate.yml@main
     with:
-      # The craft-fonts commit release.yml builds with. Needs fonts/latin-manifest.txt (Inter):
-      # crates/text/build.rs fails a build that requires craft-fonts without it. Only craft-fonts'
-      # pr/latin-presentation-fonts has it; its main has Noto Sans Georgian but no Inter. Re-pin
-      # once one commit has both (storytold/craft-fonts#42).
-      craft-fonts-ref: 43913056ce82a3fdad0ef69f6b88d1dc922a8104
+      # Combined Latin presentation and core UI catalog. Required web builds enforce
+      # Inter Regular/SemiBold and Noto Sans Georgian Regular after asset-policy filtering.
+      craft-fonts-ref: 37827adc41fd165f9a9234ac40f94dbad353aa69
+      require-craft-fonts: true
       packages: >-
         libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev
         libgtk-3-dev

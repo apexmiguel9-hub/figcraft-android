@@ -82,7 +82,7 @@ android_logger = { workspace = true }
 # devuelve ni una linea. Es egui puro con el sistema de ficheros enchufable, y el que trae
 # por defecto ya es `std::fs` (`src/lib.rs:231`, `fs: Box::new(Fs {})`). O sea: no hay que
 # escribir ni un `Vfs`.
-egui_file = "0.28"
+egui_file = { path = "../../third_party/egui_file" }
 
 [lib]
 name = "figcraft_android"
