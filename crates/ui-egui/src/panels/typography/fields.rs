@@ -321,8 +321,7 @@ fn type_settings_basics(
     ui.add_space(4.0);
     let indent = common(doc, ids, |n| n.kind.text().map(|t| t.paragraph_indent.to_bits())).flatten().map(f64::from_bits);
     // Indent applies to start-aligned text only; elsewhere the field stays visible but off.
-    let start_aligned =
-        common(doc, ids, |n| n.kind.text().map(|t| t.align_h != TextAlignH::Center && t.align_h != TextAlignH::Justified)).flatten();
+    let start_aligned = common(doc, ids, |n| n.kind.text().map(|t| t.align_h != TextAlignH::Center && t.align_h != TextAlignH::Justified)).flatten();
     ui.add_enabled_ui(start_aligned != Some(false), |ui| {
         let field =
             field_row(ui, tr("Paragraph indent"), |ui, fw| widgets::number_field(ui, Id::unique("ty_indent"), Lead::None, indent, "", fw, 1.0));
