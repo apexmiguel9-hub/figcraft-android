@@ -5,7 +5,10 @@ use serde_json::{Value, json};
 
 use crate::present_tests::{Ui, id, setup};
 
-const FILE_TAB: Pos2 = pos2(100.0, 20.0);
+const FILE_TAB: Pos2 = pos2(100.0 + TABS_AFTER_HISTORY, 20.0);
+
+/// Our Undo/Redo pair sits between Home and the document tabs, moving them 64 px right.
+const TABS_AFTER_HISTORY: f32 = 64.0;
 
 fn click(u: &mut Ui, at: Pos2) {
     u.button(at, true);
@@ -60,7 +63,7 @@ fn front_settings(u: &Ui) -> PrototypeSettings {
 /// "Untitled".
 fn present_tab(u: &Ui, files: usize, k: usize) -> (Pos2, Pos2) {
     let width = |chars: usize, lo: f32, hi: f32| (12.0 * 0.6 * chars as f32 + 64.0).clamp(lo, hi);
-    let mut x = 52.0 + files as f32 * width("Untitled".len(), 120.0, 220.0);
+    let mut x = 52.0 + TABS_AFTER_HISTORY + files as f32 * width("Untitled".len(), 120.0, 220.0);
     let names: Vec<String> = tabs(u).as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap().to_string()).collect();
     for n in names.iter().take(k) {
         x += width(n.chars().count(), 140.0, 260.0);
