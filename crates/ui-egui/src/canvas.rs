@@ -1,7 +1,9 @@
 //! The canvas: the rendered page plus selection, hover, guides, labels and text-editing overlays.
 
 use std::sync::Arc;
+use std::time::Instant;
 
+use crate::canvas::timing::CanvasTiming;
 use egui::{Align2, Color32, CornerRadius, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, Ui, pos2, vec2};
 use figcraft_doc::{Document, NodeId, NodeKind};
 use figcraft_engine::Preedit;
@@ -21,6 +23,7 @@ mod outline;
 mod overlays;
 mod render;
 mod rulers;
+mod timing;
 
 #[cfg(test)]
 use builder::clean_poly;
@@ -66,6 +69,10 @@ pub struct CanvasState {
     /// canvas texture (ms; the texture is uploaded when that frame is painted).
     pub preview_latency_ms: Option<f64>,
     pub refine_latency_ms: Option<f64>,
+    /// Instrumentación del pipeline: input → request → render → upload → repaint.
+    pub timing: CanvasTiming,
+    /// Momento en que llegó el último evento de dedo/pointer relevante (para marcar el input del ciclo abierto).
+    pub last_input_instant: Option<Instant>,
     dragging: bool,
     /// The magnifier shown over the finger while a vector point or handle is dragged (touch).
     pub loupe: Option<Loupe>,
@@ -162,6 +169,8 @@ impl Default for CanvasState {
             touch_count: 0,
             long_press: None,
             toque: Toque::default(),
+            timing: CanvasTiming::new(64),
+            last_input_instant: None,
         }
     }
 }
@@ -447,9 +456,12 @@ pub fn show(app: &mut FigApp, ui: &mut Ui, worker: &mut Worker) {
     // Every finished render is shown, even when a newer one is already on its way: renders finish
     // in order, and an edit every frame (a drag) would otherwise never show until it stopped.
     let shown = app.session.ds().map(|ds| (ds.uid, ds.page)).ok();
+    let mut done_instant: Option<Instant> = None;
+    let mut upload_instant: Option<Instant> = None;
     if let Some(done) = worker.poll()
         && shows(&app.canvas, &done, shown)
     {
+        done_instant = Some(Instant::now());
         if !done.coarse || done.gesture {
             app.canvas.render_work = Some(done.work);
             app.ui.render_ms = done.ms;
@@ -464,6 +476,7 @@ pub fn show(app: &mut FigApp, ui: &mut Ui, worker: &mut Worker) {
             Some(t) => t.set(done.image, filter),
             None => app.canvas.texture = Some(ctx.load_texture("figcraft-canvas", done.image, filter)),
         }
+        upload_instant = Some(Instant::now());
         let latency = Some(done.at.elapsed().as_secs_f64() * 1000.0);
         if done.gesture {
             // Ni preview ni refine: es la imagen que sigue al dedo.
@@ -517,6 +530,11 @@ pub fn show(app: &mut FigApp, ui: &mut Ui, worker: &mut Worker) {
     crate::branch_ui::banner(app, &ctx, rect);
     crate::dev_mode::focus_bar(app, &ctx, rect);
     draw_loupe(app, &painter, rect, ppp);
+    // Cierra el ciclo de instrumentación si este frame mostró un render terminado.
+    if let (Some(done_instant), Some(upload_instant)) = (done_instant, upload_instant) {
+        let repaint_instant = Instant::now();
+        app.canvas.timing.close_cycle(done_instant, upload_instant, repaint_instant);
+    }
     // The cursor: the tool's, unless something on the canvas with its own has the pointer.
     app.canvas.cursor = None;
     if let (true, Some(at)) = (own_cursor && resp.hovered(), ctx.input(|i| i.pointer.hover_pos())) {

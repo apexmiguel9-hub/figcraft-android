@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use super::{FigApp, Point, PointerKind, Pos2, Rect, Toque, ToqueAhora, Ui, json, loupe_target, pointer_event};
 
 /// The zoom tool while Z is held (Alt: zoom out): a click zooms a step about the pointer, a drag
@@ -551,11 +553,13 @@ pub(super) fn input(app: &mut FigApp, ui: &mut Ui, resp: &egui::Response) -> boo
                 m.surrender_focus(f);
             }
         });
+        app.canvas.last_input_instant = Some(Instant::now());
         Some(PointerKind::Down)
     } else if app.canvas.dragging && primary_released {
         app.canvas.dragging = false;
         Some(PointerKind::Up)
     } else if app.canvas.dragging && primary_down {
+        app.canvas.last_input_instant = Some(Instant::now());
         Some(PointerKind::Move)
     } else if resp.hovered() {
         app.canvas.hovering = true;

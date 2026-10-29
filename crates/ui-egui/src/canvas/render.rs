@@ -1,4 +1,5 @@
 use super::{Arc, CanvasState, Done, FigApp, Job, NodeId, Worker};
+use std::time::Instant;
 
 #[derive(Clone, PartialEq)]
 pub(super) struct JobKey {
@@ -124,6 +125,9 @@ pub(super) fn request_render(app: &mut FigApp, worker: &mut Worker, ppp: f32, ma
         at: web_time::Instant::now(),
     };
     app.canvas.want_view = Some(job.view.clone());
+    // Abre el ciclo de instrumentación para este render: cuándo llegó el dedo, cuándo se pide el render.
+    let kind = if app.canvas.dragging && app.canvas.loupe.is_none() { "gesture" } else { "refined" };
+    app.canvas.timing.open_cycle(kind, app.canvas.last_input_instant.take(), Some(Instant::now()));
     worker.submit(job);
     app.canvas.submitted = Some(key);
 }
