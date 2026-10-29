@@ -195,6 +195,7 @@ fn a_submenu_one_level_down_reopens_closed() {
     for _ in 0..40 {
         u.frame(vec![Event::MouseWheel {
             unit: egui::MouseWheelUnit::Point,
+            source: egui::MouseWheelSource::Unknown,
             delta: vec2(0.0, -40.0),
             phase: egui::TouchPhase::Move,
             modifiers: Default::default(),

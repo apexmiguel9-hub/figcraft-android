@@ -97,6 +97,26 @@ fn tab_drop_position(visible: &[(usize, Rect)], from: usize, pointer_x: f32) -> 
     }
 }
 
+/// Undo / redo buttons, always in reach: on Android the Edit menu is two taps away from the
+/// canvas (the main menu and then Edit), which is too much for the action used all the time.
+fn history_buttons(app: &mut FigApp, ui: &mut Ui, t: &Tokens, x: f32, rect: Rect) {
+    let history = app.session.ds().map(|d| (d.history.undo.len(), d.history.redo.len())).unwrap_or((0, 0));
+    for (i, (icon, enabled, label, command)) in
+        [(Icon::Undo, history.0 > 0, tr("Undo"), "edit.undo"), (Icon::Redo, history.1 > 0, tr("Redo"), "edit.redo")].into_iter().enumerate()
+    {
+        let r = Rect::from_center_size(pos2(x + 16.0 + 32.0 * i as f32, rect.center().y), vec2(28.0, 28.0));
+        let resp = ui.interact(r, ui.scope_id().with(("history", i)), Sense::click()).tip(crate::shortcuts::tip(label, command));
+        crate::a11y::button(&resp, label);
+        if enabled && resp.hovered() {
+            ui.painter().rect_filled(r, CornerRadius::same(5), t.hover);
+        }
+        icons::paint(ui.painter(), r.shrink(7.0), icon, if enabled { t.icon } else { t.text_tertiary });
+        if enabled && resp.clicked() {
+            app.run(command, json!({}));
+        }
+    }
+}
+
 /// Draw the top tab bar: Home, document and presenter tabs, new-tab and window controls,
 /// open/close/reorder animation and tab closing, pausing the presenter when going Home.
 pub fn tab_bar(app: &mut FigApp, ui: &mut Ui) {
@@ -110,21 +130,7 @@ pub fn tab_bar(app: &mut FigApp, ui: &mut Ui) {
         ui.painter().line_segment([pos2(x, rect.min.y), pos2(x, rect.max.y)], Stroke::new(1.0, t.border));
         // Undo / redo, always in reach: on Android the Edit menu is two taps away from the canvas
         // (the main menu and then Edit), which is too much for the action used all the time.
-        let history = app.session.ds().map(|d| (d.history.undo.len(), d.history.redo.len())).unwrap_or((0, 0));
-        for (i, (icon, enabled, label, command)) in
-            [(Icon::Undo, history.0 > 0, tr("Undo"), "edit.undo"), (Icon::Redo, history.1 > 0, tr("Redo"), "edit.redo")].into_iter().enumerate()
-        {
-            let r = Rect::from_center_size(pos2(x + 16.0 + 32.0 * i as f32, rect.center().y), vec2(28.0, 28.0));
-            let resp = ui.interact(r, ui.id().with(("history", i)), Sense::click()).tip(crate::shortcuts::tip(label, command));
-            crate::a11y::button(&resp, label);
-            if enabled && resp.hovered() {
-                ui.painter().rect_filled(r, CornerRadius::same(5), t.hover);
-            }
-            icons::paint(ui.painter(), r.shrink(7.0), icon, if enabled { t.icon } else { t.text_tertiary });
-            if enabled && resp.clicked() {
-                app.run(command, json!({}));
-            }
-        }
+        history_buttons(app, ui, &t, x, rect);
         x += 64.0;
         ui.painter().line_segment([pos2(x, rect.min.y), pos2(x, rect.max.y)], Stroke::new(1.0, t.border));
         let document_tabs: Vec<usize> = app.session.docs.iter().enumerate().filter_map(|(i, d)| app.shows(d.uid).then_some(i)).collect();
