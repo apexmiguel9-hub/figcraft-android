@@ -10,6 +10,7 @@ use serde_json::json;
 use crate::colorpicker::PickerTarget;
 use crate::layers_drag_tests::Ui;
 use crate::list_drag::grip_id;
+use crate::live_tests::{flat, text_center};
 
 fn id(v: serde_json::Value) -> NodeId {
     NodeId(v["id"].as_u64().unwrap())
@@ -35,6 +36,7 @@ fn remove_button(u: &mut Ui, list: &str, index: usize) -> Pos2 {
         }
         let wheel = Event::MouseWheel {
             unit: egui::MouseWheelUnit::Point,
+            source: egui::MouseWheelSource::Unknown,
             delta: egui::vec2(0.0, -100.0),
             phase: egui::TouchPhase::Move,
             modifiers: Default::default(),
@@ -63,10 +65,13 @@ fn remove_button(u: &mut Ui, list: &str, index: usize) -> Pos2 {
         .unwrap_or_else(|| panic!("no Remove button in {list} row {index} {row:?} {all:?}"))
 }
 
+/// Read a temporary boolean open-settings flag keyed by `salt` and row index.
 fn flag(u: &Ui, salt: &'static str, i: usize) -> bool {
-    u.ctx.data(|d| d.get_temp::<bool>(Id::new((salt, i)))).unwrap_or(false)
+    u.ctx.data(|d| d.get_temp::<bool>(Id::unique((salt, i)))).unwrap_or(false)
 }
 
+/// Asserts removing a fill keeps the open picker on the surviving paint (with its index
+/// shifted), and removing the paint being edited closes the picker.
 #[test]
 fn removing_a_fill_keeps_the_picker_on_its_paint() {
     let mut s = Session::new();
@@ -78,7 +83,7 @@ fn removing_a_fill_keeps_the_picker_on_its_paint() {
     let mut u = Ui::new(s);
     u.ctx.enable_accesskit();
     // Green's swatch, then red's Remove: the picker follows green to index 0.
-    let sw = u.ctx.read_response(Id::new(("swatch", true, 1usize))).unwrap().rect.center();
+    let sw = u.ctx.read_response(Id::unique(("swatch", true, 1usize))).unwrap().rect.center();
     click(&mut u, sw);
     assert_eq!(u.app.ui.picker, Some(PickerTarget::Paint { fills: true, index: 1, ids: vec![r] }));
     let rm = remove_button(&mut u, "fills", 0);
@@ -92,6 +97,8 @@ fn removing_a_fill_keeps_the_picker_on_its_paint() {
     assert_eq!(u.app.ui.picker, None);
 }
 
+/// Asserts removing effects or grids moves open settings and an open colour picker to the
+/// surviving row, or closes them when their own row is removed.
 #[test]
 fn removing_effects_and_grids_keeps_open_settings_with_their_rows() {
     let mut s = Session::new();
@@ -105,7 +112,7 @@ fn removing_effects_and_grids_keeps_open_settings_with_their_rows() {
     let mut u = Ui::new(s);
     u.ctx.enable_accesskit();
     // Effect 2's settings open and its colour in the picker; effect 0 goes.
-    u.ctx.data_mut(|d| d.insert_temp(Id::new(("fx_open", 2usize)), true));
+    u.ctx.data_mut(|d| d.insert_temp(Id::unique(("fx_open", 2usize)), true));
     u.app.ui.picker = Some(PickerTarget::Effect { ids: vec![f], index: 2, secondary: false });
     let rm = remove_button(&mut u, "effects", 0);
     click(&mut u, rm);
@@ -118,7 +125,7 @@ fn removing_effects_and_grids_keeps_open_settings_with_their_rows() {
     assert!(!flag(&u, "fx_open", 0) && !flag(&u, "fx_open", 1));
     assert_eq!(u.app.ui.picker, None);
     // Grid 1's settings open; grid 0 goes.
-    u.ctx.data_mut(|d| d.insert_temp(Id::new(("grid_open", 1usize)), true));
+    u.ctx.data_mut(|d| d.insert_temp(Id::unique(("grid_open", 1usize)), true));
     let rm = remove_button(&mut u, "grids", 0);
     click(&mut u, rm);
     assert_eq!(u.app.session.doc().unwrap().node(f).unwrap().grids.len(), 1);
@@ -149,6 +156,24 @@ fn adding_a_fill_or_stroke_opens_the_color_picker() {
     let add_stroke = button(&mut u, "Add stroke");
     click(&mut u, add_stroke);
     assert_eq!(u.app.ui.picker, Some(PickerTarget::Paint { fills: false, index: 0, ids: vec![r] }));
+}
+
+#[test]
+fn an_empty_sections_header_adds_its_item_but_a_full_one_only_adds_from_the_plus() {
+    let mut s = Session::new();
+    let r = id(s.execute("shape.rectangle", &json!({"x": 0, "y": 0, "width": 50, "height": 50})).unwrap());
+    s.execute("select.set", &json!({"ids": [r]})).unwrap();
+    let mut u = Ui::new(s);
+    // Nothing is stroked yet: clicking anywhere on the Stroke header adds one.
+    let shapes = flat(&u.frame_output(vec![]).shapes);
+    click(&mut u, text_center(&shapes, "Stroke"));
+    assert_eq!(u.app.session.doc().unwrap().node(r).unwrap().strokes.len(), 1);
+    // It has a stroke now: the header is no longer a button of its own.
+    u.app.ui.picker = None;
+    u.frame(vec![]);
+    let shapes = flat(&u.frame_output(vec![]).shapes);
+    click(&mut u, text_center(&shapes, "Stroke"));
+    assert_eq!(u.app.session.doc().unwrap().node(r).unwrap().strokes.len(), 1);
 }
 
 #[test]

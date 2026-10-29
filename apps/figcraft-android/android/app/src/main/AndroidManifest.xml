@@ -6,6 +6,19 @@
          Sin esto con targetSdk 34 solo se ven nombres de carpetas. -->
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
 
+    <!-- Android 11+: "Open link" lanza un ACTION_VIEW implicito. No hace falta para
+         lanzarlo, pero deja los navegadores visibles para consultas del sistema. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="https" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="http" />
+        </intent>
+    </queries>
+
     <application
         android:allowBackup="true"
         android:icon="@drawable/ic_launcher"

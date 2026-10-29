@@ -61,6 +61,18 @@ impl Default for SvgOptions {
     }
 }
 
+struct NodePaint<'a> {
+    node: &'a Node,
+    xf: Affine,
+    depth: usize,
+    paint_clip: String,
+    kid_clip: Option<String>,
+    inherited: Option<String>,
+    outline: Option<(BezPath, figcraft_render::FillRule)>,
+    grains: String,
+    size: (f64, f64),
+}
+
 struct W<'a> {
     doc: &'a Document,
     /// The exported layers, in z-order (what backdrops see).
@@ -79,6 +91,8 @@ struct W<'a> {
     clip: Option<String>,
     /// `id` attributes written so far.
     used_ids: std::collections::BTreeSet<String>,
+    /// The next `_k` suffix to try per base id, so repeated names don't rescan from `_2`.
+    next_suffix: std::collections::HashMap<String, usize>,
 }
 
 /// ` clip-path="url(#…)"` for a clip path id (else nothing).
@@ -124,9 +138,24 @@ fn path_d(p: &BezPath) -> String {
     s
 }
 
+/// A matrix scale/shear coefficient to 6 significant digits (unlike [`num`], small values survive).
+fn coeff(v: f64) -> String {
+    if !v.is_finite() || v == 0.0 {
+        return "0".into();
+    }
+    let digits = 5 - v.abs().log10().floor() as i32;
+    let p = 10f64.powi(digits);
+    let r = (v * p).round() / p;
+    format!("{r}")
+}
+
 fn matrix(a: Affine) -> String {
     let c = a.as_coeffs();
-    format!("matrix({} {} {} {} {} {})", num(c[0]), num(c[1]), num(c[2]), num(c[3]), num(c[4]), num(c[5]))
+    // Snap float noise (e.g. 6e-17 from a 90 degree rotation) to zero, relative to the largest term.
+    let eps = c[..4].iter().fold(0.0f64, |m, v| m.max(v.abs())) * 1e-12;
+    let eps = eps.max(1e-12);
+    let k = |v: f64| if v.abs() <= eps { "0".to_string() } else { coeff(v) };
+    format!("matrix({} {} {} {} {} {})", k(c[0]), k(c[1]), k(c[2]), k(c[3]), num(c[4]), num(c[5]))
 }
 
 /// A view of page area `b` at `k` device pixels per unit (fewer when that makes it larger than
@@ -150,8 +179,15 @@ fn blend_style(b: figcraft_color::BlendMode) -> String {
     }
 }
 
+/// `s` escaped for XML text and attribute values; characters XML 1.0 forbids (control characters
+/// other than tab, newline and carriage return, U+FFFE and U+FFFF) are left out.
 fn esc(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+    s.chars().filter(|&c| xml_char(c)).collect::<String>().replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+}
+
+/// Whether XML 1.0 allows `c` (see [`esc`]).
+fn xml_char(c: char) -> bool {
+    !matches!(c, '\u{0}'..='\u{8}' | '\u{b}' | '\u{c}' | '\u{e}'..='\u{1f}' | '\u{fffe}' | '\u{ffff}')
 }
 
 fn hex(c: Color) -> String {
@@ -160,8 +196,13 @@ fn hex(c: Color) -> String {
 
 impl W<'_> {
     fn id(&mut self, prefix: &str) -> String {
-        self.next += 1;
-        format!("{prefix}{}", self.next)
+        loop {
+            self.next += 1;
+            let id = format!("{prefix}{}", self.next);
+            if self.used_ids.insert(id.clone()) {
+                return id;
+            }
+        }
     }
 
     /// `fill="..." [fill-opacity]` for a paint on a w×h box; `None` when it paints nothing.
@@ -429,6 +470,12 @@ impl W<'_> {
             NodeKind::Group | NodeKind::Page { .. } => None,
             _ => figcraft_render::node_outline(self.doc, n),
         };
+        self.render_node(NodePaint { node: n, xf, depth, paint_clip, kid_clip, inherited, outline, grains, size: (w, h) });
+        self.body.push_str("</g>");
+    }
+
+    fn render_node(&mut self, paint: NodePaint<'_>) {
+        let NodePaint { node: n, xf, depth, paint_clip, kid_clip, inherited, outline, grains, size: (w, h) } = paint;
         let closed = figcraft_doc::geometry::is_closed(n) || matches!(n.kind, NodeKind::BooleanOp { .. } | NodeKind::Text(_));
         let live_text = if self.opts.outline_text { None } else { self.text_element(n, xf) };
         let run_paths = if live_text.is_none() { text_run_paths(n) } else { None };
@@ -457,99 +504,134 @@ impl W<'_> {
         }
         // Inner shadows paint over the fills, under the children and strokes.
         if let Some(o) = &outline {
-            for e in n.effects.iter().filter(|e| e.visible) {
-                if let EffectKind::InnerShadow(s) = &e.kind {
-                    self.inner_shadow(o, s, xf);
-                }
-            }
+            self.inner_shadows(n, o, xf);
         }
         if !matches!(n.kind, NodeKind::BooleanOp { .. }) && !n.children.is_empty() {
-            let mut kid_clip = kid_clip;
-            if n.clip
-                && n.kind.is_frame_like()
-                && let Some((p, _)) = &outline
-            {
-                // Its own clip, within the clips around it.
-                let cid = self.id("clip");
-                let mut cp = p.clone();
-                cp.apply_affine(xf);
-                let _ = write!(self.defs, "<clipPath id=\"{cid}\"{}><path d=\"{}\"/></clipPath>", clip_attr(&kid_clip), path_d(&cp));
-                kid_clip = Some(cid);
-            }
-            self.clip = kid_clip;
-            let kids = n.children.clone();
-            for run in self.doc.paint_runs(n) {
-                let Some(&c) = kids.get(run.start) else { continue };
-                if self.doc.node(c).is_some_and(|cn| cn.is_mask && cn.visible) {
-                    let kind = self.doc.node(c).map(|mn| mn.mask_type).unwrap_or_default();
-                    if kind == figcraft_doc::MaskType::Vector {
-                        // A vector mask is a clip path: its outline.
-                        let cid = self.id("clip");
-                        let outline =
-                            self.doc.node(c).and_then(|mn| Some((xf * mn.transform, figcraft_render::subtree_outline(self.doc, mn, depth + 1)?)));
-                        let (shape, cr) = match &outline {
-                            Some((mxf, (mp, rule))) => (
-                                format!(" transform=\"{}\" d=\"{}\"", matrix(*mxf), path_d(mp)),
-                                if *rule == figcraft_render::FillRule::EvenOdd { " clip-rule=\"evenodd\"" } else { "" },
-                            ),
-                            None => (" d=\"\"".to_string(), ""),
-                        };
-                        let _ = write!(self.defs, "<clipPath id=\"{cid}\"><path{shape}{cr}/></clipPath>");
-                        let _ = write!(self.body, "<g clip-path=\"url(#{cid})\">");
-                    } else {
-                        // The layer as drawn: its alpha or luminance masks.
-                        let mid = self.id("mask");
-                        let saved = std::mem::take(&mut self.body);
-                        let outer = self.mask.replace(c);
-                        let clip = self.clip.take();
-                        self.node(c, xf, depth + 1);
-                        self.clip = clip;
-                        self.mask = outer;
-                        let mask_body = std::mem::replace(&mut self.body, saved);
-                        let alpha = if kind == figcraft_doc::MaskType::Alpha { " style=\"mask-type:alpha\"" } else { "" };
-                        let _ = write!(self.defs, "<mask id=\"{mid}\" maskUnits=\"userSpaceOnUse\"{alpha}>{mask_body}</mask>");
-                        let _ = write!(self.body, "<g mask=\"url(#{mid})\">");
-                    }
-                    for k in kids.get(run.start + 1..run.end).unwrap_or(&[]) {
-                        self.node(*k, xf, depth + 1);
-                    }
-                    self.body.push_str("</g>");
-                } else {
-                    self.node(c, xf, depth + 1);
-                }
-            }
-            self.clip = inherited;
+            self.children(n, xf, depth, outline.as_ref(), kid_clip, inherited);
         }
         if n.has_visible_stroke()
             && let Some(simple) = self.opts.simplify_stroke.then(|| self.simple_stroke(n, xf)).flatten()
         {
             self.body.push_str(&clipped(&paint_clip, simple));
         } else if n.has_visible_stroke() {
-            let geom = match &n.kind {
-                NodeKind::BooleanOp { .. } | NodeKind::Text(_) => outline.as_ref().map(|(p, _)| p.clone()),
-                _ => figcraft_doc::geometry::stroke_geometry(n),
+            self.stroke_paths(n, xf, outline.as_ref(), closed, &paint_clip);
+        }
+        self.body.push_str(&grains);
+    }
+
+    /// Paints the children of `n`, each mask layer wrapping the layers it covers.
+    fn children(
+        &mut self,
+        n: &Node,
+        xf: Affine,
+        depth: usize,
+        outline: Option<&(BezPath, figcraft_render::FillRule)>,
+        mut kid_clip: Option<String>,
+        inherited: Option<String>,
+    ) {
+        if n.clip
+            && n.kind.is_frame_like()
+            && let Some((p, _)) = &outline
+        {
+            // Its own clip, within the clips around it.
+            let cid = self.id("clip");
+            let mut cp = p.clone();
+            cp.apply_affine(xf);
+            let _ = write!(self.defs, "<clipPath id=\"{cid}\"{}><path d=\"{}\"/></clipPath>", clip_attr(&kid_clip), path_d(&cp));
+            kid_clip = Some(cid);
+        }
+        self.clip = kid_clip;
+        let kids = n.children.clone();
+        for run in self.doc.paint_runs(n) {
+            let Some(&c) = kids.get(run.start) else { continue };
+            if self.doc.node(c).is_some_and(|cn| cn.is_mask && cn.visible) {
+                let kind = self.doc.node(c).map(|mn| mn.mask_type).unwrap_or_default();
+                self.open_mask(c, kind, xf, depth);
+                for k in kids.get(run.start + 1..run.end).unwrap_or(&[]) {
+                    self.node(*k, xf, depth + 1);
+                }
+                self.body.push_str("</g>");
+            } else {
+                self.node(c, xf, depth + 1);
+            }
+        }
+        self.clip = inherited;
+    }
+
+    /// The inner shadows of `n` over its `outline`.
+    fn inner_shadows(&mut self, n: &Node, outline: &Outline, xf: Affine) {
+        for e in n.effects.iter().filter(|e| e.visible) {
+            if let EffectKind::InnerShadow(s) = &e.kind {
+                self.inner_shadow(outline, s, xf);
+            }
+        }
+    }
+
+    /// Opens the `<g>` that the mask layer `c` clips or masks the layers after it with.
+    fn open_mask(&mut self, c: NodeId, kind: figcraft_doc::MaskType, xf: Affine, depth: usize) {
+        if kind == figcraft_doc::MaskType::Vector {
+            // A vector mask is a clip path: its outline.
+            let cid = self.id("clip");
+            let outline = self.doc.node(c).and_then(|mn| Some((xf * mn.transform, figcraft_render::subtree_outline(self.doc, mn, depth + 1)?)));
+            let (shape, cr) = match &outline {
+                Some((mxf, (mp, rule))) => (
+                    format!(" transform=\"{}\" d=\"{}\"", matrix(*mxf), path_d(mp)),
+                    if *rule == figcraft_render::FillRule::EvenOdd { " clip-rule=\"evenodd\"" } else { "" },
+                ),
+                None => (" d=\"\"".to_string(), ""),
             };
-            if let Some(g) = geom {
-                let area = figcraft_render::draw::stroke_area(n, &g, closed);
-                let even = n.stroke.sides.is_some() || (n.stroke.dashes.is_empty() && closed && n.stroke.align != figcraft_doc::StrokeAlign::Center);
-                let fr = if even { " fill-rule=\"evenodd\"" } else { "" };
-                for p in &n.strokes {
-                    if let Some(a) = self.paint_attr(p, w, h) {
-                        let el = format!("<path transform=\"{}\" d=\"{}\" {a}{fr}/>", matrix(xf), path_d(&area));
-                        self.body.push_str(&clipped(&paint_clip, el));
-                    }
+            let _ = write!(self.defs, "<clipPath id=\"{cid}\"><path{shape}{cr}/></clipPath>");
+            let _ = write!(self.body, "<g clip-path=\"url(#{cid})\">");
+        } else {
+            // The layer as drawn: its alpha or luminance masks.
+            let mid = self.id("mask");
+            let saved = std::mem::take(&mut self.body);
+            let outer = self.mask.replace(c);
+            let clip = self.clip.take();
+            self.node(c, xf, depth + 1);
+            self.clip = clip;
+            self.mask = outer;
+            let mask_body = std::mem::replace(&mut self.body, saved);
+            let alpha = if kind == figcraft_doc::MaskType::Alpha { " style=\"mask-type:alpha\"" } else { "" };
+            let _ = write!(self.defs, "<mask id=\"{mid}\" maskUnits=\"userSpaceOnUse\"{alpha}>{mask_body}</mask>");
+            let _ = write!(self.body, "<g mask=\"url(#{mid})\">");
+        }
+    }
+
+    /// The visible strokes of `n` as filled outline paths.
+    fn stroke_paths(&mut self, n: &Node, xf: Affine, outline: Option<&(BezPath, figcraft_render::FillRule)>, closed: bool, paint_clip: &str) {
+        let geom = match &n.kind {
+            NodeKind::BooleanOp { .. } | NodeKind::Text(_) => outline.map(|(p, _)| p.clone()),
+            _ => figcraft_doc::geometry::stroke_geometry(n),
+        };
+        if let Some(g) = geom {
+            let area = figcraft_render::draw::stroke_area(n, &g, closed);
+            let even = n.stroke.sides.is_some() || (n.stroke.dashes.is_empty() && closed && n.stroke.align != figcraft_doc::StrokeAlign::Center);
+            let fr = if even { " fill-rule=\"evenodd\"" } else { "" };
+            for p in &n.strokes {
+                if let Some(a) = self.paint_attr(p, n.width, n.height) {
+                    let el = format!("<path transform=\"{}\" d=\"{}\" {a}{fr}/>", matrix(xf), path_d(&area));
+                    self.body.push_str(&clipped(paint_clip, el));
                 }
             }
         }
-        self.body.push_str(&grains);
-        self.body.push_str("</g>");
     }
 
     /// `name` as an `id` not used yet in this file (spaces as underscores; repeats get `_2`…).
     fn unique_id(&mut self, name: &str) -> String {
-        let base: String = name.chars().take(200).map(|c| if c.is_whitespace() || c.is_control() { '_' } else { c }).collect();
+        // As written: what `esc` leaves out isn't part of it.
+        let base: String =
+            name.chars().take(200).map(|c| if c.is_whitespace() || c.is_control() { '_' } else { c }).filter(|&c| xml_char(c)).collect();
         let base = if base.is_empty() { "layer".to_string() } else { base };
-        let id = (1..).map(|k| if k == 1 { base.clone() } else { format!("{base}_{k}") }).find(|i| !self.used_ids.contains(i)).unwrap_or(base);
+        let next = self.next_suffix.entry(base.clone()).or_insert(1);
+        let id = loop {
+            let k = *next;
+            *next += 1;
+            let candidate = if k == 1 { base.clone() } else { format!("{base}_{k}") };
+            if !self.used_ids.contains(&candidate) {
+                break candidate;
+            }
+        };
         self.used_ids.insert(id.clone());
         id
     }
@@ -587,7 +669,8 @@ impl W<'_> {
                         let end = glyphs.get(j).map_or(line.char_end, |g| g.char_start).max(start).min(chars.len());
                         let text: String = chars.get(start.min(end)..end).unwrap_or(&[]).iter().collect();
                         let prev = start.checked_sub(1).and_then(|k| chars.get(k)).copied();
-                        let text = st.case.apply_after(text.trim_end_matches(['\n', '\r']), prev);
+                        let before = start.checked_sub(2).and_then(|k| chars.get(k)).copied();
+                        let text = st.case.apply_between(text.trim_end_matches(['\n', '\r']), before, prev);
                         let own = match layout.styles.get(style).and_then(|s| s.fills.as_ref()) {
                             Some(fills) => {
                                 let a = fills.iter().find_map(|p| self.paint_attr(p, n.width, n.height)).unwrap_or_else(|| "fill=\"none\"".into());
@@ -603,7 +686,8 @@ impl W<'_> {
                 }
                 let text: String = chars.get(line.char_start..line.char_end.min(chars.len())).unwrap_or(&[]).iter().collect();
                 let prev = line.char_start.checked_sub(1).and_then(|k| chars.get(k)).copied();
-                let text = st.case.apply_after(text.trim_end_matches(['\n', '\r']), prev);
+                let before = line.char_start.checked_sub(2).and_then(|k| chars.get(k)).copied();
+                let text = st.case.apply_between(text.trim_end_matches(['\n', '\r']), before, prev);
                 let (x, y) = layout.glyphs.get(line.glyph_start).map_or((0.0, line.baseline), |g| (g.x, g.y));
                 let _ = write!(spans, "<tspan x=\"{}\" y=\"{}\">{}</tspan>", num(x), num(y), esc(&text));
             }
@@ -1004,6 +1088,7 @@ pub fn try_export_svg(doc: &Document, ids: &[NodeId], opts: &SvgOptions) -> Resu
         mask: None,
         clip: None,
         used_ids: Default::default(),
+        next_suffix: Default::default(),
     };
     for id in ids {
         let parent_xf = doc.node(*id).and_then(|n| n.parent).map(|p| doc.world_transform(p)).unwrap_or(Affine::IDENTITY);

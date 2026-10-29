@@ -399,8 +399,13 @@ impl Services for Android {
     /// Igual que el texto: sin implementacion hasta que se sepa que hace falta.
     fn clipboard_set_png(&mut self, _w: u32, _h: u32, _rgba: &[u8]) {}
 
-    /// Ninguna URL nativa en Android por ahora.
-    fn open_url(&mut self, _url: &str) {}
+    /// Abre una URL en el navegador del sistema (`Intent.ACTION_VIEW`).
+    ///
+    /// MEDIDO que `startActivity` no necesita el permiso `INTERNET`: quien sale a la red es
+    /// el navegador, no la app. Lo usan el "Open link" de los prototipos y el menu Help.
+    fn open_url(&mut self, url: &str) {
+        permiso::open_url(url);
+    }
 
     /// Ningun gestor de archivos nativo por ahora.
     fn reveal_path(&mut self, _path: &std::path::Path) {}

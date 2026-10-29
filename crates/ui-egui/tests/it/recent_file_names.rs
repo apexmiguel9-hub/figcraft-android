@@ -18,7 +18,7 @@ fn row(view: &str, path: &str, prefix: &str, exclude: &str) -> (String, Option<S
     let mut found = None;
     for frame in 0..4 {
         if frame >= 2 {
-            ctx.memory_mut(|m| m.request_focus(Id::new(("home_recent_file", path))));
+            ctx.memory_mut(|m| m.request_focus(Id::unique(("home_recent_file", path))));
         }
         let mut out = ctx.run_ui(
             RawInput {

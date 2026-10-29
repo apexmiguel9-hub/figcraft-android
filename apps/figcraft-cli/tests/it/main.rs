@@ -10,3 +10,5 @@ mod fonts;
 mod pdf;
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod pdf_print;
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod vector_drawable;

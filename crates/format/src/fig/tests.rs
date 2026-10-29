@@ -630,63 +630,82 @@ fn imports_the_fixture() {
     assert!(is_fig(&bytes));
     let (doc, warnings) = import(&bytes, "fallback").unwrap();
     assert_eq!(doc.name, "Fixture");
+    assert_fixture_layers(&doc);
+    assert_fixture_styles(&doc);
+    assert_fixture_variables(&doc);
+    assert_fixture_components(&doc);
+    assert_fixture_prototype(&doc, &warnings);
+}
+
+fn assert_fixture_layers(doc: &Document) {
     // The internal page is skipped.
     assert_eq!(doc.pages.len(), 1);
     let page = doc.node(doc.pages[0]).unwrap();
     assert_eq!(page.name, "Page A");
     // Siblings by position: the frame comes first even though it's listed after the component.
     assert_eq!(doc.node(page.children[0]).unwrap().name, "Screen");
-    let screen = named(&doc, "Screen");
+    let screen = named(doc, "Screen");
     let names: Vec<&str> = screen.children.iter().map(|c| doc.node(*c).unwrap().name.as_str()).collect();
     assert_eq!(names, ["Photo", "Title", "Group", "Styled", "Card", "Button copy", "Note"]);
     // Image fill from the archive.
-    let photo = named(&doc, "Photo");
+    let photo = named(doc, "Photo");
     let figcraft_doc::color::PaintKind::Image(img) = &photo.fills[0].kind else { panic!("not an image fill") };
     assert_eq!(doc.images.get(&img.image).map(|i| (i.width, i.height)), Some((2, 1)));
     assert_eq!((photo.corners.radii[0], photo.stroke.weight), (6.0, 2.0));
     // Text with a bold run over "the".
-    let NodeKind::Text(t) = &named(&doc, "Title").kind else { panic!("not text") };
+    let NodeKind::Text(t) = &named(doc, "Title").kind else { panic!("not text") };
     assert_eq!(t.characters, "Hi there");
     assert_eq!(t.style.font_size, 16.0);
     assert_eq!(t.leading_trim, figcraft_doc::LeadingTrim::CapHeight, "vertical trim (#466)");
     assert_eq!(t.runs.len(), 1);
     assert_eq!((t.runs[0].start, t.runs[0].end, t.runs[0].style.font_style.as_str()), (3, 6, "Bold"));
     // The group's children keep their place on the page (group at 100, 100).
-    assert!(matches!(named(&doc, "Group").kind, NodeKind::Group));
-    let tri = named(&doc, "Tri");
+    assert!(matches!(named(doc, "Group").kind, NodeKind::Group));
+    let tri = named(doc, "Tri");
     assert!(matches!(&tri.kind, NodeKind::Vector { network } if !network.regions.is_empty()));
     let abs = doc.world_transform(tri.id).translation();
     assert!((abs.x - 105.0).abs() < 1e-6 && (abs.y - 106.0).abs() < 1e-6, "{abs:?}");
-    assert!(matches!(named(&doc, "Star").kind, NodeKind::Star { count: 6, .. }));
-    // The linked style supplies the paint.
-    let styled = named(&doc, "Styled");
+    assert!(matches!(named(doc, "Star").kind, NodeKind::Star { count: 6, .. }));
+}
+
+fn assert_fixture_styles(doc: &Document) {
+    let styled = named(doc, "Styled");
     assert_eq!(styled.styles.fill.as_deref(), Some("1:3"));
     assert!(doc.styles.iter().any(|s| s.name == "Brand"));
     let figcraft_doc::color::PaintKind::Solid { color } = styled.fills[0].kind else { panic!("not solid") };
     assert_eq!((color.r, color.g, color.b), (0.0, 0.0, 1.0));
-    // Variables, the fill binding and the explicit mode.
+}
+
+fn assert_fixture_variables(doc: &Document) {
+    let screen = named(doc, "Screen");
     assert_eq!(doc.variables.collections.len(), 1);
     assert_eq!(doc.variables.variables[0].kind, VariableType::Color);
-    assert_eq!(named(&doc, "Card").bound.get("fill").map(String::as_str), Some("1:5"));
+    assert_eq!(named(doc, "Card").bound.get("fill").map(String::as_str), Some("1:5"));
     assert_eq!(screen.var_modes.get("1:4").map(String::as_str), Some("1:91"));
-    // The component keeps its property; the instance is expanded with the value applied.
-    let button = named(&doc, "Button");
+}
+
+fn assert_fixture_components(doc: &Document) {
+    let button = named(doc, "Button");
     assert!(matches!(&button.kind, NodeKind::Component { props, .. } if props.contains_key("Show icon")));
-    let inst = named(&doc, "Button copy");
+    let inst = named(doc, "Button copy");
     assert!(
         matches!(&inst.kind, NodeKind::Instance { component, props } if *component == button.id && props.get("Show icon") == Some(&Value::Bool(false)))
     );
     let icon = doc.node(inst.children[0]).unwrap();
     assert_eq!(icon.name, "Renamed icon");
     assert!(!icon.visible);
-    // Prototype: the click navigates to the component; the flow starts at the screen.
-    let it = &photo.interactions[0];
+}
+
+fn assert_fixture_prototype(doc: &Document, warnings: &[String]) {
+    let button = named(doc, "Button");
+    let screen = named(doc, "Screen");
+    let it = &named(doc, "Photo").interactions[0];
     assert!(matches!(it.actions[0], figcraft_doc::proto::Action::Navigate { dest, .. } if dest == button.id));
     assert_eq!(it.duration_ms, 250);
     let Some(NodeKind::Page { flows, .. }) = doc.node(doc.pages[0]).map(|p| &p.kind) else { panic!("no page") };
     assert_eq!((flows[0].name.as_str(), flows[0].start), ("Main flow", screen.id));
     // The sticky note comes in as a frame, with a warning.
-    assert!(matches!(named(&doc, "Note").kind, NodeKind::Frame));
+    assert!(matches!(named(doc, "Note").kind, NodeKind::Frame));
     assert!(warnings.iter().any(|w| w.contains("sticky layers import as frames")), "{warnings:?}");
 }
 
@@ -893,6 +912,18 @@ fn the_mapper_stops_at_the_layer_cap_it_is_given() {
     assert!(warnings.iter().any(|w| w.contains("more than 5 layers")), "{warnings:?}");
     let (_, warnings, _) = map::to_rest(&msg, "x", crate::rest::MAX_NODES);
     assert!(!warnings.iter().any(|w| w.contains("more than")), "{warnings:?}");
+}
+
+#[test]
+fn scalar_fields_count_against_the_value_budget() {
+    // A message of 1000 scalar fields (id 1, `true`) is 1001 values: a budget of 10 refuses it.
+    let fields = vec![Field { name: "b".into(), ty: Some(Type::Bool), array: false, value: 1 }];
+    let sc = Schema { defs: vec![Def { name: "Message".into(), kind: Kind::Message, fields }] };
+    let mut data = [1u8, 1].repeat(1000);
+    data.push(0);
+    let e = sc.decode_message_within(0, &data, 10).unwrap_err();
+    assert_eq!(e.0, "message: too many values");
+    assert!(sc.decode_message_within(0, &data, 1001).is_ok());
 }
 
 #[test]

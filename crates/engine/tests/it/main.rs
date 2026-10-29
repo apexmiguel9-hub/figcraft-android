@@ -6,6 +6,8 @@ mod empty_text_box_undo;
 mod library_style_acceptance;
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod list_indent_response;
+#[allow(clippy::unwrap_used)]
+mod outline_stroke;
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod scope_reset;
 #[allow(clippy::unwrap_used)]

@@ -4,11 +4,11 @@
 //! message). `author` is who is acting (default: the name from Preferences, `pref.userName`): only
 //! a message's author edits or deletes it, and only the thread's author deletes the thread.
 
-use figcraft_doc::*;
+use figcraft_doc::{Comment, Document, Message, Node, NodeId, NodeKind, geom};
 use serde_json::{Value, json};
 
 use super::{CommandSpec, ok};
-use crate::params::*;
+use crate::params::{boolean, get, id, id_of, num, req_index, req_num, req_string, string};
 use crate::{Session, bad, spec};
 
 /// The name comments are signed with until the user sets theirs.
