@@ -647,12 +647,7 @@ pub fn open_url(url: &str) {
     let r = env(|e| {
         let clase = clase(e)?;
         let u = e.new_string(url)?;
-        e.call_static_method(
-            &clase,
-            jni::jni_str!("openUrl"),
-            jni::jni_sig!("(Ljava/lang/String;)V"),
-            &[jni::JValue::Object(&u)],
-        )?;
+        e.call_static_method(&clase, jni::jni_str!("openUrl"), jni::jni_sig!("(Ljava/lang/String;)V"), &[jni::JValue::Object(&u)])?;
         if let Some(x) = excepcion(e) {
             return Ok(Err(x));
         }
