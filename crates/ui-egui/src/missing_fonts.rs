@@ -128,7 +128,7 @@ pub fn show(app: &mut FigApp, ctx: &egui::Context) {
 /// document's missing fonts again. The copy stays for the next run.
 fn install(app: &mut FigApp, path: PathBuf) {
     let Some(dir) = app.fonts_dir().map(Path::to_path_buf) else {
-        app.show_error(tr("This build can't keep installed fonts."));
+        app.show_error(tr("This build can't keep installed fonts.").to_string());
         return;
     };
     if let Err(e) = std::fs::create_dir_all(&dir) {
@@ -136,7 +136,7 @@ fn install(app: &mut FigApp, path: PathBuf) {
         return;
     }
     if std::fs::metadata(&path).is_ok_and(|m| m.is_file() && m.len() > figcraft_text::fontdb::MAX_FONT_FILE) {
-        app.show_error(tr("This file is too large for a font (over 256 MB)."));
+        app.show_error(tr("This file is too large for a font (over 256 MB).").to_string());
         return;
     }
     let name = path.file_name().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("font.ttf"));
