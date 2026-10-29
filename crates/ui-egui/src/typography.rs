@@ -194,6 +194,15 @@ fn font_rows(app: &mut FigApp, ui: &mut Ui, ids: &[NodeId], styles: &[TextStyle]
         });
     });
 
+    // Installing a font where fonts are chosen, not only in the Missing fonts window.
+    if app.fonts_dir().is_some() {
+        row(ui, 28.0, |ui| {
+            if widgets::button(ui, tr("Install font…"), false, true).clicked() {
+                crate::missing_fonts::install_dialog(app);
+            }
+        });
+    }
+
     // Style + size.
     let half = (ui.available_width() - PAD * 2.0 - 8.0) / 2.0;
     row(ui, 32.0, |ui| {

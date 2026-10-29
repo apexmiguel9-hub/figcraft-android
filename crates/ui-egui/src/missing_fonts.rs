@@ -87,6 +87,11 @@ pub fn show(app: &mut FigApp, ctx: &egui::Context) {
     let mut close_clicked = false;
     crate::dialogs::window(tr("Missing fonts"), ctx).open(&mut open).show(ctx, |ui| {
         ui.set_width(380.0);
+        // Installing is the first thing this window is for, so the button comes first.
+        if app.fonts_dir().is_some() && crate::widgets::button(ui, tr("Install font…"), true, true).clicked() {
+            install_dialog(app);
+        }
+        ui.add_space(10.0);
         if shown.indexing {
             ui.label(tr("Checking the fonts installed on this computer…"));
         } else if shown.families.is_empty() {
@@ -112,16 +117,16 @@ pub fn show(app: &mut FigApp, ctx: &egui::Context) {
             });
         }
         ui.add_space(12.0);
-        ui.horizontal(|ui| {
-            if app.fonts_dir().is_some() && crate::widgets::button(ui, tr("Install font…"), true, true).clicked() {
-                app.pick_open(tr("Install font…"), FONT_EXTS, install);
-            }
-            close_clicked = crate::widgets::button(ui, tr("Close"), false, true).clicked();
-        });
+        close_clicked = crate::widgets::button(ui, tr("Close"), false, true).clicked();
     });
     if !open || close_clicked {
         app.ui.missing_fonts = None;
     }
+}
+
+/// Pick a font file to install (the Typography section and the Missing fonts window).
+pub fn install_dialog(app: &mut FigApp) {
+    app.pick_open(tr("Install font…"), FONT_EXTS, install);
 }
 
 /// Copy `path` into the app's font folder, load it (every face of a collection) and list the open
