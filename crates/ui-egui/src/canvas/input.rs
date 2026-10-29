@@ -561,9 +561,11 @@ pub(super) fn input(app: &mut FigApp, ui: &mut Ui, resp: &egui::Response) -> boo
         // The magnifier appears as soon as a point or handle is grabbed on a touch screen, follows
         // the finger and goes away on release. A mouse has a cursor and doesn't hide the point.
         if k == PointerKind::Down && primary_down {
-            let touch = cfg!(target_os = "android") || ctx.input(|i| i.pointer.any_touches());
+            let touch = cfg!(target_os = "android") || ctx.input(|i| i.any_touches());
             app.canvas.loupe = if touch { loupe_target(app, pos) } else { None };
-        } else if k == PointerKind::Move && let Some(l) = &mut app.canvas.loupe {
+        } else if k == PointerKind::Move
+            && let Some(l) = &mut app.canvas.loupe
+        {
             l.at = pos;
         }
         send(app, k, pos, &mods);
