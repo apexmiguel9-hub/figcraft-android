@@ -1,4 +1,4 @@
-use super::{FigApp, Point, PointerKind, Pos2, Rect, Toque, ToqueAhora, Ui, json, pointer_event};
+use super::{FigApp, Point, PointerKind, Pos2, Rect, Toque, ToqueAhora, Ui, json, loupe_target, pointer_event};
 
 /// The zoom tool while Z is held (Alt: zoom out): a click zooms a step about the pointer, a drag
 /// zooms to the dragged area. Takes the pointer from the other tools while it's active.
@@ -369,6 +369,11 @@ pub(super) fn input(app: &mut FigApp, ui: &mut Ui, resp: &egui::Response) -> boo
         return true;
     }
     let ctx = ui.ctx().clone();
+    // The magnifier only lives while one finger is on the canvas: lifting it, or starting a pinch,
+    // puts it away even when the release happens off the canvas.
+    if !ctx.input(|i| i.pointer.primary_down()) || ctx.multi_touch().is_some() {
+        app.canvas.loupe = None;
+    }
     // Un handle (gradiente, recorte, padding, blur) que ya está arrastrando tiene que ver la
     // suelta **antes** del corte por `hover_pos`. En tactil, egui-winit manda `PointerGone` al
     // levantar el dedo y `hover_pos` queda en `None`; sin esto, el drag se quedaba abierto y el
@@ -552,6 +557,14 @@ pub(super) fn input(app: &mut FigApp, ui: &mut Ui, resp: &egui::Response) -> boo
         app.canvas.pressure = force;
     }
     if let Some(k) = kind {
+        // The magnifier appears as soon as a point or handle is grabbed on a touch screen, follows
+        // the finger and goes away on release. A mouse has a cursor and doesn't hide the point.
+        if k == PointerKind::Down && primary_down {
+            let touch = cfg!(target_os = "android") || ctx.input(|i| i.pointer.any_touches());
+            app.canvas.loupe = if touch { loupe_target(app, pos) } else { None };
+        } else if k == PointerKind::Move && let Some(l) = &mut app.canvas.loupe {
+            l.at = pos;
+        }
         send(app, k, pos, &mods);
         // The pointer also let go within this frame (a quick click, or a slow frame): the tools get
         // the release too, so the press's gesture ends — a quick click with a shape tool still
@@ -560,6 +573,9 @@ pub(super) fn input(app: &mut FigApp, ui: &mut Ui, resp: &egui::Response) -> boo
             app.canvas.dragging = false;
             send(app, PointerKind::Up, pos, &mods);
         }
+    }
+    if !primary_down {
+        app.canvas.loupe = None;
     }
     true
 }

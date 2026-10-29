@@ -402,6 +402,16 @@ fn visible_handles(net: &VectorNetwork, ve: &VectorEdit) -> Vec<(usize, bool)> {
     out
 }
 
+/// Pointer reach for the vector hit tests, in page units.
+///
+/// MEDIDO en el Moto: 6 unidades son ~15 px fisicos a ppp 2,44, y el dedo cae fuera del nodo (que
+/// se dibuja de 7 pt) y agarra el relleno, asi que se arrastra la forma entera en vez del nodo.
+/// En tactil se usan 12 (~29 px, 7 mm, lo que mide una yema); con raton se quedan en 6.
+pub fn hit_tol(zoom: f64) -> f64 {
+    let px = if cfg!(target_os = "android") { 12.0 } else { 6.0 };
+    px / zoom.max(1e-6)
+}
+
 /// Hit test in page coordinates with a tolerance in page units. Visible handles win, then
 /// vertices, then segments.
 pub fn hit(doc: &Document, ve: &VectorEdit, p: Point, tol: f64) -> Option<VHit> {
