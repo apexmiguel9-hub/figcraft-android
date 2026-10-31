@@ -1,9 +1,14 @@
-use super::{Arc, CanvasState, Done, FigApp, Job, NodeId, Worker};
+use super::{CanvasState, Done, FigApp, Job, NodeId, Worker};
 use std::time::Instant;
 
 #[derive(Clone, PartialEq)]
 pub(super) struct JobKey {
-    doc: usize,
+    /// Identidad del archivo: distingue dos documentos aunque tengan la misma revisión.
+    uid: u64,
+    /// Revisión de contenido: cambia en cada edición del documento, así que cada move de un
+    /// arrastre pide un render. (Antes se usaba `Arc::as_ptr(&doc)`, pero el allocator reusa la
+    /// dirección del preview anterior, la key no cambiaba y `request_render` se saltaba frames.)
+    revision: u64,
     page: NodeId,
     origin: (i64, i64),
     scale: i64,
@@ -82,7 +87,8 @@ pub(super) fn request_render(app: &mut FigApp, worker: &mut Worker, ppp: f32, ma
     let requested = (ox - f64::from(margin) / scale, oy - f64::from(margin) / scale);
     let size = (visible_w.saturating_add(margin * 2).min(max_texture_side), visible_h.saturating_add(margin * 2).min(max_texture_side));
     let key = JobKey {
-        doc: Arc::as_ptr(&doc) as usize,
+        uid: ds.uid,
+        revision: ds.revision,
         page: ds.page,
         origin: ((requested.0 * 1000.0) as i64, (requested.1 * 1000.0) as i64),
         scale: (scale * 10000.0) as i64,

@@ -472,9 +472,14 @@ pub fn show(app: &mut FigApp, ui: &mut Ui, worker: &mut Worker) {
         } else {
             egui::TextureOptions::LINEAR
         };
-        match &mut app.canvas.texture {
-            Some(t) => t.set(done.image, filter),
-            None => app.canvas.texture = Some(ctx.load_texture("figcraft-canvas", done.image, filter)),
+        // `Work::Reused` significa que la imagen es idéntica a la ya en textura (el Retained la
+        // guardó sin volver a dibujar nada): saltar la subida evita volver a enviar 16 MB a la GPU
+        // cada frame mientras un nodo se arrastra y el contenido no cambia de vista.
+        if done.work != figcraft_render::Work::Reused {
+            match &mut app.canvas.texture {
+                Some(t) => t.set(done.image, filter),
+                None => app.canvas.texture = Some(ctx.load_texture("figcraft-canvas", done.image, filter)),
+            }
         }
         upload_instant = Some(Instant::now());
         let latency = Some(done.at.elapsed().as_secs_f64() * 1000.0);
