@@ -19,10 +19,13 @@ use crate::{Options, View, draw, render_view};
 pub enum Work {
     /// Nothing changed: the previous image as is.
     Reused,
-    /// The previous image, shifted and/or patched where things changed.
+    /// The previous image, shifted and/or patched where things changed. `rect` is the device-pixel
+    /// bounding box `[x0, y0, x1, x2]` of what was re-rendered, so the UI can upload only that
+    /// sub-rect to the texture instead of the whole canvas.
     Partial {
         /// Device pixels rendered afresh.
         pixels: u64,
+        rect: (i64, i64, i64, i64),
     },
     /// The whole view.
     Full,
@@ -172,8 +175,12 @@ impl Retained {
         {
             let same_doc = Arc::ptr_eq(&last.doc, doc);
             let s = if same_doc { last.sensitive.clone() } else { Arc::new(sensitive(doc)) };
-            if let Some((pix, pixels)) = patch(last, doc, page, &snapped, px, opts, &s) {
-                work = if pixels == 0 { Work::Reused } else { Work::Partial { pixels } };
+            if let Some((pix, pixels, rect)) = patch(last, doc, page, &snapped, px, opts, &s) {
+                work = if pixels == 0 {
+                    Work::Reused
+                } else {
+                    Work::Partial { pixels, rect: (rect.x0, rect.y0, rect.x1, rect.y1) }
+                };
                 let frame = self.keep(doc, page, (&snapped, px, fonts), opts, pix, s);
                 return Some((snapped, &frame.pix, work));
             }
@@ -266,8 +273,9 @@ fn changed_areas(doc: &Document, page: NodeId, id: NodeId, out: &mut Vec<Rect>) 
 }
 
 /// The previous frame brought up to date for `doc` at `px`, rendering only what changed; `None`
-/// when a full render is the better (or only correct) choice. Also returns the pixels rendered.
-fn patch(last: Frame, doc: &Arc<Document>, page: NodeId, view: &View, px: (i64, i64), opts: &Options, s: &Sensitive) -> Option<(Pixmap, u64)> {
+/// when a full render is the better (or only correct) choice. Also returns the pixels rendered and
+/// the device-pixel bounding box of what was re-rendered.
+fn patch(last: Frame, doc: &Arc<Document>, page: NodeId, view: &View, px: (i64, i64), opts: &Options, s: &Sensitive) -> Option<(Pixmap, u64, Px)> {
     let (w, h) = (i64::from(view.width), i64::from(view.height));
     let (dx, dy) = (px.0.checked_sub(last.px.0)?, px.1.checked_sub(last.px.1)?);
     if dx.abs() >= w || dy.abs() >= h {
@@ -311,7 +319,7 @@ fn patch(last: Frame, doc: &Arc<Document>, page: NodeId, view: &View, px: (i64, 
     }
     let mut damage: Vec<Px> = damage.iter().filter_map(|d| d.clamp(w, h)).collect();
     if damage.is_empty() && dx == 0 && dy == 0 {
-        return Some((last.pix, 0));
+        return Some((last.pix, 0, Px { x0: 0, y0: 0, x1: 0, y1: 0 }));
     }
     // Layers whose look depends on where they are cut are redrawn whole.
     let sensitive: Vec<Px> = s.areas.iter().chain(last.sensitive.areas.iter()).filter_map(|r| to_px(*r, view.scale, px)).collect();
@@ -331,10 +339,15 @@ fn patch(last: Frame, doc: &Arc<Document>, page: NodeId, view: &View, px: (i64, 
         }
     }
     let mut damage = merge(damage.iter().filter_map(|d| d.clamp(w, h)).collect());
+    if damage.is_empty() {
+        return Some((last.pix, 0, Px { x0: 0, y0: 0, x1: 0, y1: 0 }));
+    }
     if damage.len() > MAX_RECTS {
         let all = damage.iter().skip(1).fold(*damage.first()?, |a, b| a.union(b));
         damage = vec![all];
     }
+    // Bounding box of everything that was re-rendered: what the UI uploads as a partial texture.
+    let total = damage.iter().skip(1).fold(damage[0], |a, b| a.union(b));
     let pixels: u64 = damage.iter().map(Px::area).sum();
     if pixels as f64 > MAX_PARTIAL_SHARE * (w * h) as f64 {
         return None;
@@ -346,7 +359,7 @@ fn patch(last: Frame, doc: &Arc<Document>, page: NodeId, view: &View, px: (i64, 
     for d in &damage {
         render_into(FrameRender { doc, page, view, px, opts }, d, margin, &mut pix)?;
     }
-    Some((pix, pixels))
+    Some((pix, pixels, total))
 }
 
 /// Move the image's content by `(-dx, -dy)` pixels in place (what was at `(x, y)` goes to

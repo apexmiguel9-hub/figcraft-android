@@ -472,12 +472,38 @@ pub fn show(app: &mut FigApp, ui: &mut Ui, worker: &mut Worker) {
         } else {
             egui::TextureOptions::LINEAR
         };
-        // `Work::Reused` significa que la imagen es idéntica a la ya en textura (el Retained la
-        // guardó sin volver a dibujar nada): saltar la subida evita volver a enviar 16 MB a la GPU
-        // cada frame mientras un nodo se arrastra y el contenido no cambia de vista.
+        // `Work::Reused` significa que la imagen es idéntica a la ya en textura: saltar la subida.
+        // `Work::Partial` sube solo el rect sucio (set_partial) en vez de los ~16 MB completos, lo
+        // que acorta la latencia de upload y hace que la textura alcance al dedo más rápido.
         if done.work != figcraft_render::Work::Reused {
+            let partial: Option<(egui::ColorImage, [u32; 2])> = match &done.work {
+                figcraft_render::Work::Partial { rect, .. } => {
+                    let (x0, y0, x1, y1) = *rect;
+                    let sw = (x1 - x0).max(0) as usize;
+                    let sh = (y1 - y0).max(0) as usize;
+                    if sw > 0 && sh > 0 && done.image.size[0] > 0 && done.image.size[1] > 0 {
+                        let mut pixels = Vec::with_capacity(sw * sh);
+                        for y in y0..y1 {
+                            let row = y as usize * done.image.size[0];
+                            for x in x0..x1 {
+                                pixels.push(done.image.pixels[row + x as usize]);
+                            }
+                        }
+                        Some((egui::ColorImage::from_rgba_premultiplied([sw, sh], &pixels), [x0 as u32, y0 as u32]))
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            };
             match &mut app.canvas.texture {
-                Some(t) => t.set(done.image, filter),
+                Some(t) => {
+                    if let Some((img, offset)) = partial {
+                        t.set_partial(img, offset, filter);
+                    } else {
+                        t.set(done.image, filter);
+                    }
+                }
                 None => app.canvas.texture = Some(ctx.load_texture("figcraft-canvas", done.image, filter)),
             }
         }
