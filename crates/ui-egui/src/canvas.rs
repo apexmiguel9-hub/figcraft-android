@@ -1,11 +1,14 @@
 //! The canvas: the rendered page plus selection, hover, guides, labels and text-editing overlays.
 
 use std::sync::Arc;
+use std::time::Instant;
 
+use crate::canvas::timing::CanvasTiming;
 use egui::{Align2, Color32, CornerRadius, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, Ui, pos2, vec2};
 use figcraft_doc::{Document, NodeId, NodeKind};
 use figcraft_engine::Preedit;
 use figcraft_engine::tools::{PointerEvent, PointerKind, ToolId, selection_box, selection_frame};
+use figcraft_engine::vectoredit::VHit;
 use figcraft_geom::Point;
 use serde_json::json;
 
@@ -20,6 +23,7 @@ mod outline;
 mod overlays;
 mod render;
 mod rulers;
+mod timing;
 
 #[cfg(test)]
 use builder::clean_poly;
@@ -65,7 +69,13 @@ pub struct CanvasState {
     /// canvas texture (ms; the texture is uploaded when that frame is painted).
     pub preview_latency_ms: Option<f64>,
     pub refine_latency_ms: Option<f64>,
+    /// Instrumentación del pipeline: input → request → render → upload → repaint.
+    pub timing: CanvasTiming,
+    /// Momento en que llegó el último evento de dedo/pointer relevante (para marcar el input del ciclo abierto).
+    pub last_input_instant: Option<Instant>,
     dragging: bool,
+    /// The magnifier shown over the finger while a vector point or handle is dragged (touch).
+    pub loupe: Option<Loupe>,
     space_pan: bool,
     middle_pan: Option<(Pos2, f64, f64)>,
     /// The zoom tool (Z held): zooming out (Alt) or in, and where its drag started.
@@ -93,6 +103,20 @@ pub struct CanvasState {
     long_press: Option<(Pos2, f32)>,
     /// The taps on the canvas, for the double tap (`doble_toque`).
     toque: Toque,
+}
+
+/// The magnifier shown over the finger while a point or handle is dragged in vector edit mode.
+///
+/// It shows the same canvas texture the page is drawn from, at a few times its scale, so it costs
+/// no extra render and includes whatever is under the point: a reference image, another layer, the
+/// page's background. The point itself is marked with a crosshair at the centre.
+#[derive(Clone, Copy, Debug)]
+pub struct Loupe {
+    /// The edited layer and the point or handle being dragged.
+    id: NodeId,
+    hit: VHit,
+    /// The finger's screen position: the loupe is placed above it.
+    at: Pos2,
 }
 
 /// A tap on the canvas, for the double tap (`doble_toque`).
@@ -132,6 +156,7 @@ impl Default for CanvasState {
             preview_latency_ms: None,
             refine_latency_ms: None,
             dragging: false,
+            loupe: None,
             space_pan: false,
             middle_pan: None,
             cursor: None,
@@ -144,6 +169,8 @@ impl Default for CanvasState {
             touch_count: 0,
             long_press: None,
             toque: Toque::default(),
+            timing: CanvasTiming::new(64),
+            last_input_instant: None,
         }
     }
 }
@@ -217,6 +244,162 @@ fn pointer_event(app: &FigApp, kind: PointerKind, pos: Pos2, m: &egui::Modifiers
     }
 }
 
+/// What a press at `pos` grabs in vector edit mode, if it is a point or a handle: the magnifier
+/// follows those while they are dragged. The Move tool only: the other edit tools drag segments,
+/// regions or the whole shape, where the point under the finger is not what is being placed.
+pub(super) fn loupe_target(app: &FigApp, pos: Pos2) -> Option<Loupe> {
+    let ds = app.session.ds().ok()?;
+    let ve = ds.vector_edit.as_ref()?;
+    if ve.tool != figcraft_engine::vectoredit::VTool::Move {
+        return None;
+    }
+    let (id, hit) = figcraft_engine::vectoredit::hit_any(&ds.doc, ve, app.to_page(pos), figcraft_engine::vectoredit::hit_tol(ds.view.zoom))?;
+    matches!(hit, VHit::Vertex { .. } | VHit::Handle { .. }).then_some(Loupe { id, hit, at: pos })
+}
+
+/// The page point the magnifier shows: the dragged point or handle in the document as it is now
+/// (the preview during the drag, so snapping is included).
+fn loupe_center(app: &FigApp, l: &Loupe) -> Option<Point> {
+    let ds = app.session.ds().ok()?;
+    let net = figcraft_engine::vectoredit::network(&ds.doc, l.id)?;
+    let local = match l.hit {
+        VHit::Vertex { index } => net.vertices.get(index)?.point(),
+        VHit::Handle { seg, start } => {
+            let s = net.segments.get(seg)?;
+            let v = net.vertices.get(if start { s.a } else { s.b })?;
+            let t = net.handle(seg, start)?;
+            Point::new(v.x + t.0, v.y + t.1)
+        }
+        VHit::Segment { .. } => return None,
+    };
+    Some(ds.doc.world_transform(l.id) * local)
+}
+
+/// Side of the magnifier, in points.
+const LOUPE_SIZE: f32 = 150.0;
+/// How much the magnifier enlarges the canvas.
+const LOUPE_MAG: f32 = 2.5;
+
+/// Where the magnifier goes: above the finger, below it when there is no room, and inside the
+/// canvas.
+fn loupe_rect(at: Pos2, canvas: Rect, size: f32) -> Rect {
+    let margin = 8.0;
+    let gap = 28.0;
+    let max_size = (canvas.width().min(canvas.height()) - 2.0 * margin).max(24.0);
+    let size = size.min(max_size);
+    let mut r = Rect::from_center_size(pos2(at.x, at.y - gap - size / 2.0), vec2(size, size));
+    if r.top() < canvas.top() + margin {
+        r = Rect::from_center_size(pos2(at.x, at.y + gap + size / 2.0), vec2(size, size));
+    }
+    let min = canvas.min + vec2(margin, margin);
+    let max = canvas.max - vec2(margin, margin);
+    let dx = if r.left() < min.x {
+        min.x - r.left()
+    } else if r.right() > max.x {
+        max.x - r.right()
+    } else {
+        0.0
+    };
+    let dy = if r.top() < min.y {
+        min.y - r.top()
+    } else if r.bottom() > max.y {
+        max.y - r.bottom()
+    } else {
+        0.0
+    };
+    r.translate(vec2(dx, dy))
+}
+
+/// The edited vector's real geometry inside the magnifier: its segments, handles and points,
+/// mapped from the page to the loupe's magnified space. The texture may lag a frame behind the
+/// drag (or be a coarse preview); this overlay is the current preview, so two points that touch
+/// look touching.
+fn draw_loupe_vectors(app: &FigApp, painter: &egui::Painter, r: Rect, center: Point) {
+    let Ok(ds) = app.session.ds() else { return };
+    let Some(ve) = ds.vector_edit.as_ref() else { return };
+    let Some(l) = app.canvas.loupe else { return };
+    let o = if ve.id == l.id {
+        figcraft_engine::vectoredit::overlay(&ds.doc, ve)
+    } else {
+        ve.others.iter().find(|p| p.id == l.id).and_then(|p| figcraft_engine::vectoredit::overlay(&ds.doc, &ve.view(p)))
+    };
+    let Some(o) = o else { return };
+    let center_screen = app.to_screen(center.x, center.y);
+    let at = |p: [f64; 2]| r.center() + (app.to_screen(p[0], p[1]) - center_screen) * LOUPE_MAG;
+    let col = accent(painter);
+    let lp = painter.with_clip_rect(r.shrink(2.0));
+    for (i, seg) in o.segments.iter().enumerate() {
+        let [a, b, c, d] = [at(seg[0]), at(seg[1]), at(seg[2]), at(seg[3])];
+        if !Rect::from_points(&[a, b, c, d]).intersects(r.expand(8.0)) {
+            continue;
+        }
+        let w = if o.selected_segments.contains(&i) { 2.5 } else { 1.5 };
+        lp.add(egui::epaint::CubicBezierShape::from_points_stroke([a, b, c, d], false, Color32::TRANSPARENT, Stroke::new(w, col)));
+    }
+    for h in &o.handles {
+        let v = at(h.vertex);
+        let e = at(h.handle);
+        if !Rect::from_two_pos(v, e).intersects(r.expand(8.0)) {
+            continue;
+        }
+        let on = o.selected_handles.contains(&(h.seg, h.start));
+        lp.line_segment([v, e], Stroke::new(1.0, col));
+        lp.circle_filled(e, 3.0, if on { col } else { Color32::WHITE });
+        lp.circle_stroke(e, 3.0, Stroke::new(1.0, col));
+    }
+    for (i, v) in o.vertices.iter().enumerate() {
+        let p = at(*v);
+        if !r.expand(8.0).contains(p) {
+            continue;
+        }
+        let on = o.selected_vertices.contains(&i);
+        let size = if on { 7.0 } else { 5.5 };
+        let q = Rect::from_center_size(p, vec2(size, size));
+        lp.rect_filled(q, CornerRadius::same(4), if on { col } else { Color32::WHITE });
+        lp.rect_stroke(q, CornerRadius::same(4), Stroke::new(1.0, col), StrokeKind::Inside);
+    }
+}
+
+/// The magnifier over the finger: the canvas texture around the dragged point at [`LOUPE_MAG`],
+/// with a crosshair on the point. It uses the texture already on screen, so a reference image and
+/// every other layer are included, and it costs no extra render.
+fn draw_loupe(app: &FigApp, painter: &egui::Painter, rect: Rect, ppp: f32) {
+    let Some(l) = app.canvas.loupe else { return };
+    let Some(center) = loupe_center(app, &l) else { return };
+    let shown = app.session.ds().map(|ds| (ds.uid, ds.page)).ok();
+    let (Some(tex), Some(v), true) = (&app.canvas.texture, &app.canvas.tex_view, shown.is_some() && app.canvas.tex_of == shown) else {
+        return;
+    };
+    let tl = app.to_screen(v.origin.0, v.origin.1);
+    let zoom = app.session.ds().map(|d| d.view.zoom).unwrap_or(1.0);
+    let pixel_preview = app.session.ds().ok().and_then(|ds| ds.view.pixel_preview_scale()) == Some(v.scale);
+    let image_rect = presented_image_rect(tl, v, zoom, ppp, pixel_preview);
+    let at = app.to_screen(center.x, center.y);
+    let uv_center = ((at - image_rect.min) / image_rect.size()).to_pos2();
+    let r = loupe_rect(l.at, rect, LOUPE_SIZE);
+    let half = r.width() / (2.0 * LOUPE_MAG);
+    let uv_half = vec2(half / image_rect.width(), half / image_rect.height());
+    let uv = Rect::from_center_size(uv_center, uv_half * 2.0);
+    let radius = CornerRadius::same(16);
+    painter.rect_filled(r.translate(vec2(0.0, 3.0)).expand(2.0), radius, Color32::from_black_alpha(80));
+    painter.add(egui::epaint::RectShape::filled(r, radius, Color32::WHITE).with_texture(tex.id(), uv));
+    draw_loupe_vectors(app, painter, r, center);
+    painter.rect_stroke(r, radius, Stroke::new(2.0, Color32::from_white_alpha(235)), StrokeKind::Inside);
+    painter.rect_stroke(r.expand(1.0), radius, Stroke::new(1.0, Color32::from_black_alpha(90)), StrokeKind::Outside);
+    let c = r.center();
+    let shadow = Stroke::new(4.0, Color32::from_black_alpha(160));
+    let light = Stroke::new(1.6, Color32::WHITE);
+    // The crosshair leaves the centre clear: the point (and its node) is what it marks.
+    for (a, b) in
+        [(vec2(-9.0, 0.0), vec2(-3.0, 0.0)), (vec2(3.0, 0.0), vec2(9.0, 0.0)), (vec2(0.0, -9.0), vec2(0.0, -3.0)), (vec2(0.0, 3.0), vec2(0.0, 9.0))]
+    {
+        painter.line_segment([c + a, c + b], shadow);
+        painter.line_segment([c + a, c + b], light);
+    }
+    painter.circle_stroke(c, 7.0, shadow);
+    painter.circle_stroke(c, 7.0, light);
+}
+
 /// Run one canvas pass: update the viewport size and first-fit zoom; handle pointer/key input
 /// and accessibility; draw the drop overlay, guides, live pointer and preedit; request/poll
 /// renders and upload the texture; draw the page background and last texture; then draw overlays,
@@ -273,9 +456,12 @@ pub fn show(app: &mut FigApp, ui: &mut Ui, worker: &mut Worker) {
     // Every finished render is shown, even when a newer one is already on its way: renders finish
     // in order, and an edit every frame (a drag) would otherwise never show until it stopped.
     let shown = app.session.ds().map(|ds| (ds.uid, ds.page)).ok();
+    let mut done_instant: Option<Instant> = None;
+    let mut upload_instant: Option<Instant> = None;
     if let Some(done) = worker.poll()
         && shows(&app.canvas, &done, shown)
     {
+        done_instant = Some(Instant::now());
         if !done.coarse || done.gesture {
             app.canvas.render_work = Some(done.work);
             app.ui.render_ms = done.ms;
@@ -286,10 +472,42 @@ pub fn show(app: &mut FigApp, ui: &mut Ui, worker: &mut Worker) {
         } else {
             egui::TextureOptions::LINEAR
         };
-        match &mut app.canvas.texture {
-            Some(t) => t.set(done.image, filter),
-            None => app.canvas.texture = Some(ctx.load_texture("figcraft-canvas", done.image, filter)),
+        // `Work::Reused` significa que la imagen es idéntica a la ya en textura: saltar la subida.
+        // `Work::Partial` sube solo el rect sucio (set_partial) en vez de los ~16 MB completos, lo
+        // que acorta la latencia de upload y hace que la textura alcance al dedo más rápido.
+        if done.work != figcraft_render::Work::Reused {
+            let partial: Option<(egui::ColorImage, [u32; 2])> = match &done.work {
+                figcraft_render::Work::Partial { rect, .. } => {
+                    let (x0, y0, x1, y1) = *rect;
+                    let sw = (x1 - x0).max(0) as usize;
+                    let sh = (y1 - y0).max(0) as usize;
+                    if sw > 0 && sh > 0 && done.image.size[0] > 0 && done.image.size[1] > 0 {
+                        let mut pixels = Vec::with_capacity(sw * sh);
+                        for y in y0..y1 {
+                            let row = y as usize * done.image.size[0];
+                            for x in x0..x1 {
+                                pixels.push(done.image.pixels[row + x as usize]);
+                            }
+                        }
+                        Some((egui::ColorImage::from_rgba_premultiplied([sw, sh], &pixels), [x0 as u32, y0 as u32]))
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            };
+            match &mut app.canvas.texture {
+                Some(t) => {
+                    if let Some((img, offset)) = partial {
+                        t.set_partial(img, offset, filter);
+                    } else {
+                        t.set(done.image, filter);
+                    }
+                }
+                None => app.canvas.texture = Some(ctx.load_texture("figcraft-canvas", done.image, filter)),
+            }
         }
+        upload_instant = Some(Instant::now());
         let latency = Some(done.at.elapsed().as_secs_f64() * 1000.0);
         if done.gesture {
             // Ni preview ni refine: es la imagen que sigue al dedo.
@@ -342,6 +560,12 @@ pub fn show(app: &mut FigApp, ui: &mut Ui, worker: &mut Worker) {
     crate::versions::preview_banner(app, &ctx, rect);
     crate::branch_ui::banner(app, &ctx, rect);
     crate::dev_mode::focus_bar(app, &ctx, rect);
+    draw_loupe(app, &painter, rect, ppp);
+    // Cierra el ciclo de instrumentación si este frame mostró un render terminado.
+    if let (Some(done_instant), Some(upload_instant)) = (done_instant, upload_instant) {
+        let repaint_instant = Instant::now();
+        app.canvas.timing.close_cycle(done_instant, upload_instant, repaint_instant);
+    }
     // The cursor: the tool's, unless something on the canvas with its own has the pointer.
     app.canvas.cursor = None;
     if let (true, Some(at)) = (own_cursor && resp.hovered(), ctx.input(|i| i.pointer.hover_pos())) {
@@ -400,6 +624,9 @@ fn describe_box([x0, y0, x1, y1]: [f64; 4]) -> String {
 
 #[cfg(test)]
 mod builder_poly_tests;
+
+#[cfg(test)]
+mod loupe_tests;
 
 #[cfg(test)]
 mod zoom_preview_tests;

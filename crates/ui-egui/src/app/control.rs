@@ -84,7 +84,7 @@ impl FigApp {
                 "rect": [self.canvas.rect.min.x, self.canvas.rect.min.y, self.canvas.rect.max.x, self.canvas.rect.max.y],
                 "renderWork": self.canvas.render_work.map(|w| match w {
                     figcraft_render::Work::Reused => json!({"kind": "reused"}),
-                    figcraft_render::Work::Partial { pixels } => json!({"kind": "partial", "pixels": pixels}),
+                    figcraft_render::Work::Partial { pixels, rect } => json!({"kind": "partial", "pixels": pixels, "rect": rect}),
                     figcraft_render::Work::Full => json!({"kind": "full"}),
                 }),
                 "quality": if self.canvas.tex_coarse { "preview" } else { "refined" },

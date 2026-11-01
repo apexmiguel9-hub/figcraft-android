@@ -148,7 +148,7 @@ fn edits_render_only_what_changed() {
     check(&mut r, &s.doc, s.page, &v);
     let moved = edit(&s.doc, |d| d.get_mut(s.rect).unwrap().transform = Affine::translate((60.0, 40.0)));
     let w = check(&mut r, &moved, s.page, &v);
-    let Work::Partial { pixels } = w else { panic!("move: {w:?}") };
+    let Work::Partial { pixels, .. } = w else { panic!("move: {w:?}") };
     assert!(pixels < 300 * 220 / 4, "only around the layer: {pixels}");
     let recolored = edit(&moved, |d| solid(d.get_mut(s.child).unwrap(), "000000"));
     assert!(partial(check(&mut r, &recolored, s.page, &v)));

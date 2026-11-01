@@ -1,8 +1,14 @@
-use super::{Arc, CanvasState, Done, FigApp, Job, NodeId, Worker};
+use super::{CanvasState, Done, FigApp, Job, NodeId, Worker};
+use std::time::Instant;
 
 #[derive(Clone, PartialEq)]
 pub(super) struct JobKey {
-    doc: usize,
+    /// Identidad del archivo: distingue dos documentos aunque tengan la misma revisión.
+    uid: u64,
+    /// Revisión de contenido: cambia en cada edición del documento, así que cada move de un
+    /// arrastre pide un render. (Antes se usaba `Arc::as_ptr(&doc)`, pero el allocator reusa la
+    /// dirección del preview anterior, la key no cambiaba y `request_render` se saltaba frames.)
+    revision: u64,
     page: NodeId,
     origin: (i64, i64),
     scale: i64,
@@ -81,7 +87,8 @@ pub(super) fn request_render(app: &mut FigApp, worker: &mut Worker, ppp: f32, ma
     let requested = (ox - f64::from(margin) / scale, oy - f64::from(margin) / scale);
     let size = (visible_w.saturating_add(margin * 2).min(max_texture_side), visible_h.saturating_add(margin * 2).min(max_texture_side));
     let key = JobKey {
-        doc: Arc::as_ptr(&doc) as usize,
+        uid: ds.uid,
+        revision: ds.revision,
         page: ds.page,
         origin: ((requested.0 * 1000.0) as i64, (requested.1 * 1000.0) as i64),
         scale: (scale * 10000.0) as i64,
@@ -94,7 +101,7 @@ pub(super) fn request_render(app: &mut FigApp, worker: &mut Worker, ppp: f32, ma
         fonts: figcraft_text::layout_generation(),
         proof,
         dots,
-        gesture: app.canvas.dragging,
+        gesture: app.canvas.dragging && app.canvas.loupe.is_none(),
     };
     if let Some(previous) = &app.canvas.submitted {
         let previous_origin = (previous.origin.0 as f64 / 1000.0, previous.origin.1 as f64 / 1000.0);
@@ -118,12 +125,15 @@ pub(super) fn request_render(app: &mut FigApp, worker: &mut Worker, ppp: f32, ma
         solo: key.solo,
         proof,
         dots,
-        gesture: app.canvas.dragging,
+        gesture: app.canvas.dragging && app.canvas.loupe.is_none(),
         uid: ds.uid,
-        zoom_preview: ds.view.pixel_preview_scale().is_none(),
+        zoom_preview: ds.view.pixel_preview_scale().is_none() && app.canvas.loupe.is_none(),
         at: web_time::Instant::now(),
     };
     app.canvas.want_view = Some(job.view.clone());
+    // Abre el ciclo de instrumentación para este render: cuándo llegó el dedo, cuándo se pide el render.
+    let kind = if app.canvas.dragging && app.canvas.loupe.is_none() { "gesture" } else { "refined" };
+    app.canvas.timing.open_cycle(kind, app.canvas.last_input_instant.take(), Some(Instant::now()));
     worker.submit(job);
     app.canvas.submitted = Some(key);
 }

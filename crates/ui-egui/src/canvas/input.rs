@@ -1,4 +1,6 @@
-use super::{FigApp, Point, PointerKind, Pos2, Rect, Toque, ToqueAhora, Ui, json, pointer_event};
+use std::time::Instant;
+
+use super::{FigApp, Point, PointerKind, Pos2, Rect, Toque, ToqueAhora, Ui, json, loupe_target, pointer_event};
 
 /// The zoom tool while Z is held (Alt: zoom out): a click zooms a step about the pointer, a drag
 /// zooms to the dragged area. Takes the pointer from the other tools while it's active.
@@ -335,6 +337,7 @@ fn pulsacion_larga(app: &mut FigApp, ctx: &egui::Context) -> bool {
             // termine un arrastre que nunca existio.
             app.canvas.long_press = None;
             app.canvas.dragging = false;
+            app.canvas.loupe = None;
             // A long press is not half of a double tap.
             app.canvas.toque = Toque::default();
             open_context_menu(app, pos, false);
@@ -359,6 +362,31 @@ const LONG_PRESS_MOVEMENT_PX: f32 = 12.0;
 /// 4 eventos, el menu aparece tras un instante real de quietud.
 const LONG_PRESS_EVENTS: usize = 4;
 
+/// Put the magnifier away when no finger is on the canvas or a pinch starts, even if the release
+/// happens off the canvas.
+fn clear_loupe_if_done(app: &mut FigApp, ctx: &egui::Context) {
+    if !ctx.input(|i| i.pointer.primary_down()) || ctx.multi_touch().is_some() {
+        app.canvas.loupe = None;
+    }
+}
+
+/// Show the magnifier when a point or handle is grabbed on a touch screen and move it with the
+/// finger. A mouse has a cursor and doesn't hide the point.
+fn update_loupe(app: &mut FigApp, ctx: &egui::Context, kind: Option<PointerKind>, pos: Pos2, primary_down: bool) {
+    match kind {
+        Some(PointerKind::Down) if primary_down => {
+            let touch = cfg!(target_os = "android") || ctx.input(|i| i.any_touches());
+            app.canvas.loupe = if touch { loupe_target(app, pos) } else { None };
+        }
+        Some(PointerKind::Move) => {
+            if let Some(l) = &mut app.canvas.loupe {
+                l.at = pos;
+            }
+        }
+        _ => {}
+    }
+}
+
 /// The pointer and keys on the canvas. False when something on it with a cursor of its own has
 /// the pointer (a comment pin, a ruler guide, a gradient or padding handle): the tool's cursor
 /// then doesn't show.
@@ -369,6 +397,7 @@ pub(super) fn input(app: &mut FigApp, ui: &mut Ui, resp: &egui::Response) -> boo
         return true;
     }
     let ctx = ui.ctx().clone();
+    clear_loupe_if_done(app, &ctx);
     // Un handle (gradiente, recorte, padding, blur) que ya está arrastrando tiene que ver la
     // suelta **antes** del corte por `hover_pos`. En tactil, egui-winit manda `PointerGone` al
     // levantar el dedo y `hover_pos` queda en `None`; sin esto, el drag se quedaba abierto y el
@@ -524,11 +553,13 @@ pub(super) fn input(app: &mut FigApp, ui: &mut Ui, resp: &egui::Response) -> boo
                 m.surrender_focus(f);
             }
         });
+        app.canvas.last_input_instant = Some(Instant::now());
         Some(PointerKind::Down)
     } else if app.canvas.dragging && primary_released {
         app.canvas.dragging = false;
         Some(PointerKind::Up)
     } else if app.canvas.dragging && primary_down {
+        app.canvas.last_input_instant = Some(Instant::now());
         Some(PointerKind::Move)
     } else if resp.hovered() {
         app.canvas.hovering = true;
@@ -551,6 +582,7 @@ pub(super) fn input(app: &mut FigApp, ui: &mut Ui, resp: &egui::Response) -> boo
     if force.is_some() {
         app.canvas.pressure = force;
     }
+    update_loupe(app, &ctx, kind, pos, primary_down);
     if let Some(k) = kind {
         send(app, k, pos, &mods);
         // The pointer also let go within this frame (a quick click, or a slow frame): the tools get
@@ -580,6 +612,7 @@ fn send(app: &mut FigApp, kind: PointerKind, pos: Pos2, m: &egui::Modifiers) {
 /// Right-click at screen `pos`: select what's under the pointer (`deep`: the nested layer), then
 /// open the context menu there.
 pub fn open_context_menu(app: &mut FigApp, pos: Pos2, deep: bool) {
+    app.canvas.loupe = None;
     let p = app.to_page(pos);
     if let Ok(ds) = app.session.ds() {
         let (doc, page, sel, zoom) = (ds.doc.clone(), ds.page, ds.selection.clone(), ds.view.zoom.max(1e-6));

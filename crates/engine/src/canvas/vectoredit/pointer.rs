@@ -11,7 +11,9 @@ use figcraft_geom::{Affine, Point, Rect, Vec2};
 use super::point_snap;
 use super::regions::region_hit;
 use super::transform::{self, BoxHit, PointBox};
-use super::{EditPart, VHit, VTool, VectorEdit, edit, editing, hit, hit_any, local_offset, network, ops, points_of, selected_points, set_state};
+use super::{
+    EditPart, VHit, VTool, VectorEdit, edit, editing, hit, hit_any, hit_tol, local_offset, network, ops, points_of, selected_points, set_state,
+};
 use crate::snap::Targets;
 use crate::tools::{Cursor, Gesture, Handle, PenCursor, PointerEvent, PointerKind};
 use crate::{Result, Session};
@@ -113,16 +115,6 @@ pub(crate) struct PointSnap {
 
 /// Eraser brush radius in screen pixels.
 const ERASER_PX: f64 = 8.0;
-
-/// Pointer reach for the vector hit tests, in page units.
-///
-/// MEDIDO en el Moto: 6 unidades son ~15 px fisicos a ppp 2,44, y el dedo cae fuera del nodo (que
-/// se dibuja de 7 pt) y agarra el relleno, asi que se arrastra la forma entera en vez del nodo.
-/// En tactil se usan 12 (~29 px, 7 mm, lo que mide una yema); con raton se quedan en 6.
-fn hit_tol(zoom: f64) -> f64 {
-    let px = if cfg!(target_os = "android") { 12.0 } else { 6.0 };
-    px / zoom.max(1e-6)
-}
 
 /// A segment's midpoint is a point a press adds when the pointer is this close (screen pixels).
 const MIDPOINT_PX: f64 = 6.0;
