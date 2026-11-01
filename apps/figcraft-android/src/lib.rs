@@ -220,7 +220,36 @@ pub fn build(cc: &eframe::CreationContext<'_>) -> std::result::Result<Box<dyn ef
     Ok(Box::new(App(app)))
 }
 
-/// Solo OpenGL ES.
+/// Backend de wgpu para Android. Se elige al arrancar la app (antes de crear la instancia
+/// de wgpu), asi que no se puede cambiar en caliente como los demas knobs.
+///
+/// Variable de entorno `FIGCRAFT_WGPU_BACKEND`:
+///   - `vulkan`: fuerza Vulkan (aborta en PowerVR/MediaTek al compilar el fragment shader;
+    ///    util para ver los logs del compilador de shaders en otros GPUs).
+///   - `gl`: fuerza OpenGL ES (default, estable en PowerVR).
+///   - `auto` o cualquier otro valor: deja que wgpu elija (tende a Vulkan en Android).
+fn wgpu_backend() -> eframe::egui_wgpu::wgpu::Backends {
+    match std::env::var("FIGCRAFT_WGPU_BACKEND")
+        .ok()
+        .as_deref()
+        .unwrap_or("vulkan")
+    {
+        "vulkan" => {
+            log::info!("wgpu backend: Vulkan (forzado por FIGCRAFT_WGPU_BACKEND)");
+            eframe::egui_wgpu::wgpu::Backends::VULKAN
+        }
+        "gl" => {
+            log::info!("wgpu backend: OpenGL ES");
+            eframe::egui_wgpu::wgpu::Backends::GL
+        }
+        _ => {
+            log::info!("wgpu backend: auto (wgpu elige)");
+            eframe::egui_wgpu::wgpu::Backends::all()
+        }
+    }
+}
+
+/// Solo OpenGL ES (estable en PowerVR/MediaTek).
 ///
 /// MEDIDO por que, y por que no es "Vulkan con menos cosas". En el movil de pruebas (Moto G56
 /// 5G, Android 16) wgpu encuentra los dos adaptadores y elige Vulkan, que en Android es el
@@ -240,8 +269,7 @@ fn wgpu_solo_opengl() -> eframe::egui_wgpu::WgpuConfiguration {
     // se parte de su propio constructor y se cambia el campo. Es lo que menos puede romperse
     // al actualizar egui.
     let mut setup = eframe::egui_wgpu::WgpuSetupCreateNew::without_display_handle();
-    // avisa de que no encuentra Vulkan, pero la preferencia es Vulkan (lo decide `PowerPreference`).
-    setup.instance_descriptor.backends = eframe::egui_wgpu::wgpu::Backends::GL;
+    setup.instance_descriptor.backends = wgpu_backend();
     eframe::egui_wgpu::WgpuConfiguration { wgpu_setup: eframe::egui_wgpu::WgpuSetup::CreateNew(setup), ..Default::default() }
 }
 
