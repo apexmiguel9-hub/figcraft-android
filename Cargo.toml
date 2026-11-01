@@ -168,7 +168,7 @@ winit = { git = "https://github.com/storytold/winit.git", rev = "a517b3846ee8457
 
 # wgpu patched with PowerVR timeline semaphore padding workaround
 # (fixes vkQueueSubmit segfault on Imagination PowerVR BXM-8-256 / Moto G56)
-wgpu = { git = "https://github.com/apexmiguel9-hub/wgpu.git", rev = "a9faf80e8" }
+wgpu = { git = "https://github.com/apexmiguel9-hub/wgpu.git", rev = "ee2039b7c" }
 
 # craft-libs' vendored krilla 0.8.2: decoded PNGs are capped at 1 GiB and reserved fallibly, and a
 # panic while drawing unwinds without aborting.
