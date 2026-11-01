@@ -316,7 +316,7 @@ pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidA
     log::set_max_level(log::LevelFilter::Info);
     log::info!("nivel de log resuelto: {}", log::max_level());
     // MEDIDO: activar dump de SPIR-V para diagnosticar crash en PowerVR al crear pipelines de render
-    std::env::set_var("POWERVR_DEBUG_DUMP_SPIRV", "1");
+    unsafe { std::env::set_var("POWERVR_DEBUG_DUMP_SPIRV", "1") };
 
     // MEDIDO que hace falta, y de paso una leccion del otro repo: **en Android, un panic de
     // Rust es invisible.** El gancho por defecto escribe en `stderr`, y `stderr` no llega a
