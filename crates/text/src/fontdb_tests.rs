@@ -2,8 +2,10 @@ use super::*;
 
 fn pending(styles: &[&str]) -> FontDb {
     let mut db = FontDb::default();
-    let entries =
-        styles.iter().map(|s| Pending { path: format!("no-such-dir/{s}.ttf").into(), index: 0, style: (*s).into(), postscript: None }).collect();
+    let entries = styles
+        .iter()
+        .map(|s| Pending { path: format!("no-such-dir/{s}.ttf").into(), index: 0, style: (*s).into(), postscript: None, local: None })
+        .collect();
     db.pending.insert("cjk ui".into(), ("CJK UI".into(), entries));
     db
 }
@@ -71,6 +73,62 @@ fn the_scan_reads_names_like_a_whole_file_read() {
     }
 }
 
+fn indexed_test_font(bytes: &[u8], case: &str) -> Vec<u8> {
+    struct TempFile(std::path::PathBuf);
+    impl Drop for TempFile {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    let file = TempFile(std::env::temp_dir().join(format!("figcraft-font-index-{case}-{}.ttc", std::process::id())));
+    std::fs::write(&file.0, bytes).unwrap();
+    index_bytes(&file.0, bytes.len()).unwrap()
+}
+
+fn synthetic_font_collection(first: u32) -> Vec<u8> {
+    let mut bytes = vec![0; 112];
+    bytes[..4].copy_from_slice(b"ttcf");
+    bytes[4..8].copy_from_slice(&0x0001_0000u32.to_be_bytes());
+    bytes[8..12].copy_from_slice(&2u32.to_be_bytes());
+    bytes[12..16].copy_from_slice(&first.to_be_bytes());
+    bytes[16..20].copy_from_slice(&32u32.to_be_bytes());
+    // The second face has a name table and an outline table. Only names should be read.
+    bytes[32..36].copy_from_slice(&0x0001_0000u32.to_be_bytes());
+    bytes[36..38].copy_from_slice(&2u16.to_be_bytes());
+    bytes[44..48].copy_from_slice(b"name");
+    bytes[52..56].copy_from_slice(&80u32.to_be_bytes());
+    bytes[56..60].copy_from_slice(&8u32.to_be_bytes());
+    bytes[60..64].copy_from_slice(b"glyf");
+    bytes[68..72].copy_from_slice(&96u32.to_be_bytes());
+    bytes[72..76].copy_from_slice(&4u32.to_be_bytes());
+    bytes[80..88].copy_from_slice(b"fontname");
+    bytes[96..100].copy_from_slice(b"skip");
+    bytes
+}
+
+#[test]
+fn index_bytes_skips_collection_offsets_near_u32_max() {
+    for offset in [u32::MAX - 11, u32::MAX - 1, u32::MAX] {
+        let bytes = synthetic_font_collection(offset);
+        let indexed = indexed_test_font(&bytes, "offset");
+        assert_eq!(&indexed[32..76], &bytes[32..76]);
+        assert_eq!(&indexed[80..88], b"fontname");
+        assert_eq!(&indexed[96..100], &[0; 4], "outline bytes stay unread");
+    }
+}
+
+#[test]
+fn index_bytes_skips_a_truncated_directory_and_reads_the_next_face() {
+    let mut bytes = synthetic_font_collection(100);
+    bytes[100..104].copy_from_slice(&0x0001_0000u32.to_be_bytes());
+    bytes[104..106].copy_from_slice(&2u16.to_be_bytes());
+    let indexed = indexed_test_font(&bytes, "directory");
+    assert_eq!(&indexed[100..112], &bytes[100..112], "the header fits but its directory does not");
+    assert_eq!(&indexed[32..76], &bytes[32..76]);
+    assert_eq!(&indexed[80..88], b"fontname");
+    assert_eq!(&indexed[96..100], &[0; 4], "outline bytes stay unread");
+}
+
 #[test]
 fn macos_font_assets_are_found_in_the_asset_store() {
     // A store laid out like macOS's: fonts downloaded on demand sit in `<id>.asset/AssetData`
@@ -81,7 +139,10 @@ fn macos_font_assets_are_found_in_the_asset_store() {
             let _ = std::fs::remove_dir_all(&self.0);
         }
     }
-    let tmp = TempDir(std::env::temp_dir().join(format!("figcraft-font-assets-{}", std::process::id())));
+    // Created fresh: a directory or link already at this predictable name is refused, and not removed.
+    let root = std::env::temp_dir().join(format!("figcraft-font-assets-{}", std::process::id()));
+    std::fs::create_dir(&root).unwrap();
+    let tmp = TempDir(root);
     let store = tmp.0.join("AssetsV2");
     let fonts = store.join("com_apple_MobileAsset_Font7");
     let data = |kind: &std::path::Path| kind.join("0f1e2d.asset").join("AssetData");
@@ -206,32 +267,6 @@ fn every_platform_has_a_symbol_font_in_the_fallbacks() {
     assert!(at("Noto Sans") < at("Noto Sans Symbols") && at("DejaVu Sans") < at("Noto Sans Math"));
 }
 
-#[cfg(all(unix, not(target_os = "macos")))]
-#[test]
-fn user_font_dirs_follow_xdg_data_home() {
-    use std::ffi::OsString;
-    use std::path::PathBuf;
-    let dirs = |home: Option<&str>, data: Option<&str>| unix_user_font_dirs(home.map(OsString::from), data.map(OsString::from));
-    let paths = |items: &[&str]| items.iter().map(PathBuf::from).collect::<Vec<_>>();
-    assert_eq!(dirs(Some("/home/user"), Some("/custom user data")), paths(&["/home/user/.fonts", "/custom user data/fonts"]));
-    for data in [None, Some(""), Some("relative/data")] {
-        assert_eq!(dirs(Some("/home/user"), data), paths(&["/home/user/.fonts", "/home/user/.local/share/fonts"]));
-    }
-    assert_eq!(dirs(None, Some("/custom-data")), paths(&["/custom-data/fonts"]));
-    assert_eq!(dirs(None, None), paths(&[]));
-    assert_eq!(dirs(None, Some("relative")), paths(&[]));
-}
-
-#[cfg(all(unix, not(target_os = "macos")))]
-#[test]
-fn user_font_dirs_preserve_non_utf8_paths() {
-    use std::ffi::OsString;
-    use std::os::unix::ffi::{OsStrExt, OsStringExt};
-    let dirs = unix_user_font_dirs(Some(OsString::from_vec(b"/home/\xff".to_vec())), Some(OsString::from_vec(b"/data/\xfe".to_vec())));
-    assert_eq!(dirs[0].as_os_str().as_bytes(), b"/home/\xff/.fonts");
-    assert_eq!(dirs[1].as_os_str().as_bytes(), b"/data/\xfe/fonts");
-}
-
 #[test]
 fn the_scan_reads_font_files_without_an_extension() {
     // #298: Adobe Fonts keeps the fonts it activates in hidden files named by number. Any installed
@@ -261,10 +296,17 @@ fn the_scan_reads_font_files_without_an_extension() {
     assert!(system_font_dirs().iter().any(|d| d.ends_with("Adobe/CoreSync/plugins/livetype")), "Adobe Fonts' folder is scanned");
 }
 
+/// Fonts downloaded into the suite's font store (by any Craft app) are scanned with the system's.
+#[test]
+fn the_suite_font_store_is_scanned() {
+    let store = craft_font_catalog::font_store_dir(&craft_font_catalog::FontEnv::from_process());
+    assert!(store.is_none_or(|dir| system_font_dirs().contains(&dir)));
+}
+
 /// A rescan offers new families and the styles installed since, and never a file twice.
 #[test]
 fn a_rescan_offers_fonts_installed_since() {
-    let entry = |s: &str| Pending { path: format!("no-such-dir/{s}.ttf").into(), index: 0, style: s.into(), postscript: None };
+    let entry = |s: &str| Pending { path: format!("no-such-dir/{s}.ttf").into(), index: 0, style: s.into(), postscript: None, local: None };
     let mut db = pending(&["Regular"]);
     let found = |fams: &[(&str, &[&str])]| -> BTreeMap<String, (String, Vec<Pending>)> {
         fams.iter().map(|(f, styles)| (f.to_lowercase(), ((*f).to_string(), styles.iter().map(|s| entry(s)).collect()))).collect()
@@ -325,7 +367,7 @@ fn the_scan_offers_installed_styles_an_embedded_family_lacks() {
     face.instances.clear();
     let mut db = FontDb::default();
     db.add(face);
-    let entry = |s: &str| Pending { path: format!("no-such-dir/{s}.ttf").into(), index: 0, style: s.into(), postscript: None };
+    let entry = |s: &str| Pending { path: format!("no-such-dir/{s}.ttf").into(), index: 0, style: s.into(), postscript: None, local: None };
     let found =
         |family: &str, styles: &[&str]| BTreeMap::from([(family.to_lowercase(), (family.to_string(), styles.iter().map(|s| entry(s)).collect()))]);
     db.merge_scan(found("Brand Sans", &["Regular"]));
@@ -355,19 +397,26 @@ fn font_bytes_load_into_the_db() {
     }
 }
 
-/// Apple's system font answers to the names designs use for it (SF Pro, SF UI Text, …), unless a
-/// font of that name is installed.
+/// Apple's system font answers to the names designs and CSS use for it (SF Pro, SF UI Text,
+/// system-ui, …), unless a font of that name is installed.
 #[test]
 fn apple_system_font_names_find_the_system_font() {
     let mut db = FontDb::default();
     db.pending.insert(
         "system font".into(),
-        ("System Font".into(), vec![Pending { path: "no-such-dir/SFNS.ttf".into(), index: 0, style: "Regular".into(), postscript: None }]),
+        (
+            "System Font".into(),
+            vec![Pending { path: "no-such-dir/SFNS.ttf".into(), index: 0, style: "Regular".into(), postscript: None, local: None }],
+        ),
     );
     for name in ["SF Pro", "SF Pro Text", "SF Pro Display", "SF UI Text", "SF UI Display", ".SF NS Text", "San Francisco"] {
         assert!(db.has_family(name), "{name}");
     }
+    for name in ["system-ui", "-apple-system", "BlinkMacSystemFont", ".AppleSystemUIFont"] {
+        assert_eq!(db.key(name), "system font", "{name}");
+    }
     assert!(!db.has_family("SF Mono"));
+    assert!(!db.has_family("ui-monospace"));
     db.pending.insert("sf pro".into(), ("SF Pro".into(), Vec::new()));
     assert_eq!(db.key("SF Pro"), "sf pro", "an installed SF Pro is itself");
     assert_eq!(db.key("SF UI Text"), "system font");
@@ -402,6 +451,51 @@ fn named_styles_keep_their_optical_size() {
     assert_eq!(face.axis_values(&style)[opsz], face.axes[opsz].max);
 }
 
+fn synthetic_trak() -> Vec<u8> {
+    let mut bytes = vec![0; 46];
+    bytes[..4].copy_from_slice(&0x0001_0000u32.to_be_bytes());
+    bytes[6..8].copy_from_slice(&12u16.to_be_bytes());
+    bytes[12..14].copy_from_slice(&1u16.to_be_bytes());
+    bytes[14..16].copy_from_slice(&3u16.to_be_bytes());
+    bytes[16..20].copy_from_slice(&28u32.to_be_bytes());
+    // The normal track (0.0), with three sizes and their signed tracking values.
+    bytes[24..26].copy_from_slice(&256u16.to_be_bytes());
+    bytes[26..28].copy_from_slice(&40u16.to_be_bytes());
+    for (i, size) in [10i32, 20, 40].into_iter().enumerate() {
+        bytes[28 + i * 4..32 + i * 4].copy_from_slice(&(size * 65536).to_be_bytes());
+    }
+    for (i, value) in [-8i16, 0, 16].into_iter().enumerate() {
+        bytes[40 + i * 2..42 + i * 2].copy_from_slice(&value.to_be_bytes());
+    }
+    bytes
+}
+
+#[test]
+fn normal_track_reads_a_well_formed_table() {
+    assert_eq!(normal_track(&synthetic_trak()), [(10.0, -8.0), (20.0, 0.0), (40.0, 16.0)]);
+}
+
+#[test]
+fn normal_track_ignores_size_table_offsets_near_u32_max() {
+    let mut bytes = synthetic_trak();
+    // On 32-bit targets even the first size's end can overflow. On 64-bit these are out of bounds.
+    for offset in [u32::MAX - 7, u32::MAX - 3, u32::MAX - 1, u32::MAX] {
+        bytes[16..20].copy_from_slice(&offset.to_be_bytes());
+        assert!(normal_track(&bytes).is_empty(), "size table at {offset}");
+    }
+}
+
+#[test]
+fn normal_track_never_returns_a_partial_track_from_a_damaged_table() {
+    let mut bytes = synthetic_trak();
+    bytes.truncate(44); // Two values fit, but the third is missing.
+    assert!(normal_track(&bytes).is_empty());
+    let mut bytes = synthetic_trak();
+    bytes[26..28].copy_from_slice(&20u16.to_be_bytes());
+    bytes.truncate(36); // All values fit, but only two sizes do.
+    assert!(normal_track(&bytes).is_empty());
+}
+
 /// The tracking a font's `trak` table gives at a size (Apple's fonts carry one; the platform text
 /// engine applies it on its own), in pixels, interpolated between the sizes the table lists.
 #[test]
@@ -429,7 +523,13 @@ fn faces_by_postscript_name() {
         "brand sans".into(),
         (
             "Brand Sans".into(),
-            vec![Pending { path: "no-such-dir/b.ttf".into(), index: 0, style: "Bold".into(), postscript: Some("BrandSans-Bold".into()) }],
+            vec![Pending {
+                path: "no-such-dir/b.ttf".into(),
+                index: 0,
+                style: "Bold".into(),
+                postscript: Some("BrandSans-Bold".into()),
+                local: None,
+            }],
         ),
     );
     assert_eq!(db.postscript_face("brandsans-bold"), Some(("Brand Sans".to_string(), "Bold".to_string())));
@@ -505,4 +605,11 @@ fn core_text_lists_the_installed_font_files() {
     let files = font_manager_files();
     assert!(files.iter().any(|f| f.starts_with("/System/Library/Fonts")), "{} files", files.len());
     assert!(files.iter().all(|f| f.is_absolute()));
+}
+
+#[test]
+fn system_font_dirs_are_walked_once_each() {
+    let dirs = super::system_font_dirs();
+    let unique: std::collections::HashSet<_> = dirs.iter().collect();
+    assert_eq!(unique.len(), dirs.len(), "{dirs:?}");
 }

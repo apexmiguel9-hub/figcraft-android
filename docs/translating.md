@@ -17,7 +17,7 @@ Simplified.
 The catalogs: English (`en`, the source), and Spanish (`es`, with the Latin American overlay
 `es-419`), French (`fr`), German (`de`), Dutch (`nl`), Brazilian Portuguese (`pt-BR`), Japanese
 (`ja`), Korean (`ko`), Simplified Chinese (`zh-Hans`), Czech (`cs`), Indonesian (`id`), Finnish
-(`fi`), Bengali (`bn`), Italian (`it`), Vietnamese (`vi`) and Thai (`th`), machine-drafted and waiting for native speakers' review. Polish (`pl`,
+(`fi`), Bengali (`bn`), Italian (`it`), Vietnamese (`vi`), Thai (`th`) and Bosnian (`bs`), machine-drafted and waiting for native speakers' review. Polish (`pl`,
 Polski) was reviewed and approved by Lucas (@lukasz-sklad). Georgian (`ka`) was written with AI
 assistance and reviewed by a native speaker, and stays a draft until a maintainer changes its status.
 Russian (`ru`, Русский) was reviewed and approved by VanTan; its catalog keeps Frame, Dev Mode and
@@ -67,7 +67,12 @@ plural entries give only `other`. Thai is concise, with bare imperatives for but
 menu items (บันทึก, ลบ), no ครับ/ค่ะ endings, no spaces between Thai words (a space only separates
 clauses, and Thai from Latin words or numbers), and design terms transliterated as Thai designers say
 them (เฟรม, เลเยอร์, คอมโพเนนต์, อินสแตนซ์, ออโต้เลย์เอาต์). It has no plural forms: plural entries give
-only `other`, and dates read `{day} {month} {year}` with Thai month abbreviations.
+only `other`, and dates read `{day} {month} {year}` with Thai month abbreviations. Bosnian is
+written in Latin script with ijekavian forms and Bosnian words (historija, hiljada, sačuvati,
+sedmica), uses bare imperatives for buttons and menu items (Sačuvaj, Izbriši) and the formal Vi for
+instructions (Odaberite, Kliknite), „ “ quotes, and consistent design terms (okvir, sloj,
+komponenta, instanca, varijanta, automatski raspored, ograničenja, ispuna, obrub, efekat, varijabla,
+stil, način for a variable mode, dodatak for a plugin).
 
 CJK and Thai text need their own fonts, which egui and Inter lack: the desktop app adds an installed
 one when something on screen needs it, so layer and page names in those scripts show whatever the
@@ -80,6 +85,24 @@ installed font on the desktop. Web builds keep it only when the craft-fonts they
 it (`crates/text/build.rs`); the commit releases pin doesn't yet (`docs/releasing.md`), so the web
 picker leaves Georgian out. A new CJK or other non-Latin language also needs its script in
 `cjk::language`, or a built-in craft-fonts face.
+
+## Arabic draft
+
+`ar.toml` adds العربية as a draft: 1,857 UI entries, 620 command labels and 31 menu
+wordings (2,508 entries, measured 2026-10-28). Contributed by @hussain-hz with OpenAI Codex;
+not yet reviewed by a native speaker. Existing language catalogs are unchanged.
+
+The catalog uses Modern Standard Arabic, logical Unicode order, Western digits, and Arabic
+punctuation. Product names, command ids, keyboard glyphs and `{placeholders}` are preserved.
+English plural entries give only `other`, with count-neutral wording such as `عدد الطبقات: {n}`.
+This is deliberate: the current plural `Forms` have no zero/two fields. It is not an implementation
+of Arabic's six CLDR categories; wording remains valid for 0, 1, 2 and larger integer counts.
+
+Arabic text uses the existing bidi/shaping and Arabic system-font fallback on desktop. Web builds
+require an embedded Noto Sans Arabic face to offer Arabic. The current web font budget filters
+that face out, so Arabic is not offered on the web yet. No font is added to
+this repository. The interface's panels are not mirrored; this catalog does not claim a complete
+right-to-left interface. Native review and representative in-app checks remain required.
 
 ## Adding a language
 
@@ -98,6 +121,9 @@ picker leaves Georgian out. A new CJK or other non-Latin language also needs its
    three forms. Czech's CLDR `many` applies only to decimals; `trn` takes integer counts.
    Polish uses `one` for 1 only, `few` like Russian (2–4, 22–24… except 12–14) and `many` for
    the other integers, including 0 and 21 (e.g. `{n} warstwa`, `{n} warstwy`, `{n} warstw`).
+   Bosnian uses `one` for 1, 21, 31… except 11, `few` for 2–4, 22–24… except 12–14, and `other`
+   for the rest, including 0 (e.g. `{n} sloj`, `{n} sloja`, `{n} slojeva`); since `one` covers 21,
+   keep `{n}` in every form.
 4. A string added later shows English in every language until someone translates it; a missing
    translation never fails a check or a build. `cargo xtask i18n-report` lists what each language
    lacks (UI strings, command labels, menu wordings), and `cargo xtask ci` prints the same list.

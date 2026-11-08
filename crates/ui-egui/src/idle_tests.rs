@@ -345,6 +345,47 @@ fn cjk_names_are_looked_for_in_edits_not_on_every_pan() {
     assert_eq!(h.app.cjk_needed(&ctx, 0), crate::cjk::HANGUL);
 }
 
+/// #1673: the UI runs a queued request only if the transport hasn't given up on it, and marks it
+/// started first, so a timeout can tell "not applied" from "still running". Both from a frame and
+/// from a hidden window's logic pass.
+#[test]
+fn a_request_the_transport_gave_up_on_is_never_applied() {
+    let (mut h, text) = document();
+    h.settle();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let rename = |id: u64, name: &str| ControlRequest {
+        id: json!(id),
+        method: "engine.execute".into(),
+        params: json!({"command": "node.set", "params": {"ids": [text.clone()], "props": {"name": name}}}),
+        reply: tx.clone(),
+        state: Default::default(),
+    };
+    let node = figcraft_doc::NodeId(text.as_u64().unwrap());
+    let name = |h: &Harness| h.app.session.doc().unwrap().node(node).unwrap().name.clone();
+    let before = name(&h);
+    let mut hidden = RawInput::default();
+    hidden.viewports.insert(ViewportId::ROOT, egui::ViewportInfo { minimized: Some(true), ..Default::default() });
+    for on_screen in [true, false] {
+        let gave_up = rename(1, "late");
+        gave_up.state.cancel_if_open();
+        let wanted = rename(2, "wanted");
+        let gate = wanted.state.clone();
+        h.app.control_queue.extend([gave_up, wanted]);
+        if on_screen {
+            h.frame(vec![]);
+        } else {
+            let ctx = h.ctx.clone();
+            let _ = ctx.run_logic(&hidden, |ctx| crate::control::background(&mut h.app, ctx));
+        }
+        let reply = rx.try_recv().expect("the wanted request is answered");
+        assert_eq!(reply.id, json!(2), "on screen: {on_screen}");
+        assert!(rx.try_recv().is_err(), "nothing answers the cancelled one");
+        assert_eq!(gate.state(), crate::RequestState::Running, "started before it ran");
+        assert_eq!(name(&h), "wanted");
+        h.app.session.execute("node.set", &json!({"ids": [text.clone()], "props": {"name": before.clone()}})).unwrap();
+    }
+}
+
 /// Asserts a hidden window answers edits and inspection at once, while a screenshot is
 /// parked with a deadline and times out once instead of waiting for a frame.
 #[test]
@@ -472,4 +513,21 @@ fn a_discarded_sizing_pass_sets_up_and_counts_one_frame_only() {
     out.textures_delta.clear();
     assert_eq!(passes, 2, "egui reran the frame");
     assert_eq!(app.frame_stats.frames, frames + 1, "one frame was drawn, not one per pass");
+}
+
+#[test]
+fn a_rename_started_while_minimized_waits_for_the_layers_panel_quietly() {
+    let (mut h, _) = document();
+    let r = h.run("shape.rectangle", json!({"x": 500, "y": 500, "width": 40, "height": 40}));
+    h.run("view.minimize", json!({"on": true}));
+    h.settle();
+    // What Cmd/Ctrl+R leaves: the field opens when the layers panel next draws, which a minimized
+    // interface doesn't do; no frame is asked for meanwhile.
+    h.app.ui.rename = Some(crate::panels::layers::Rename { id: id(&r), start: true });
+    h.assert_idle("a rename started while the interface is minimized");
+    h.run("view.minimize", json!({"on": false}));
+    for _ in 0..3 {
+        h.frame(vec![]);
+    }
+    assert!(h.app.ui.rename.is_some_and(|r| !r.start), "the field opened once the interface expanded");
 }

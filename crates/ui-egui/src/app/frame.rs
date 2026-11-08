@@ -32,6 +32,46 @@ impl FigApp {
         }
     }
 
+    /// Clicking the control that opened the colour picker closes it again; clicking another opens
+    /// the picker for that one.
+    pub fn toggle_picker(&mut self, target: crate::colorpicker::PickerTarget, button: Option<egui::Rect>) {
+        if self.ui.picker.as_ref() == Some(&target) {
+            crate::colorpicker::close(self);
+        } else {
+            self.open_picker(target, button);
+        }
+    }
+
+    /// Start a fresh picker beside its control, committing edits to the previous target first.
+    pub fn open_picker(&mut self, target: crate::colorpicker::PickerTarget, button: Option<egui::Rect>) {
+        if self.ui.picker.is_some() {
+            crate::colorpicker::close(self);
+        }
+        self.ui.picker_popover = None;
+        self.ui.picker_button_id = None;
+        self.ui.picker = Some(target);
+        self.ui.picker_button = button;
+    }
+
+    /// Follow only the widget that opened this target, even when several controls edit it.
+    pub fn refresh_picker_control(&mut self, target: &crate::colorpicker::PickerTarget, response: &egui::Response) {
+        if self.ui.picker.as_ref() == Some(target) && self.ui.picker_button_id.is_none_or(|id| id == response.id) {
+            self.ui.picker_button = response.interact_rect.is_positive().then_some(response.rect);
+            self.ui.picker_button_id = Some(response.id);
+        }
+    }
+
+    /// Drawn colour controls refresh their held rectangle and toggle the picker on a click.
+    pub fn picker_control(&mut self, target: crate::colorpicker::PickerTarget, response: &egui::Response) {
+        self.refresh_picker_control(&target, response);
+        if response.clicked() {
+            self.toggle_picker(target, Some(response.rect));
+            if self.ui.picker.is_some() {
+                self.ui.picker_button_id = Some(response.id);
+            }
+        }
+    }
+
     /// Leaving Design ends a pen path as Escape does and goes back to Move: Prototype and Inspect
     /// don't draw (#307). Checked as the frame starts (the control channel) and after the panels
     /// and shortcuts (the mode switcher, the tabs, Shift+E/Shift+D), before the canvas sees more.
@@ -203,6 +243,22 @@ impl FigApp {
                     }
                 }
                 ui.add_space(4.0);
+            }
+        });
+    }
+
+    /// The way back from a minimized interface by mouse: a small Panels button at the top left of
+    /// the canvas, where the navigation bar was (the shortcut works too).
+    pub(super) fn expand_button(&mut self, ctx: &egui::Context, at: egui::Pos2) {
+        use a11y::Tip as _;
+        let t = theme::Tokens::get(ctx);
+        egui::Area::new(egui::Id::unique("expand_interface")).order(egui::Order::Foreground).fixed_pos(at).show(ctx, |ui| {
+            let (r, resp) = ui.allocate_exact_size(egui::vec2(32.0, 32.0), egui::Sense::click());
+            let resp = resp.tip(i18n::tr("Expand the interface"));
+            ui.painter().rect(r, 8.0, t.panel, egui::Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
+            icons::paint(ui.painter(), r.shrink(8.0), icons::Icon::Panels, t.icon);
+            if resp.clicked() {
+                self.run("view.minimize", serde_json::json!({}));
             }
         });
     }

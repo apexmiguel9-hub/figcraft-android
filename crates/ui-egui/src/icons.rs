@@ -30,6 +30,7 @@ pub use draw::{paint, paint_outlines};
 icons! {
     Move,
     Scale,
+    FitContents,
     Hand,
     Frame,
     Section,
@@ -66,6 +67,7 @@ icons! {
     PaintBucket,
     Lasso,
     Cut,
+    Crop,
     Boolean,
     Page,
     Check,
@@ -88,6 +90,8 @@ icons! {
     FlipH,
     FlipV,
     CornerRadius,
+    /// A smooth corner with its two tangent endpoints.
+    CornerSmoothing,
     /// Individual corners: the rounded corner each field sets.
     CornerTopLeft,
     CornerTopRight,

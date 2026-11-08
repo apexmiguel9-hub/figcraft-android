@@ -65,7 +65,22 @@ pub enum PropDef {
     },
 }
 
+/// A component's properties in the order they show: the names in `order` first (as they were
+/// made; renaming keeps the place), then any others by name (files from before the order was kept).
+pub fn ordered_props<'a>(props: &'a BTreeMap<String, PropDef>, order: &[String]) -> Vec<(&'a String, &'a PropDef)> {
+    let mut out: Vec<(&String, &PropDef)> = Vec::with_capacity(props.len());
+    for (k, d) in order.iter().filter_map(|k| props.get_key_value(k)).chain(props.iter()) {
+        if !out.iter().any(|(o, _)| *o == k) {
+            out.push((k, d));
+        }
+    }
+    out
+}
+
 /// What a node is, with per-type data.
+// Text sets the size; the lint counts the gap to the next largest variant, which grew only because
+// Page's guides moved to the node (#1476).
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum NodeKind {
@@ -76,8 +91,6 @@ pub enum NodeKind {
         flows: Vec<crate::proto::Flow>,
         #[serde(default)]
         prototype: crate::proto::PrototypeSettings,
-        #[serde(default)]
-        guides: Vec<Guide>,
     },
     Frame,
     Group,
@@ -114,6 +127,9 @@ pub enum NodeKind {
         description: String,
         #[serde(default)]
         props: BTreeMap<String, PropDef>,
+        /// The order `props` show in, as they were made: see [`ordered_props`].
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        prop_order: Vec<String>,
     },
     ComponentSet {
         #[serde(default)]
@@ -221,7 +237,7 @@ pub struct Annotation {
 /// (`figcraft_engine::code_connect`).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CodeLink {
-    /// `react`, `swiftui` or `compose`.
+    /// `react`, `leptos`, `vue`, `swiftui`, `compose`, `arkui` or `flutter`.
     pub language: String,
     /// What the snippet imports from (`@acme/ui`, a Swift module, a Kotlin name).
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -472,8 +488,8 @@ pub struct Node {
     pub mask_type: MaskType,
     #[serde(default, skip_serializing_if = "is_default")]
     pub grids: Vec<LayoutGrid>,
-    /// A frame's ruler guides, in its own coordinates (a page's are in [`NodeKind::Page`]).
-    #[serde(default, skip_serializing_if = "is_default")]
+    /// A page's or frame's ruler guides, in its own coordinates (see [`guides_key`]).
+    #[serde(flatten, with = "guides_key")]
     pub guides: Vec<Guide>,
     #[serde(default, skip_serializing_if = "is_default")]
     pub exports: Vec<ExportSetting>,
@@ -576,6 +592,77 @@ fn is_pass(v: &BlendMode) -> bool {
 }
 fn is_identity(v: &Affine) -> bool {
     *v == identity()
+}
+
+/// A layer's `guides` key: left out when there are none, and every `guides` list the layer has is
+/// read. Pages used to keep their guides in [`NodeKind::Page`] while the layer field took the
+/// `guides` key on reading, so a reopened page lost its guides, and saving it then wrote two
+/// `guides` keys, which a plain field refuses (#1476). Both lists are kept, in file order.
+mod guides_key {
+    use super::Guide;
+    use serde::de::{IgnoredAny, MapAccess, Visitor};
+    use serde::ser::SerializeMap;
+    use serde::{Deserialize, Deserializer, Serializer};
+    use std::fmt;
+
+    const KEY: &str = "guides";
+
+    /// Write `guides` as the layer's `guides` key, or nothing when there are none.
+    pub fn serialize<S: Serializer>(guides: &[Guide], s: S) -> Result<S::Ok, S::Error> {
+        let mut map = s.serialize_map(None)?;
+        if !guides.is_empty() {
+            map.serialize_entry(KEY, guides)?;
+        }
+        map.end()
+    }
+
+    /// Read every `guides` list among the layer's fields, joined in file order.
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<Guide>, D::Error> {
+        d.deserialize_map(Lists)
+    }
+
+    /// Reads the `guides` lists of a layer's fields and skips the other fields.
+    struct Lists;
+
+    impl<'de> Visitor<'de> for Lists {
+        type Value = Vec<Guide>;
+        fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            f.write_str("a layer's fields")
+        }
+        /// Every `guides` value joined, in order; a malformed one is an error.
+        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Vec<Guide>, A::Error> {
+            let mut guides = Vec::new();
+            while let Some(key) = map.next_key::<Key>()? {
+                if key.0 {
+                    guides.extend(map.next_value::<Vec<Guide>>()?);
+                } else {
+                    map.next_value::<IgnoredAny>()?;
+                }
+            }
+            Ok(guides)
+        }
+    }
+
+    /// Whether a field name is `guides` (without copying the name).
+    struct Key(bool);
+
+    impl<'de> Deserialize<'de> for Key {
+        /// Compare a field name with `guides` as it is read.
+        fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+            struct Name;
+            impl Visitor<'_> for Name {
+                type Value = Key;
+                fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                    f.write_str("a field name")
+                }
+                /// `guides` or another field.
+                fn visit_str<E: serde::de::Error>(self, s: &str) -> Result<Key, E> {
+                    Ok(Key(s == KEY))
+                }
+            }
+            d.deserialize_identifier(Name)
+        }
+    }
 }
 
 impl Node {
@@ -712,17 +799,12 @@ impl Node {
 
     /// The ruler guides on this page or frame, in its own coordinates.
     pub fn guides(&self) -> &[Guide] {
-        match &self.kind {
-            NodeKind::Page { guides, .. } => guides,
-            _ => &self.guides,
-        }
+        &self.guides
     }
 
+    /// The ruler guides on this page or frame, to edit.
     pub fn guides_mut(&mut self) -> &mut Vec<Guide> {
-        match &mut self.kind {
-            NodeKind::Page { guides, .. } => guides,
-            _ => &mut self.guides,
-        }
+        &mut self.guides
     }
 
     /// Children in paint order, bottom to top: the child list, reversed in an auto layout frame
@@ -744,39 +826,110 @@ impl Node {
         self.strokes.iter().any(|p| p.visible) && self.stroke.weight > 0.0
     }
 
-    /// Maximum distance (in local units) painting can reach outside the node box.
+    /// Maximum distance painting can reach outside the node box: strokes and glyphs (local units)
+    /// and effects (page units, see [`Node::effect_paint_reach`]), the same when the node's
+    /// transform doesn't scale.
     pub fn paint_reach(&self) -> f64 {
-        let fx = self.effects.iter().map(Effect::reach).fold(0.0, f64::max);
-        self.outline_reach() + fx + self.spread_miter_reach()
+        self.outline_reach() + self.effect_paint_reach()
+    }
+
+    /// How far (page units: effects are drawn at the same size however a layer is scaled) this
+    /// node's effects paint outside its box, drop shadows' spread at sharp corners included.
+    pub fn effect_paint_reach(&self) -> f64 {
+        self.effects_reach() + effect_reach(self.spread_miter_reach())
+    }
+
+    /// Each visible drop shadow with a spread, as (local units, page units): a filled outline is
+    /// grown by the spread (sharp corners' mitre included) before it is transformed, so that part
+    /// follows the node's scale, and the shadow then reaches as far again as its offset and blur,
+    /// from the layer its layer effects moved. Layers that aren't one outline spread in page units
+    /// instead, as counted in [`Node::effect_paint_reach`].
+    pub fn outline_spreads(&self) -> impl Iterator<Item = (f64, f64)> + '_ {
+        let corners = if self.grows_by_exactly_its_spread() { 1.0 } else { SPREAD_MITER_LIMIT };
+        let layer = self.layer_effects_reach();
+        let outlined = self.may_spread_as_an_outline();
+        self.effects.iter().filter(|e| e.visible).filter_map(move |e| match &e.kind {
+            EffectKind::DropShadow(s) if outlined && s.spread.is_finite() && s.spread > 0.0 => {
+                let page = s.radius.abs() * 1.5 + s.offset.0.abs().max(s.offset.1.abs());
+                Some((effect_reach(s.spread) * corners, layer + effect_reach(page)))
+            }
+            _ => None,
+        })
+    }
+
+    /// How far (page units) this node's effects paint past what they apply to: the layer effects
+    /// together (see [`Node::layer_effects_reach`]), then the largest of the others.
+    pub fn effects_reach(&self) -> f64 {
+        let fx = self.effects.iter().filter(|e| !e.moves_the_layer()).map(|e| effect_reach(e.reach())).fold(0.0, f64::max);
+        self.layer_effects_reach() + fx
+    }
+
+    /// How far the layer blurs and texture move the layer's pixels together: they apply one after
+    /// another, each moving what the one before it moved. Blurs one after another spread as one
+    /// blur whose radius squared is the sum of theirs (Gaussians add their variances); texture
+    /// scatters by up to its radius, added on. Drop shadows are cast from what they leave.
+    pub fn layer_effects_reach(&self) -> f64 {
+        let moving = || self.effects.iter().filter(|e| e.moves_the_layer());
+        let blurs: f64 = moving().filter(|e| matches!(e.kind, EffectKind::LayerBlur(_))).map(|e| effect_reach(e.reach()).powi(2)).sum();
+        let texture: f64 = moving().filter(|e| matches!(e.kind, EffectKind::Texture(_))).map(|e| effect_reach(e.reach())).sum();
+        effect_reach(blurs.sqrt()) + texture
     }
 
     /// The page-space area this node paints itself under `world` (its children aside): its box
     /// grown by its strokes and glyphs, then by its effects (see [`Node::grow_by_effects`]).
     pub fn own_paint_bounds(&self, world: Affine) -> figcraft_geom::Rect {
         let o = self.outline_reach();
-        self.grow_by_effects(figcraft_geom::transform_rect_bbox(world, self.local_rect().inflate(o, o)))
+        let base = self.local_rect().inflate(o, o);
+        let grown = self.grow_by_effects(figcraft_geom::transform_rect_bbox(world, base));
+        // A filled outline's spread grows in local units (see [`Node::outline_spreads`]): a box by
+        // its spread all round, sharp corners' mitres anywhere within a circle of it.
+        let [a, b, c, d, _, _] = world.as_coeffs();
+        let (exact, layer, outlined) = (self.grows_by_exactly_its_spread(), self.layer_effects_reach(), self.may_spread_as_an_outline());
+        self.effects.iter().filter(|e| e.visible).fold(grown, |r, e| match &e.kind {
+            EffectKind::DropShadow(s) if outlined && s.spread.is_finite() && s.spread > 0.0 => {
+                let spread = effect_reach(s.spread);
+                let outline = if exact {
+                    figcraft_geom::transform_rect_bbox(world, base.inflate(spread, spread))
+                } else {
+                    let m = spread * SPREAD_MITER_LIMIT;
+                    figcraft_geom::transform_rect_bbox(world, base).inflate(m * a.hypot(c), m * b.hypot(d))
+                };
+                let (g, (dx, dy)) = (layer + s.radius.abs() * 1.5, s.offset);
+                if g.is_finite() && dx.is_finite() && dy.is_finite() && outline.is_finite() {
+                    r.union(outline.inflate(g, g) + figcraft_geom::kurbo::Vec2::new(dx, dy))
+                } else {
+                    r
+                }
+            }
+            _ => r,
+        })
     }
 
     /// Page-space area `b` grown by what this node's visible effects paint around it: blurs all
     /// round, drop shadows towards their offset (in page units, as the renderer draws them), so a
     /// shadow falling down adds room below and none above.
+    /// Layer blurs and texture grow it by what they reach together, and drop shadows are cast from
+    /// that (see [`Node::layer_effects_reach`]).
     pub fn grow_by_effects(&self, b: figcraft_geom::Rect) -> figcraft_geom::Rect {
         let miter = self.spread_miter_reach();
-        self.effects.iter().filter(|e| e.visible).fold(b, |r, e| match &e.kind {
+        let layer = self.layer_effects_reach();
+        let moved = if layer > 0.0 { b.inflate(layer, layer) } else { b };
+        self.effects.iter().filter(|e| e.visible).fold(moved, |r, e| match &e.kind {
             EffectKind::DropShadow(s) => {
                 let g = s.radius.abs() * 1.5 + s.spread.max(0.0) + miter;
                 let (dx, dy) = s.offset;
-                if g.is_finite() && dx.is_finite() && dy.is_finite() { r.union(b.inflate(g, g) + figcraft_geom::kurbo::Vec2::new(dx, dy)) } else { r }
+                if g.is_finite() && dx.is_finite() && dy.is_finite() {
+                    r.union(moved.inflate(g, g) + figcraft_geom::kurbo::Vec2::new(dx, dy))
+                } else {
+                    r
+                }
             }
-            _ => {
-                let g = e.reach();
-                if g.is_finite() && g > 0.0 { r.union(b.inflate(g, g)) } else { r }
-            }
+            _ => r,
         })
     }
 
     /// How far (local units) strokes and glyphs reach outside the box.
-    fn outline_reach(&self) -> f64 {
+    pub fn outline_reach(&self) -> f64 {
         let stroke = if self.has_visible_stroke() {
             let w = self.stroke.sides.map(|s| s.iter().copied().fold(0.0, f64::max)).unwrap_or_else(|| self.stroke.max_weight());
             let base = match self.stroke.align {
@@ -789,9 +942,9 @@ impl Node {
                 matches!(&self.kind, NodeKind::Vector { network } if network.vertices.iter().any(|v| v.cap.is_some_and(StrokeCap::is_arrow)));
             let caps =
                 if self.stroke.cap_start.is_arrow() || self.stroke.cap_end.is_arrow() || point_arrows { w.max(self.stroke.weight) * 3.0 } else { w };
-            // Right-angled or smooth outlines (boxes, ellipses) end their mitres on the grown box.
-            let boxy = matches!(self.kind, NodeKind::Rectangle | NodeKind::Ellipse { .. } | NodeKind::Section { .. }) || self.kind.is_frame_like();
-            let miter = if boxy { 1.0 } else { self.stroke.miter_limit.clamp(1.0, 4.0) };
+            // Right-angled or smooth outlines (boxes, whole ellipses) end their mitres on the grown
+            // box; an arc's corners don't.
+            let miter = if self.grows_by_exactly_its_spread() { 1.0 } else { self.stroke.miter_limit.clamp(1.0, 4.0) };
             base.max(if matches!(self.kind, NodeKind::Line | NodeKind::Vector { .. }) { caps } else { 0.0 }) * miter
         } else {
             0.0
@@ -800,11 +953,28 @@ impl Node {
         stroke + glyphs
     }
 
+    /// Whether a drop shadow's spread can grow this node's outline (see [`Node::outline_spreads`]):
+    /// not a group's or stroked text's, which the renderer spreads as pixels, in page units. Others
+    /// can still turn out to be drawn that way (children, images with alpha): counted both ways.
+    fn may_spread_as_an_outline(&self) -> bool {
+        !(matches!(self.kind, NodeKind::Group) || (matches!(self.kind, NodeKind::Text(_)) && self.has_visible_stroke()))
+    }
+
+    /// Whether a spread grows this node's outline by exactly the spread (no sharp corners). An arc
+    /// (an ellipse that doesn't go all the way round) has corners where its ends meet its sides.
+    fn grows_by_exactly_its_spread(&self) -> bool {
+        match self.kind {
+            NodeKind::Rectangle | NodeKind::Section { .. } => true,
+            NodeKind::Ellipse { sweep, .. } => figcraft_geom::full_sweep(sweep),
+            _ => self.kind.is_frame_like(),
+        }
+    }
+
     /// How much further than its spread a drop shadow can reach at the outline's sharp corners:
     /// spread moves the edges out in parallel and they meet in a mitre (see
-    /// [`SPREAD_MITER_LIMIT`]). Rectangles, frames and ellipses grow by exactly the spread.
+    /// [`SPREAD_MITER_LIMIT`]). Rectangles, frames and whole ellipses grow by exactly the spread.
     fn spread_miter_reach(&self) -> f64 {
-        if matches!(self.kind, NodeKind::Rectangle | NodeKind::Ellipse { .. } | NodeKind::Section { .. }) || self.kind.is_frame_like() {
+        if self.grows_by_exactly_its_spread() {
             return 0.0;
         }
         self.effects
@@ -816,4 +986,13 @@ impl Node {
             })
             .fold(0.0, f64::max)
     }
+}
+
+/// The most one effect's reach counts for (document units) when reaches are added up: far past any
+/// canvas, and a sum of any number of them (or of their squares) stays finite.
+const MAX_EFFECT_REACH: f64 = 1e100;
+
+/// An effect's reach made safe to add: finite, in 0..[`MAX_EFFECT_REACH`].
+fn effect_reach(r: f64) -> f64 {
+    if r.is_finite() { r.clamp(0.0, MAX_EFFECT_REACH) } else { 0.0 }
 }

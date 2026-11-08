@@ -98,6 +98,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 _ => doc.world_bounds(c).map(|b| (b.x1 + 40.0, b.y0)).unwrap_or((0.0, 0.0)),
             };
             let i = create_instance(doc, c, parent, x, y)?;
+            crate::library::count_inserted(doc, &[i]);
             s.set_selection(vec![i]);
             Ok(json!({"id": i}))
         }),
@@ -292,13 +293,14 @@ pub(crate) fn place(s: &mut Session, p: &Value) -> Result<Value> {
     let doc = s.doc_mut()?;
     let c = main_of(doc, c).ok_or_else(|| bad(cmd, "`component` must be a component or component set"))?;
     let mut slot = crate::drop::slot(doc, page, pt);
-    // Never inside its own main component (or a copy of it).
-    if doc.is_ancestor(c, slot.parent) || slot.parent == c {
+    // Never inside its own main component, or one it contains (directly or through others).
+    if crate::components::would_contain_itself(doc, c, slot.parent) {
         slot = crate::drop::DropSlot { parent: page, index: None, line: None };
     }
     let (w, h) = doc.node(c).map(|n| (n.width, n.height)).unwrap_or((0.0, 0.0));
     let local = doc.world_transform(slot.parent).inverse() * figcraft_geom::Point::new(pt.x - w / 2.0, pt.y - h / 2.0);
     let i = crate::components::create_instance_at(doc, c, slot.parent, local.x, local.y, slot.index)?;
+    crate::library::count_inserted(doc, &[i]);
     s.set_selection(vec![i]);
     Ok(json!({"id": i, "parent": slot.parent}))
 }
@@ -342,7 +344,7 @@ fn create(s: &mut Session, p: &Value) -> Result<Value> {
     let doc = s.doc_mut()?;
     let n = doc.get_mut(target)?;
     let was_group = matches!(n.kind, NodeKind::Group);
-    n.kind = NodeKind::Component { description: String::new(), props: Default::default() };
+    n.kind = NodeKind::Component { description: String::new(), props: Default::default(), prop_order: Vec::new() };
     if was_group {
         n.fills.clear();
         n.clip = false;

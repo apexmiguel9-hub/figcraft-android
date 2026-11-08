@@ -218,6 +218,18 @@ pub fn current() -> Option<Arc<Roots>> {
     ROOTS.with(|r| r.borrow().clone())
 }
 
+/// Why this thread's work may not reach the network now, if it may not (#1095): the automation
+/// roots keep an agent to the folders it was given, so while they confine it nothing is published,
+/// hosted, joined or fetched from a server either. The engine reaches the network only through the
+/// live link (`crate::live::Lives`), which asks this first.
+pub fn network_refused() -> Option<String> {
+    current().map(|_| NETWORK_REFUSED.to_string())
+}
+
+/// What a confined command that would reach the network says.
+pub const NETWORK_REFUSED: &str =
+    "automation roots are set: commands don't reach the network (publishing, live sessions, team libraries and plugin directories are off)";
+
 /// The path to use for `access` to `path`: resolved when confined, else as given.
 pub fn allow(path: impl AsRef<Path>, access: Access) -> Result<PathBuf> {
     let path = path.as_ref();
@@ -236,21 +248,42 @@ fn io(path: &Path) -> impl Fn(std::io::Error) -> EngineError + '_ {
     move |e| EngineError::Other(format!("{}: {e}", path.display()))
 }
 
-/// The bytes of file `path`.
-pub fn read(path: impl AsRef<Path>) -> Result<Vec<u8>> {
-    let path = path.as_ref();
-    std::fs::read(allow(path, Access::Read)?).map_err(io(path))
+/// `bytes` for a person: "300 bytes", "12 MB", "6.5 GB".
+fn size(bytes: u64) -> String {
+    match bytes {
+        b if b < 1 << 20 => format!("{b} bytes"),
+        b if b < 1 << 30 => format!("{} MB", b.div_ceil(1 << 20)),
+        b => format!("{:.1} GB", b as f64 / f64::from(1u32 << 30)),
+    }
 }
 
-/// The bytes of file `path`, refused when it isn't a file or is larger than `max`.
+/// The bytes of file `path`, at most `max` of them. A folder, a device, a pipe or a file larger
+/// than `max` is refused before anything is read, so a path a caller gives can't fill memory or
+/// wait forever (#1114). Every whole-file read of a path goes through here.
 pub fn read_capped(path: impl AsRef<Path>, max: u64) -> Result<Vec<u8>> {
+    use std::io::Read as _;
     let path = path.as_ref();
     let p = allow(path, Access::Read)?;
+    let refuse = |why: String| EngineError::Other(format!("{}: {why}", path.display()));
+    // Looked at before opening: opening a pipe waits for whoever writes it.
     let meta = std::fs::metadata(&p).map_err(io(path))?;
-    if !meta.is_file() || meta.len() > max {
-        return Err(EngineError::Other(format!("{}: not a file of at most {max} bytes", path.display())));
+    if meta.is_dir() {
+        return Err(refuse("is a folder, not a file".into()));
     }
-    std::fs::read(p).map_err(io(path))
+    if !meta.is_file() {
+        return Err(refuse("isn't a regular file (a device or a pipe?), so it isn't read".into()));
+    }
+    if meta.len() > max {
+        return Err(refuse(format!("is {}, more than the {} allowed here", size(meta.len()), size(max))));
+    }
+    let f = std::fs::File::open(p).map_err(io(path))?;
+    let mut bytes = Vec::with_capacity(usize::try_from(meta.len()).unwrap_or(0));
+    f.take(max.saturating_add(1)).read_to_end(&mut bytes).map_err(io(path))?;
+    // It grew after it was looked at.
+    if bytes.len() as u64 > max {
+        return Err(refuse(format!("grew past the {} allowed here while it was read", size(max))));
+    }
+    Ok(bytes)
 }
 
 /// File `path` opened for reading.

@@ -1,11 +1,12 @@
 //! Text layout: shaping styled spans, fallback fonts, bidirectional text, line breaking,
 //! alignment and decorations.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use figcraft_doc::{
-    DecorationLength, DecorationStyle, LeadingTrim, ListStyle, ParaList, TextAlignH, TextAutoResize, TextCase, TextData, TextDecoration, TextStyle,
-    valid_feature_tag,
+    DecorationLength, DecorationStyle, LeadingTrim, LetterSpacing, LineHeight, ListStyle, ParaList, TextAlignH, TextAutoResize, TextCase, TextData,
+    TextDecoration, TextStyle, WrapStyle, color::PaintKind, valid_feature_tag,
 };
 use figcraft_geom::{Affine, BezPath, Rect};
 use harfrust::{Direction, Feature, ShapeOptions, ShaperInstance, Tag, UnicodeBuffer, Variation};
@@ -329,21 +330,130 @@ struct ShapedText {
     fallbacks: Vec<Arc<Face>>,
     items: Vec<Item>,
     bidi: Option<Bidi>,
+    /// For each char, whether it starts a grapheme cluster.
+    cluster_start: Vec<bool>,
+    /// For each char, whether a Thai, Lao, Khmer or Burmese word starts there (empty without them).
+    word_breaks: Vec<bool>,
 }
 
+/// Zero-sized; only its address is used: a per-process seed for style fingerprints, so
+/// document-supplied names can't precompute hash collisions (ASLR varies it across runs).
+struct FingerprintSeed;
+static FINGERPRINT_SEED: FingerprintSeed = FingerprintSeed;
+
+/// `x`'s bits, with −0.0 folded onto 0.0 so the fingerprint merges what `PartialEq` does
+/// (`-0.0 == 0.0` is true, their bits differ).
+fn float_key(x: f64) -> u64 {
+    if x == 0.0 { 0 } else { x.to_bits() }
+}
+
+/// The FNV-1a 64-bit offset basis and prime (Fowler–Noll–Vo), a published pair that spreads
+/// short inputs evenly with one multiply and one xor per byte. Any well-mixed pair would do;
+/// these are the standard ones, so the arithmetic is recognisable.
+const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_PRIME: u64 = 0x0100_0000_01b3;
+
+/// Mix `w` into the FNV-1a state `h`.
+fn mix(h: u64, w: u64) -> u64 {
+    (h ^ w).wrapping_mul(FNV_PRIME)
+}
+
+/// Base for the "some other paint kind" tags below: the values mean nothing, they only differ.
+const PAINT_KIND_TAG: u64 = 0x5157_0000;
+
+/// A cheap fingerprint of the fields that usually tell two styles apart. Only the equality run
+/// after it decides matches, so this may skip any field: skipping one just sends two different
+/// styles to the same bucket. Keep the cheap discriminators here so the common distinct styles
+/// land in different buckets — and when `TextStyle` grows a usually-discriminating field, mix
+/// it in too.
+fn style_fingerprint(s: &TextStyle, seed: u64) -> u64 {
+    let mut h = seed ^ FNV_OFFSET_BASIS;
+    // A separator between the two names, so ("ab", "c") and ("a", "bc") differ; any byte a
+    // family or style name cannot contain would do.
+    const SEPARATOR: u64 = 0xff;
+    for b in s.font_family.bytes() {
+        h = mix(h, b as u64);
+    }
+    h = mix(h, SEPARATOR);
+    for b in s.font_style.bytes() {
+        h = mix(h, b as u64);
+    }
+    h = mix(h, SEPARATOR);
+    h = mix(h, float_key(s.font_size));
+    // The enum variants below key their payload's number into disjoint ranges (Auto 0, odd,
+    // even) so one variant's payload never reads as another's.
+    h = mix(
+        h,
+        match &s.line_height {
+            LineHeight::Auto => 0,
+            LineHeight::Pixels(px) => float_key(*px).wrapping_mul(2).wrapping_add(1),
+            LineHeight::Percent(p) => float_key(*p).wrapping_mul(2).wrapping_add(2),
+        },
+    );
+    h = mix(
+        h,
+        match &s.letter_spacing {
+            LetterSpacing::Pixels(px) => float_key(*px).wrapping_mul(2).wrapping_add(1),
+            LetterSpacing::Percent(p) => float_key(*p).wrapping_mul(2).wrapping_add(2),
+        },
+    );
+    h = mix(h, s.case as u64);
+    h = mix(h, s.decoration as u64);
+    h = mix(h, s.fills.as_ref().map_or(0, Vec::len) as u64);
+    if let Some(fills) = &s.fills {
+        // Solid colours discriminate the everyday case; other paint kinds by their kind tag.
+        for p in fills {
+            match &p.kind {
+                PaintKind::Solid { color } => {
+                    let [r, g, b, a] = color.to_rgba8();
+                    h = mix(h, ((r as u64) << 24) | ((g as u64) << 16) | ((b as u64) << 8) | a as u64);
+                }
+                PaintKind::Gradient(_) => h = mix(h, PAINT_KIND_TAG + 1),
+                PaintKind::Image(_) => h = mix(h, PAINT_KIND_TAG + 2),
+                PaintKind::Pattern(_) => h = mix(h, PAINT_KIND_TAG + 3),
+            }
+        }
+    }
+    h = mix(h, s.variations.len() as u64);
+    h
+}
+
+/// Shape `text`: each span split by paragraph, bidi run and face into glyphs (items, in logical
+/// order), with the grapheme cluster starts and word breaks line breaking needs.
 fn shape_text(text: &TextData) -> ShapedText {
     let chars: Vec<char> = text.characters.chars().collect();
     let spans = text.spans();
     let mut styles: Vec<TextStyle> = Vec::new();
     let mut span_style: Vec<usize> = Vec::with_capacity(spans.len());
+    // Dedupe spans into styles: the last two styles again (spans run in blocks of one style, and
+    // alternate between a few), then buckets keyed by a cheap fingerprint of discriminating
+    // fields, each bucket resolved with the full `PartialEq`. Bucketing never merges what the
+    // equality wouldn't (a collision only splits the scan it replaces), so the result is the
+    // scan's, in O(spans) for names and sizes that differ (the audit's O(spans × styles),
+    // #1102). The seed comes from the address space, so document-supplied
+    // family names can't precompute collisions; the worst an adversarial document does is fall
+    // back to the full scan it started with.
+    let seed = std::ptr::from_ref(&FINGERPRINT_SEED) as u64;
+    let mut last: [Option<usize>; 2] = [None, None];
+    let mut buckets: HashMap<u64, Vec<usize>> = HashMap::new();
     for (_, _, s) in &spans {
-        let idx = match styles.iter().position(|x| x == *s) {
+        let idx = match last.iter().find_map(|i| i.filter(|&i| &styles[i] == *s)) {
             Some(i) => i,
             None => {
-                styles.push((*s).clone());
-                styles.len() - 1
+                let fp = style_fingerprint(s, seed);
+                let bucket = buckets.entry(fp).or_default();
+                match bucket.iter().find(|&&i| &styles[i] == *s) {
+                    Some(&i) => i,
+                    None => {
+                        styles.push((*s).clone());
+                        let i = styles.len() - 1;
+                        bucket.push(i);
+                        i
+                    }
+                }
             }
         };
+        last = [Some(idx), last[0]];
         span_style.push(idx);
     }
     let mut dbw = db().write().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -381,33 +491,24 @@ fn shape_text(text: &TextData) -> ShapedText {
         let Some(Some(primary)) = faces.get(st_idx) else { continue };
         let size = sanitize_size(style.font_size);
         let spacing = style.letter_spacing.resolve(size);
+        let span_fallbacks = style_fallbacks.get(st_idx).unwrap_or(&fallbacks);
+        // The face for the grapheme cluster starting at `i` (clipped to the span).
+        let face_at = |i: usize| {
+            let to = (i + 1..*end).find(|&j| cluster_start.get(j).copied().unwrap_or(true)).unwrap_or(*end);
+            cluster_face(chars.get(i..to).unwrap_or(&[]), primary, &emoji, span_fallbacks)
+        };
         // Segment by face.
         let mut seg_start = *start;
         while seg_start < *end {
-            let face_for = |c: char| -> Arc<Face> {
-                // Emoji take a colour face before a face without colour glyphs (the style's own or a
-                // symbol font), which would draw them in one colour.
-                if is_emoji(c)
-                    && !primary.has_color()
-                    && let Some(f) = emoji.iter().find(|f| f.has_char(c))
-                {
-                    return f.clone();
-                }
-                if is_line_break(c) || primary.has_char(c) {
-                    return primary.clone();
-                }
-                let fallbacks = style_fallbacks.get(st_idx).unwrap_or(&fallbacks);
-                fallbacks.iter().find(|f| f.has_char(c)).cloned().unwrap_or_else(|| primary.clone())
-            };
             let first = chars.get(seg_start).copied().unwrap_or(' ');
-            let face = face_for(first);
+            let face = face_at(seg_start);
             let level = level_at(seg_start);
             let mut seg_end = seg_start + 1;
             while seg_end < *end
                 && chars.get(seg_end).is_some_and(|c| {
                     !is_line_break(*c)
                         && !is_line_break(first)
-                        && (!cluster_start.get(seg_end).copied().unwrap_or(true) || face_for(*c).id == face.id)
+                        && (!cluster_start.get(seg_end).copied().unwrap_or(true) || face_at(seg_end).id == face.id)
                 })
                 && level_at(seg_end) == level
             {
@@ -437,21 +538,114 @@ fn shape_text(text: &TextData) -> ShapedText {
         }
     }
 
-    ShapedText { chars, styles, faces, fallbacks, items, bidi }
+    let word_breaks = crate::breaks::word_breaks(&chars);
+    ShapedText { chars, styles, faces, fallbacks, items, bidi, cluster_start, word_breaks }
+}
+
+/// The face a grapheme cluster `cl` is shaped with. A letter and its marks come from one face that
+/// has them all: a mark the letter's face lacks would draw as a missing glyph beside it, and a mark
+/// from another face would sit apart from it (#1478).
+fn cluster_face(cl: &[char], primary: &Arc<Face>, emoji: &[Arc<Face>], fallbacks: &[Arc<Face>]) -> Arc<Face> {
+    pick_cluster_face(cl, primary, emoji, fallbacks, |f, c| f.has_char(c), |f| f.has_color()).clone()
+}
+
+/// [`cluster_face`]'s rule over any kind of face (`has`: whether a face has a char's glyph,
+/// `color`: whether it has colour glyphs), so it can be checked without fonts.
+pub(crate) fn pick_cluster_face<'a, F>(
+    cl: &[char],
+    primary: &'a F,
+    emoji: &'a [F],
+    fallbacks: &'a [F],
+    has: impl Fn(&F, char) -> bool,
+    color: impl Fn(&F) -> bool,
+) -> &'a F {
+    let c = cl.first().copied().unwrap_or(' ');
+    // Emoji take a colour face before a face without colour glyphs (the style's own or a symbol
+    // font), which would draw them in one colour.
+    if is_emoji(c)
+        && !color(primary)
+        && let Some(f) = emoji.iter().find(|f| has(f, c))
+    {
+        return f;
+    }
+    // Joiners and variation selectors need no glyph: shaping hides them.
+    let covers = |f: &F| {
+        cl.iter().all(|&m| has(f, m) || matches!(m, '\u{034F}' | '\u{200C}' | '\u{200D}' | '\u{FE00}'..='\u{FE0F}' | '\u{E0100}'..='\u{E01EF}'))
+    };
+    if is_line_break(c) || covers(primary) {
+        return primary;
+    }
+    // No face has the whole cluster: the letter's own face, as for a lone letter.
+    let own = || if has(primary, c) { Some(primary) } else { fallbacks.iter().find(|f| has(f, c)) };
+    fallbacks.iter().find(|f| covers(f)).or_else(own).unwrap_or(primary)
 }
 
 fn line_break_after(items: &[Item], end: usize) -> bool {
     end.checked_sub(1).and_then(|i| items.get(i)).is_some_and(|item| is_line_break(item.ch))
 }
 
+/// Where a line breaking before item `brk` may break: even an emergency break inside a word keeps a
+/// letter with its trailing mark and a leading vowel with the consonant after it (#1219). Backs up
+/// to such a boundary after `line_start`, or, when the line's first character is in one, carries it
+/// over to the next line with it.
+fn safe_break_index(items: &[Item], chars: &[char], cluster_start: &[bool], line_start: usize, brk: usize) -> usize {
+    let safe = |k: usize| -> bool {
+        let (Some(a), Some(b)) = (items.get(k.wrapping_sub(1)), items.get(k)) else { return true };
+        let at = b.char_start;
+        let Some(&before) = at.checked_sub(1).and_then(|c| chars.get(c)) else { return true };
+        // A break can only fall between two glyphs that are not the same cluster.
+        a.char_end <= at
+            && cluster_start.get(at).copied().unwrap_or(true)
+            && crate::breaks::safe_emergency_break(before, chars.get(at).copied().unwrap_or(before))
+    };
+    if safe(brk) {
+        return brk;
+    }
+    // Capped: a malformed run of thousands of marks must not make layout quadratic.
+    let carry = (brk + 1..items.len().min(brk + 257))
+        .take_while(|&k| items.get(k).is_some_and(|it| it.ch != '\n' && it.ch != LINE_SEPARATOR))
+        .find(|&k| safe(k));
+    (line_start + 1..brk).rev().find(|&k| safe(k)).or(carry).unwrap_or(brk)
+}
+
+/// How much wider than its box a saved line may come out in the fonts at hand before the saved
+/// breaks are given up: past that the font isn't the one the file was laid out with (a stand-in),
+/// and the text wraps by its own measure.
+const SAVED_LINE_SLACK: f64 = 1.03;
+
+/// Saved line starts being followed ([`TextData::saved_breaks_for`]).
+struct SavedStarts<'a> {
+    starts: &'a [usize],
+    next: usize,
+}
+
+impl SavedStarts<'_> {
+    /// Whether a line starting at char `from` breaks before char `at`: a saved start lies in
+    /// `(from, at]` (one inside a cluster or a run of spaces breaks at the next glyph after it).
+    fn due(&mut self, from: usize, at: usize) -> bool {
+        while self.starts.get(self.next).is_some_and(|s| *s <= from) {
+            self.next += 1;
+        }
+        self.starts.get(self.next).is_some_and(|s| *s <= at)
+    }
+}
+
+/// The lines (item range, paragraph end, paragraph), wrapped to `wrap_of` (the width for each line
+/// of each paragraph; None: no wrapping) or at `saved` line starts;
+/// None when a saved line would overflow its box by more than [`SAVED_LINE_SLACK`]. Lines break
+/// where [`crate::breaks::break_between`] allows, and between the words `word_breaks` marks.
 fn break_lines(
     items: &[Item],
-    wrap: Option<f64>,
+    chars: &[char],
+    cluster_start: &[bool],
+    word_breaks: &[bool],
+    wrap_of: &WidthOf<'_>,
     line_indent_of: &impl Fn(usize, bool, usize) -> f64,
     rtl_para_at: &impl Fn(usize) -> bool,
     hang_start: bool,
     hang_end: bool,
-) -> Vec<(usize, usize, bool, usize)> {
+    mut saved: Option<SavedStarts>,
+) -> Option<Vec<(usize, usize, bool, usize)>> {
     let mut lines: Vec<(usize, usize, bool, usize)> = Vec::new(); // item range, paragraph end, paragraph
     let mut line_start = 0;
     let mut i = 0;
@@ -459,6 +653,7 @@ fn break_lines(
     let mut last_break: Option<usize> = None;
     let mut para_first_line = true;
     let mut para = 0;
+    let mut line_in_para = 0;
     while i < items.len() {
         let Some(it) = items.get(i) else { break };
         if it.ch == '\n' {
@@ -469,6 +664,7 @@ fn break_lines(
             last_break = None;
             para_first_line = true;
             para += 1;
+            line_in_para = 0;
             continue;
         }
         // A line separator (a soft break) breaks the line inside its paragraph: no
@@ -480,6 +676,7 @@ fn break_lines(
             x = 0.0;
             last_break = None;
             para_first_line = false;
+            line_in_para += 1;
             continue;
         }
         let line_indent = line_indent_of(para, para_first_line, it.char_start);
@@ -488,22 +685,36 @@ fn break_lines(
         let ltr = !rtl_para_at(it.char_start);
         let hung = items.get(line_start).filter(|f| hang_start && ltr && opens(f.ch)).map_or(0.0, |f| f.adv)
             + if hang_end && ltr && closes(it.ch) { w } else { 0.0 };
-        if let Some(maxw) = wrap
-            && x + w - it.spacing > maxw - line_indent + hung + 1e-6
+        if let Some(maxw) = wrap_of(para, line_in_para)
             && i > line_start
             && !it.is_space()
         {
-            let brk = last_break.filter(|b| *b >= line_start).map(|b| b + 1).unwrap_or(i);
-            lines.push((line_start, brk, false, para));
-            line_start = brk;
-            i = brk;
-            x = 0.0;
-            last_break = None;
-            para_first_line = false;
-            continue;
+            let (width, room) = (x + w - it.spacing, maxw - line_indent + hung);
+            let line_char = items.get(line_start).map_or(0, |f| f.char_start);
+            let brk = match saved.as_mut().map(|s| s.due(line_char, it.char_start)) {
+                Some(true) => Some(i),
+                Some(false) if width > room * SAVED_LINE_SLACK + 1.0 => return None,
+                Some(false) => None,
+                None => (width > room + 1e-6).then(|| {
+                    safe_break_index(items, chars, cluster_start, line_start, last_break.filter(|b| *b >= line_start).map(|b| b + 1).unwrap_or(i))
+                }),
+            };
+            if let Some(brk) = brk {
+                lines.push((line_start, brk, false, para));
+                line_start = brk;
+                i = brk;
+                x = 0.0;
+                last_break = None;
+                para_first_line = false;
+                line_in_para += 1;
+                continue;
+            }
         }
         x += w;
-        if items.get(i + 1).is_some_and(|next| crate::breaks::break_between(it.ch, next.ch)) {
+        // A word starts at the next glyph only if that glyph starts a new cluster (marks are glyphs
+        // of their letter's cluster).
+        let word_start = |next: &Item| it.char_end <= next.char_start && word_breaks.get(next.char_start).copied().unwrap_or(false);
+        if items.get(i + 1).is_some_and(|next| crate::breaks::break_between(it.ch, next.ch) || word_start(next)) {
             last_break = Some(i);
         }
         i += 1;
@@ -512,7 +723,221 @@ fn break_lines(
         lines.push((line_start, items.len(), true, para));
     }
 
+    Some(lines)
+}
+
+/// A line as [`break_lines`] gives it: item range, paragraph end, paragraph.
+type LineRange = (usize, usize, bool, usize);
+
+/// The width a line wraps to (its paragraph, the line's index in it); None: no wrapping.
+type WidthOf<'a> = dyn Fn(usize, usize) -> Option<f64> + 'a;
+
+/// [`break_lines`] with the widths and the saved starts to follow, the rest bound.
+type Breaker<'a> = dyn Fn(&WidthOf<'_>, Option<SavedStarts<'_>>) -> Option<Vec<LineRange>> + 'a;
+
+/// What a paragraph's lines wrap to under Balance or Pretty: the paragraph's width, and a
+/// narrower one for a single line (the line Pretty has give a word away).
+#[derive(Clone, Copy)]
+struct ParaWidth {
+    width: f64,
+    line: Option<(usize, f64)>,
+}
+
+/// Whether the line's text is one word: no break opportunity between its items, its trailing
+/// spaces and the paragraph's line break aside.
+fn single_word(items: &[Item], word_breaks: &[bool], (start, end, _, _): LineRange) -> bool {
+    let Some(last) = (start..end).rev().find(|&k| items.get(k).is_some_and(|it| !it.is_space() && !is_line_break(it.ch))) else {
+        return false;
+    };
+    !(start..last).any(|k| {
+        let (Some(a), Some(b)) = (items.get(k), items.get(k + 1)) else { return false };
+        crate::breaks::break_between(a.ch, b.ch) || (a.char_end <= b.char_start && word_breaks.get(b.char_start).copied().unwrap_or(false))
+    })
+}
+
+/// How many of `lines` end inside a word: emergency breaks, made where no word boundary fitted
+/// the width. Balance and Pretty never add one (a word that fits the box stays whole).
+fn emergency_breaks(items: &[Item], word_breaks: &[bool], lines: &[LineRange]) -> usize {
     lines
+        .iter()
+        .filter(|&&(_, end, para_end, _)| {
+            if para_end {
+                return false;
+            }
+            let (Some(a), Some(b)) = (end.checked_sub(1).and_then(|k| items.get(k)), items.get(end)) else { return false };
+            !(a.is_space()
+                || is_line_break(a.ch)
+                || crate::breaks::break_between(a.ch, b.ch)
+                || (a.char_end <= b.char_start && word_breaks.get(b.char_start).copied().unwrap_or(false)))
+        })
+        .count()
+}
+
+/// What a line's hanging punctuation adds to the room [`break_lines`] gives it (its opening mark
+/// at the start, its closing one at the end), so Pretty narrows a line by its text as the breaker
+/// measures it.
+fn hung_width(items: &[Item], (s, e, _, _): LineRange, hang_start: bool, hang_end: bool, rtl_para_at: &dyn Fn(usize) -> bool) -> f64 {
+    let ltr = items.get(s).is_none_or(|it| !rtl_para_at(it.char_start));
+    let first = items.get(s).filter(|it| hang_start && ltr && opens(it.ch)).map_or(0.0, |it| it.adv);
+    let last = e.checked_sub(1).filter(|k| *k > s).and_then(|k| items.get(k)).filter(|it| hang_end && ltr && closes(it.ch)).map_or(0.0, |it| it.adv);
+    first + last
+}
+
+/// The width of the line's text, its trailing spaces and line break aside, as the breaker
+/// measures it.
+fn line_width(items: &[Item], (start, end, _, _): LineRange) -> f64 {
+    let mut x = 0.0;
+    let mut width = 0.0;
+    for it in items.get(start..end).unwrap_or(&[]) {
+        if is_line_break(it.ch) {
+            break;
+        }
+        x += it.adv;
+        if !it.is_space() {
+            width = x - it.spacing;
+        }
+    }
+    width
+}
+
+/// Balance and Pretty: the greedy `lines` of a box `w` wide, re-broken paragraph by paragraph.
+/// Balance narrows a paragraph as far as it goes without another line, so its lines come out
+/// close to the same length ("distributes text as evenly as possible across every line, so each
+/// line is close to the same length"; what browsers do for `text-wrap: balance`). Pretty leaves
+/// lines full but, when the last line is one word, narrows one of the last four lines just enough
+/// to give a word to the lines after it ("keeps each line full, but adjusts the last four lines to
+/// avoid an orphan"). `rebreak` lays the text out again with a width per paragraph and line.
+fn restyle_breaks(
+    style: WrapStyle,
+    w: f64,
+    lines: Vec<LineRange>,
+    items: &[Item],
+    word_breaks: &[bool],
+    line_indent_of: &dyn Fn(usize, bool, usize) -> f64,
+    hung_of: &dyn Fn(LineRange) -> f64,
+    rebreak: &dyn Fn(&WidthOf<'_>) -> Vec<LineRange>,
+) -> Vec<LineRange> {
+    let paragraphs = lines.last().map_or(0, |l| l.3 + 1);
+    // Every pass lays the whole text out again: a very long text keeps its greedy lines.
+    if items.len().saturating_mul(paragraphs) > 2_000_000 {
+        return lines;
+    }
+    let mut plan = vec![ParaWidth { width: w, line: None }; paragraphs];
+    // The lines with paragraph `p` wrapped to `pw` and the others as planned.
+    let with = |plan: &[ParaWidth], p: usize, pw: ParaWidth| {
+        let width_of = move |q: usize, li: usize| {
+            let pw = if q == p { pw } else { plan.get(q).copied().unwrap_or(ParaWidth { width: w, line: None }) };
+            Some(match pw.line {
+                Some((j, narrow)) if li == j => narrow,
+                _ => pw.width,
+            })
+        };
+        rebreak(&width_of)
+    };
+    let of = |ls: &[LineRange], p: usize| -> Vec<LineRange> { ls.iter().copied().filter(|l| l.3 == p).collect() };
+    let mut current = lines;
+    for p in 0..paragraphs {
+        let para = of(&current, p);
+        let n = para.len();
+        if n < 2 {
+            continue;
+        }
+        // Words wider than the box break where they must; the re-breaking adds no such break.
+        let base = emergency_breaks(items, word_breaks, &para);
+        match style {
+            WrapStyle::Auto => {}
+            WrapStyle::Balance => {
+                // The narrowest width that still gives `n` lines, to half a pixel.
+                let (mut lo, mut hi) = (0.0, w);
+                while hi - lo > 0.5 {
+                    let mid = (lo + hi) / 2.0;
+                    let ls = of(&with(&plan, p, ParaWidth { width: mid, line: None }), p);
+                    if ls.len() == n && emergency_breaks(items, word_breaks, &ls) <= base {
+                        hi = mid;
+                    } else {
+                        lo = mid;
+                    }
+                }
+                let pw = ParaWidth { width: hi, line: None };
+                current = with(&plan, p, pw);
+                if let Some(slot) = plan.get_mut(p) {
+                    *slot = pw;
+                }
+            }
+            WrapStyle::Pretty => {
+                if !para.last().is_some_and(|l| single_word(items, word_breaks, *l)) {
+                    continue;
+                }
+                // The line before the last, back to the fourth from the end: narrowed to just under
+                // its text, its last word goes to the lines after it (which stay full); a word or
+                // two more if the last line is still alone. A line that would rather start another
+                // line can't give a word away.
+                'lines: for j in (n.saturating_sub(4)..n - 1).rev() {
+                    let Some(&line) = para.get(j) else { continue };
+                    let indent = line_indent_of(p, j == 0, items.get(line.0).map_or(0, |it| it.char_start));
+                    let mut narrow = line_width(items, line) - hung_of(line);
+                    for _ in 0..3 {
+                        narrow -= 0.5;
+                        if narrow <= 0.0 {
+                            break;
+                        }
+                        let pw = ParaWidth { width: w, line: Some((j, narrow + indent)) };
+                        let ls = with(&plan, p, pw);
+                        let after = of(&ls, p);
+                        if after.len() != n || emergency_breaks(items, word_breaks, &after) > base {
+                            break;
+                        }
+                        if !after.last().is_some_and(|l| single_word(items, word_breaks, *l)) {
+                            current = ls;
+                            if let Some(slot) = plan.get_mut(p) {
+                                *slot = pw;
+                            }
+                            break 'lines;
+                        }
+                        narrow = after.get(j).map_or(0.0, |l| line_width(items, *l) - hung_of(*l));
+                    }
+                }
+            }
+        }
+    }
+    current
+}
+
+/// Pins a breaking closure to the signature [`wrapped_lines`] takes: a closure whose parameter
+/// borrows a trait object is otherwise inferred for one lifetime, not any.
+fn breaker<F>(f: F) -> F
+where
+    F: Fn(&WidthOf<'_>, Option<SavedStarts<'_>>) -> Option<Vec<LineRange>>,
+{
+    f
+}
+
+/// The lines of a text wrapped to `wrap`: the file's saved breaks while they hold, else greedy
+/// ones, re-broken for Balance or Pretty. `breaks` runs [`break_lines`] with a width per line and
+/// the saved starts to follow.
+fn wrapped_lines(
+    text: &TextData,
+    wrap: Option<f64>,
+    items: &[Item],
+    word_breaks: &[bool],
+    line_indent_of: &dyn Fn(usize, bool, usize) -> f64,
+    hung_of: &dyn Fn(LineRange) -> f64,
+    breaks: &Breaker<'_>,
+) -> Vec<LineRange> {
+    // Where the file saved its line breaks, they win while the text and box are as saved.
+    let saved = wrap.and_then(|w| text.saved_breaks_for(w)).map(|starts| SavedStarts { starts, next: 0 });
+    let from_saved = saved.and_then(|s| breaks(&|_, _| wrap, Some(s)));
+    let followed = from_saved.is_some();
+    let lines = from_saved.or_else(|| breaks(&|_, _| wrap, None)).unwrap_or_default();
+    // Balance and Pretty re-break the paragraphs at narrower widths (never saved breaks).
+    match wrap {
+        Some(w) if !followed && text.wrap_style != WrapStyle::Auto => {
+            restyle_breaks(text.wrap_style, w, lines, items, word_breaks, line_indent_of, hung_of, &|wrap_of| {
+                breaks(wrap_of, None).unwrap_or_default()
+            })
+        }
+        _ => lines,
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -592,6 +1017,8 @@ fn truncate_layout(out: &mut TextLayout, finish: &LayoutFinish<'_>) {
             }
         }
         add_ellipsis(out, wrap);
+        // The ellipsis can make the last line the widest: an auto-width box hugs it too.
+        out.width = out.width.max(out.lines.last().map_or(0.0, |l| l.width));
         // Carets and selections reach every char the line shows, borrowed ones included.
         if let Some(l) = out.lines.last() {
             let shown =
@@ -724,7 +1151,7 @@ fn finish_layout(out: &mut TextLayout, finish: LayoutFinish<'_>) {
 /// Lay out `text` for a box of `box_width` (used when the text wraps or aligns; for auto width
 /// pass `None`). `box_height` is used for truncation only.
 pub fn layout(text: &TextData, box_width: Option<f64>, box_height: Option<f64>) -> TextLayout {
-    let ShapedText { chars, styles, faces, fallbacks, items, bidi } = shape_text(text);
+    let ShapedText { chars, styles, faces, fallbacks, items, bidi, cluster_start, word_breaks } = shape_text(text);
     let rtl_para_at = |i: usize| bidi.as_ref().and_then(|b| b.rtl_para.get(i)).copied().unwrap_or(false);
 
     // List markers sit in a gutter (one more per nesting level) and wrapped lines hang at the
@@ -745,10 +1172,12 @@ pub fn layout(text: &TextData, box_width: Option<f64>, box_height: Option<f64>) 
     // The start indent of a line of paragraph `p` (`first`: its first line, starting at char `ci`).
     let line_indent_of = |p: usize, first: bool, ci: usize| {
         let pl = list_of(p);
+        let level = step * (f64::from(pl.indent) + 1.0) - hang_list;
         match pl.list {
-            ListStyle::None if first => indent_at(ci),
-            ListStyle::None => 0.0,
-            _ => step * (f64::from(pl.indent) + 1.0) - hang_list,
+            // A plain paragraph that kept its level on leaving a list starts where that level's
+            // item text does; paragraph indent goes on its first line as on any plain paragraph.
+            ListStyle::None => (if pl.indent > 0 { level } else { 0.0 }) + if first { indent_at(ci) } else { 0.0 },
+            _ => level,
         }
     };
     // Hanging punctuation: at the start edge of left-aligned and justified lines, at the end edge
@@ -760,7 +1189,11 @@ pub fn layout(text: &TextData, box_width: Option<f64>, box_height: Option<f64>) 
         TextAutoResize::WidthAndHeight => None,
         _ => box_width.filter(|w| w.is_finite() && *w > 0.0),
     };
-    let lines = break_lines(&items, wrap, &line_indent_of, &rtl_para_at, hang_start, hang_end);
+    let breaks = breaker(|wrap_of, saved| {
+        break_lines(&items, &chars, &cluster_start, &word_breaks, wrap_of, &line_indent_of, &rtl_para_at, hang_start, hang_end, saved)
+    });
+    let hung_of = |l: LineRange| hung_width(&items, l, hang_start, hang_end, &rtl_para_at);
+    let lines = wrapped_lines(text, wrap, &items, &word_breaks, &line_indent_of, &hung_of, &breaks);
     // Line metrics and positions.
     let default_style = styles.first().cloned().unwrap_or_default();
     let default_face = faces.first().cloned().flatten();
@@ -956,9 +1389,12 @@ pub fn layout(text: &TextData, box_width: Option<f64>, box_height: Option<f64>) 
 
 /// The markers of a text's paragraphs ("" for plain ones). Numbers count the items of one list at
 /// one level, restarting after a plain paragraph, a shallower item or the other kind of list,
-/// from the first item's start number; levels go 1. a. i. and • ◦ ▪, then round again.
+/// from the first item's start number; levels go 1. a. i., then round again; bullets are • at
+/// every level.
 pub(crate) fn list_markers(lists: &[ParaList]) -> Vec<String> {
-    const BULLETS: [&str; 3] = ["\u{2022}", "\u{25E6}", "\u{25AA}"];
+    // "Figma bullets will keep the same styling at all levels of indentation." (Create bulleted
+    // and numbered lists)
+    const BULLET: &str = "\u{2022}";
     let mut count = [(ListStyle::None, 0usize); figcraft_doc::MAX_LIST_INDENT as usize + 1];
     lists
         .iter()
@@ -978,7 +1414,7 @@ pub(crate) fn list_markers(lists: &[ParaList]) -> Vec<String> {
                 (ListStyle::Numbered, 1) => format!("{}.", alpha(c.1)),
                 (ListStyle::Numbered, 2) => format!("{}.", roman(c.1)),
                 (ListStyle::Numbered, _) => format!("{}.", c.1),
-                _ => BULLETS.get(d % 3).copied().unwrap_or("\u{2022}").to_string(),
+                _ => BULLET.to_string(),
             }
         })
         .collect()
@@ -1025,9 +1461,9 @@ fn roman(mut n: usize) -> String {
 }
 
 /// The width of one list level's gutter: room for the widest number plus half an em, at least one
-/// and a half ems (0 without lists).
+/// and a half ems (0 without lists, or plain paragraphs that kept a list level).
 fn list_step(lists: &[ParaList], markers: &[String], style: Option<&TextStyle>, face: Option<&Arc<Face>>) -> f64 {
-    if lists.iter().all(|l| l.list == ListStyle::None) {
+    if lists.iter().all(|l| l.list == ListStyle::None && l.indent == 0) {
         return 0.0;
     }
     let size = style.map(|s| sanitize_size(s.font_size)).unwrap_or(12.0);
@@ -1202,48 +1638,85 @@ fn shape_segment(chars: &[char], seg: &Segment, face: &Arc<Face>, features: &[Fe
     // Variable fonts: the axis values the style asks for (named instance, implied weight, custom).
     let values = face.axis_values(style);
     let coords = face.coords(&values);
-    let mut raw: Vec<(u32, u32, i32, i32, i32)> = Vec::new();
-    if let Some(hb) = face.hb() {
-        let instance = (!coords.is_empty()).then(|| {
-            let vars = face
-                .axes
-                .iter()
-                .zip(&values)
-                .filter_map(|(a, v)| <[u8; 4]>::try_from(a.tag.as_bytes()).ok().map(|t| Variation { tag: Tag::new(&t), value: *v as f32 }));
-            ShaperInstance::from_variations(&hb, vars)
-        });
-        let shaper = face.shaper.shaper(&hb).instance(instance.as_ref()).build();
-        let mut buf = UnicodeBuffer::new();
-        for (u, src, _) in &mapped {
-            buf.add(*u, *src as u32);
+    let shape = |feats: &[Feature]| -> Vec<(u32, u32, i32, i32, i32)> {
+        let mut raw = Vec::new();
+        if let Some(hb) = face.hb() {
+            let instance = (!coords.is_empty()).then(|| {
+                let vars = face
+                    .axes
+                    .iter()
+                    .zip(&values)
+                    .filter_map(|(a, v)| <[u8; 4]>::try_from(a.tag.as_bytes()).ok().map(|t| Variation { tag: Tag::new(&t), value: *v as f32 }));
+                ShaperInstance::from_variations(&hb, vars)
+            });
+            let shaper = face.shaper.shaper(&hb).instance(instance.as_ref()).build();
+            let mut buf = UnicodeBuffer::new();
+            for (u, src, _) in &mapped {
+                buf.add(*u, *src as u32);
+            }
+            let rtl = seg.level % 2 == 1;
+            buf.set_direction(if rtl { Direction::RightToLeft } else { Direction::LeftToRight });
+            buf.guess_segment_properties();
+            let gb = shaper.shape(buf, ShapeOptions::new().features(feats));
+            for (info, pos) in gb.glyph_infos().iter().zip(gb.glyph_positions()) {
+                raw.push((info.glyph_id, info.cluster, pos.x_advance, pos.x_offset, pos.y_offset));
+            }
+            // Right-to-left glyphs come out in visual order; items are kept in logical order
+            // (lines put runs back in visual order).
+            if rtl {
+                raw.reverse();
+            }
+        } else {
+            for (u, src, _) in &mapped {
+                let gid = face.glyph_for(*u);
+                raw.push((gid, *src as u32, face.advance_at(gid, &coords) as i32, 0, 0));
+            }
         }
-        let rtl = seg.level % 2 == 1;
-        buf.set_direction(if rtl { Direction::RightToLeft } else { Direction::LeftToRight });
-        buf.guess_segment_properties();
-        let gb = shaper.shape(buf, ShapeOptions::new().features(&feats));
-        for (info, pos) in gb.glyph_infos().iter().zip(gb.glyph_positions()) {
-            raw.push((info.glyph_id, info.cluster, pos.x_advance, pos.x_offset, pos.y_offset));
-        }
-        // Right-to-left glyphs come out in visual order; items are kept in logical order (lines
-        // put runs back in visual order).
-        if rtl {
-            raw.reverse();
-        }
-    } else {
-        for (u, src, _) in &mapped {
-            let gid = face.glyph_for(*u);
-            raw.push((gid, *src as u32, face.advance_at(gid, &coords) as i32, 0, 0));
+        raw
+    };
+    let mut raw = shape(&feats);
+    // Superscript or subscript (`sups` / `subs` on the node): the face's own glyphs where it has
+    // the feature and every letter or digit here got one; otherwise synthesised from the standard
+    // glyphs, shrunk and shifted ("Figma draws a synthesized version by using the font's standard
+    // version of the character, shrinking it, and positioning it accordingly"; a run mixing
+    // available and unavailable glyphs is synthesised whole, "for consistency").
+    let script = [(b"sups", true), (b"subs", false)].into_iter().find(|(tag, _)| feats.iter().any(|f| f.tag == Tag::new(tag) && f.value != 0));
+    // The glyph a cluster's character has on its own, after the case mapping shaping saw.
+    let plain_gid = |cl: usize| mapped.iter().find(|(_, src, _)| *src == cl).map(|(u, _, _)| face.glyph_for(*u));
+    let unchanged = |raw: &[(u32, u32, i32, i32, i32)]| {
+        raw.iter().any(|&(gid, cl, ..)| {
+            let cl = cl as usize;
+            chars.get(cl).is_some_and(|c| c.is_alphanumeric()) && plain_gid(cl) == Some(gid)
+        })
+    };
+    let synth = script.filter(|(tag, _)| !face.has_feature(tag) || unchanged(&raw));
+    if let Some((tag, _)) = synth
+        && face.has_feature(tag)
+    {
+        let plain: Vec<Feature> = feats.iter().filter(|f| f.tag != Tag::new(tag)).cloned().collect();
+        raw = shape(&plain);
+    }
+    let (script_scale, script_shift) = synth.map_or((1.0, 0.0), |(_, up)| if up { face.superscript } else { face.subscript });
+    let n = raw.len();
+    // Cluster end: the next larger cluster value, else the segment end. A glyph in the same
+    // cluster as the next one shares its end, so many glyphs of one cluster aren't rescanned.
+    let mut cends = vec![0usize; n];
+    for gi in (0..n).rev() {
+        let Some(&(_, cl, ..)) = raw.get(gi) else { continue };
+        let cl = cl as usize;
+        let shared = raw.get(gi + 1).filter(|r| r.1 as usize == cl).and_then(|_| cends.get(gi + 1).copied());
+        let cend = shared.unwrap_or_else(|| raw.iter().skip(gi + 1).map(|r| r.1 as usize).find(|c| *c > cl).unwrap_or(end).max(cl + 1));
+        if let Some(slot) = cends.get_mut(gi) {
+            *slot = cend;
         }
     }
-    let n = raw.len();
     for gi in 0..n {
         let Some(&(gid, cl, xa, xo, yo)) = raw.get(gi) else { continue };
         let cl = cl as usize;
-        // Cluster end: the next larger cluster value, else the segment end.
-        let cend = raw.iter().skip(gi + 1).map(|r| r.1 as usize).find(|c| *c > cl).unwrap_or(end).max(cl + 1);
+        let cend = cends.get(gi).copied().unwrap_or(cl + 1);
         let last_in_cluster = raw.get(gi + 1).is_none_or(|r| r.1 as usize != cl);
         let ch = chars.get(cl).copied().unwrap_or(' ');
-        let scale = if small_at(cl) { SMALL_CAP_SCALE } else { 1.0 };
+        let scale = if small_at(cl) { SMALL_CAP_SCALE } else { 1.0 } * script_scale;
         let spacing = if last_in_cluster { seg.spacing * (cend - cl) as f64 } else { 0.0 };
         // The glyph's own advance and what shaping added to it (kerning) each land on the grid.
         let own = face.advance_at(gid, &coords);
@@ -1256,7 +1729,7 @@ fn shape_segment(chars: &[char], seg: &Segment, face: &Arc<Face>, features: &[Fe
             adv,
             spacing,
             dx: f64::from(xo) * k * scale,
-            dy: f64::from(yo) * k * scale,
+            dy: f64::from(yo) * k * scale + script_shift * k,
             char_start: cl,
             char_end: cend,
             style: seg.st_idx,

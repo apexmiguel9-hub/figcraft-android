@@ -177,7 +177,7 @@ pub fn effects(n: &Node, frame: EffectFrame<'_>) -> Option<Pixmap> {
                 if !crate::knobs::knobs().glass {
                     continue;
                 }
-                glass::glass(g, frame)?
+                glass::glass(g, frame, glass::RoundedRect::of(n))?
             }
             _ => continue,
         };
@@ -223,7 +223,8 @@ pub fn render_beneath(doc: &Document, roots: &[NodeId], id: NodeId, view: &View)
     let mut beneath = doc.clone();
     hide_above(&mut beneath, id, roots);
     let mut pix = Pixmap::new(view.width.clamp(1, 16_384), view.height.clamp(1, 16_384))?;
-    crate::render_nodes_into(&beneath, roots, view, &mut pix);
+    // The page's own layers, not the exported layer's: they count their depth from the roots.
+    crate::draw::at_layer_depth(0, || crate::render_nodes_into(&beneath, roots, view, &mut pix));
     Some(pix)
 }
 

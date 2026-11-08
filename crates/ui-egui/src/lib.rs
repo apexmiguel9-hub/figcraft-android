@@ -5,6 +5,15 @@
 //! below this crate knows about egui, so the frontend can be replaced.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+/// FigCraft as craft-update knows it, with its 128 px icon and accent colour: the update
+/// prompt shows both, and an AppImage's menu entry gets the icon.
+#[cfg(not(target_arch = "wasm32"))]
+pub const UPDATE_APP: craft_update::app::App = craft_update::app::App {
+    icon_png: Some(include_bytes!("../../../assets/app-icon/hicolor/128x128/apps/ai.storyteller.figcraft.png")),
+    accent: Some([0x02, 0xda, 0x96]),
+    ..craft_update::suite::FIGCRAFT
+};
+
 pub mod a11y;
 pub mod bidi;
 pub mod canvas;
@@ -17,6 +26,7 @@ pub mod icons;
 pub mod live;
 pub mod menus;
 pub mod pending_open;
+pub mod popover;
 pub mod present;
 pub mod shortcuts;
 pub mod tabs;
@@ -26,6 +36,10 @@ pub mod ui_scale;
 pub mod widgets;
 pub mod windows;
 
+#[cfg(test)]
+mod board_connect_tests;
+#[cfg(test)]
+mod board_line_tests;
 #[cfg(test)]
 mod board_picker_tests;
 #[cfg(test)]
@@ -38,6 +52,8 @@ mod a11y_tests;
 #[cfg(test)]
 mod async_dialog_tests;
 #[cfg(test)]
+mod blend_preview_tests;
+#[cfg(test)]
 mod branch_ui_tests;
 #[cfg(test)]
 mod canvas_double_click_tests;
@@ -45,6 +61,8 @@ mod canvas_double_click_tests;
 mod canvas_drag_tests;
 #[cfg(test)]
 mod canvas_fixes_tests;
+#[cfg(test)]
+mod canvas_hover_tests;
 #[cfg(test)]
 mod canvas_image_rect_tests;
 #[cfg(test)]
@@ -58,13 +76,21 @@ mod comments_tests;
 #[cfg(test)]
 mod component_props_reorder_tests;
 #[cfg(test)]
+mod component_set_narrow_tests;
+#[cfg(test)]
 mod component_swap_default_tests;
+#[cfg(test)]
+mod component_swap_search_tests;
 #[cfg(test)]
 mod context_menu_tests;
 #[cfg(test)]
 mod corner_individual_tests;
 #[cfg(test)]
+mod crop_image_tests;
+#[cfg(test)]
 mod cursors_tests;
+#[cfg(test)]
+mod dash_pattern_tests;
 #[cfg(test)]
 mod design_paste_tests;
 #[cfg(test)]
@@ -72,7 +98,11 @@ mod dev_mode_tests;
 #[cfg(test)]
 mod devmode_tail_tests;
 #[cfg(test)]
+mod display_name_tests;
+#[cfg(test)]
 mod duplicate_paint_tests;
+#[cfg(test)]
+mod export_name_tests;
 #[cfg(test)]
 mod export_preview_tests;
 #[cfg(test)]
@@ -88,15 +118,21 @@ mod gradient_shorthand_tests;
 #[cfg(test)]
 mod guide_release_tests;
 #[cfg(test)]
+mod guide_snap_tests;
+#[cfg(test)]
 mod home_recents_tests;
 #[cfg(test)]
 mod home_tests;
+#[cfg(test)]
+mod host_save_tests;
 #[cfg(test)]
 mod idle_tests;
 #[cfg(test)]
 mod ime_tests;
 #[cfg(test)]
 mod import_report_tests;
+#[cfg(test)]
+mod inspect_fields_tests;
 #[cfg(test)]
 mod layers_behaviour_tests;
 #[cfg(test)]
@@ -108,11 +144,15 @@ mod layers_keys_tests;
 #[cfg(test)]
 mod layers_rename_tests;
 #[cfg(test)]
+mod library_beacon_tests;
+#[cfg(test)]
 mod live_chat_tests;
 #[cfg(test)]
 mod live_docs_tests;
 #[cfg(test)]
 mod live_join_tests;
+#[cfg(test)]
+mod live_joining_tests;
 #[cfg(test)]
 mod live_server_tests;
 #[cfg(test)]
@@ -121,6 +161,10 @@ mod live_share_tests;
 mod live_tests;
 #[cfg(test)]
 mod live_text_tests;
+#[cfg(test)]
+mod local_fonts_tests;
+#[cfg(test)]
+mod make_slot_naming_tests;
 #[cfg(test)]
 mod measure_nudge_tests;
 #[cfg(test)]
@@ -159,6 +203,8 @@ mod plugin_save_ui_tests;
 #[cfg(test)]
 mod plugins_browse_tests;
 #[cfg(test)]
+mod popover_tests;
+#[cfg(test)]
 mod popup_width_tests;
 #[cfg(test)]
 mod present_links_tests;
@@ -179,6 +225,8 @@ mod proto_responsive_tests;
 #[cfg(test)]
 mod resources_tests;
 #[cfg(test)]
+mod sampled_color_tests;
+#[cfg(test)]
 mod save_as_tests;
 #[cfg(test)]
 mod select_all_tests;
@@ -187,11 +235,21 @@ mod shortcut_keys_tests;
 #[cfg(test)]
 mod shortcuts_tests;
 #[cfg(test)]
+mod stroke_row_tests;
+#[cfg(test)]
 mod style_folder_rename_tests;
+#[cfg(test)]
+mod style_props_tests;
+#[cfg(test)]
+mod table_paste_tests;
 #[cfg(test)]
 mod text_enter_tests;
 #[cfg(test)]
+mod text_link_tests;
+#[cfg(test)]
 mod titlebar_tests;
+#[cfg(test)]
+mod ui_params_tests;
 #[cfg(test)]
 mod ui_scale_tests;
 #[cfg(test)]
@@ -207,6 +265,10 @@ mod vector_panel_tests;
 #[cfg(test)]
 mod vector_tail_ui_tests;
 #[cfg(test)]
+mod vote_history_ui_tests;
+#[cfg(test)]
+mod vote_voters_tests;
+#[cfg(test)]
 mod web_clipboard_tests;
 #[cfg(test)]
 mod web_save_tests;
@@ -215,6 +277,7 @@ mod windows_qa_tests;
 #[cfg(test)]
 mod windows_tests;
 pub use canvas::board_bar;
+pub use canvas::board_connect;
 pub use canvas::board_facilitate;
 pub use canvas::comments;
 pub use canvas::cursors;
@@ -233,6 +296,7 @@ pub use dialogs::credits;
 pub use dialogs::import_report;
 pub use dialogs::missing_fonts;
 pub use dialogs::plugins_ui;
+pub use dialogs::sampled_color;
 pub use dialogs::updates_ui;
 pub use dialogs::variables_panel;
 pub use home::home_recents;
@@ -285,13 +349,17 @@ pub fn knobs_summary() -> String {
 mod app;
 mod clock;
 mod open;
+mod selection_cache;
 mod services;
 mod state;
 
 pub(crate) use clock::repaint_in;
 pub use clock::{AUTO_SAVE_SECS, AUTOSAVE_SECS, FrameClock, ToastClock};
 pub(crate) use open::{drop_overlay, dropped_bytes, is_document, opens};
-pub use services::{ContentsFuture, DialogFuture, NoServices, ReadFuture, Services, browser_can_read, egui_copy_png, egui_copy_text, unreadable};
+pub use services::{
+    ContentsFuture, DialogFuture, MAX_CLIPBOARD_PNG_BYTES, NoServices, ReadFuture, Services, browser_can_read, browser_stopped, egui_copy_png,
+    egui_copy_text, unreadable,
+};
 use services::{DialogDone, PickFuture, Picked, RepaintWaker};
 pub use state::{
     AutoSaveEncoding, CANVAS_MIN, LEFT_PANEL, LeftTab, MobilePanel, NARROW_WIDTH, PANEL_DEFAULT, RIGHT_PANEL, RightTab, TitleBar, fit_panels,
@@ -332,6 +400,8 @@ pub struct UiState {
     /// small window draws).
     pub left_width: f32,
     pub right_width: f32,
+    /// The right sidebar as drawn this frame, after fitting the window.
+    pub right_panel_rect: Option<egui::Rect>,
     pub right_tab: RightTab,
     /// The tab of the previous frame, to see the right panel change mode.
     pub last_right_tab: RightTab,
@@ -405,6 +475,16 @@ pub struct UiState {
     /// The prototype preview pane floating over the canvas, when open.
     pub preview: Option<present::Pane>,
     pub picker: Option<colorpicker::PickerTarget>,
+    /// Crop mode (`image.crop`): the layer and the index of the image fill whose crop handles
+    /// show on the canvas until Enter, Escape or a click outside the image.
+    pub crop: Option<(NodeId, usize)>,
+    /// The colour picker's popover while it is open (its place survives a drag).
+    pub picker_popover: Option<popover::Popover>,
+    /// The control that opened the picker, refreshed every frame it is drawn (the panel scrolls):
+    /// a press in it is held out of the popover's closing, so its own click toggles the picker.
+    pub picker_button: Option<egui::Rect>,
+    /// The opening widget, so only that control refreshes the held rectangle as it moves.
+    pub picker_button_id: Option<egui::Id>,
     pub context_menu: Option<(egui::Pos2, Vec<NodeId>)>,
     /// The context menu just opened from a long press (the finger is still down) or from the
     /// release of a right-click; that same release must not count as a click outside and close
@@ -444,6 +524,8 @@ pub struct UiState {
     /// Files the user opened whose fonts are yet to be checked (by document uid).
     pub font_checks: Vec<u64>,
     pub missing_fonts: Option<missing_fonts::Shown>,
+    /// The eyedropper's Cmd/Ctrl+Shift pick, to make a colour style or variable of.
+    pub sampled_color: Option<sampled_color::SampledColor>,
     pub screenshot_requests: Vec<(u64, String)>,
     pub frame_ms: f64,
     pub render_ms: f64,
@@ -456,6 +538,8 @@ pub struct UiState {
     pub color_profile: Option<figcraft_color::ColorProfile>,
     /// The open style picker.
     pub style_picker: Option<style_picker::Picker>,
+    /// The style picker's popover while it is open (its place survives a drag).
+    pub style_picker_popover: Option<popover::Popover>,
     /// The style picker shows colour styles as a grid of swatches.
     pub style_grid: bool,
     /// Style folders closed in the style picker.
@@ -492,12 +576,6 @@ pub struct UiState {
     /// copy changes the engine clipboard without writing the OS clipboard; the generation then
     /// no longer matches, so the stale mirror is not mistaken for the user's own copy.
     pub last_copy_generation: u64,
-    /// Since the last V key release: whether its press arrived, and whether a paste event did
-    /// (`shortcuts::swallowed_paste`).
-    pub v_pressed: bool,
-    pub paste_event: bool,
-    /// The window got the focus back since the last V release.
-    pub refocused: bool,
     /// A save shortcut pressed while a panel field had the keyboard: the field lets go (which
     /// commits what was typed) and the command runs next frame for that document/window.
     pub after_field: Option<shortcuts::AfterFieldSave>,
@@ -543,6 +621,7 @@ impl Default for UiState {
         Self {
             left_width: PANEL_DEFAULT,
             right_width: PANEL_DEFAULT,
+            right_panel_rect: None,
             right_tab: RightTab::Design,
             last_right_tab: RightTab::Design,
             left_tab: LeftTab::File,
@@ -586,6 +665,10 @@ impl Default for UiState {
             present_view: present::PresentView::default(),
             preview: None,
             picker: None,
+            crop: None,
+            picker_popover: None,
+            picker_button: None,
+            picker_button_id: None,
             context_menu: None,
             context_menu_ignore_release: false,
             key_menu: false,
@@ -606,6 +689,7 @@ impl Default for UiState {
             import_report: None,
             font_checks: Vec::new(),
             missing_fonts: None,
+            sampled_color: None,
             screenshot_requests: Vec::new(),
             frame_ms: 0.0,
             render_ms: 0.0,
@@ -614,6 +698,7 @@ impl Default for UiState {
             pdf_print: figcraft_doc::PrintSettings::default(),
             color_profile: None,
             style_picker: None,
+            style_picker_popover: None,
             style_grid: false,
             style_folds: BTreeSet::new(),
             text_preview: None,
@@ -632,9 +717,6 @@ impl Default for UiState {
 
             last_copy: None,
             last_copy_generation: 0,
-            v_pressed: false,
-            paste_event: false,
-            refocused: false,
             after_field: None,
             held: egui::Modifiers::NONE,
             next_autosave: 0.0,
