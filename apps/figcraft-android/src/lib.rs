@@ -235,13 +235,52 @@ pub fn build(cc: &eframe::CreationContext<'_>) -> std::result::Result<Box<dyn ef
 ///
 /// MEDIDO que el motor rasteriza en CPU (`tiny-skia`), asi que la GPU solo presenta pixeles
 /// y no tiene nada que hacer con esto: quedarse con GL no cuesta nada al dibujo.
+/// Backend de wgpu para Android. Se elige al arrancar la app (antes de crear la instancia
+/// de wgpu), asi que no se puede cambiar en caliente como los demas knobs.
+///
+/// Variable de entorno `FIGCRAFT_WGPU_BACKEND`:
+///   - `vulkan`: fuerza Vulkan (crash en PowerVR/MediaTek al crear el pipeline de egui).
+///   - `gl`: fuerza OpenGL ES (default, estable en PowerVR).
+///   - `auto`: deja que wgpu elija (tiende a Vulkan en Android).
+fn wgpu_backend() -> eframe::egui_wgpu::wgpu::Backends {
+    match std::env::var("FIGCRAFT_WGPU_BACKEND")
+        .ok()
+        .as_deref()
+        .unwrap_or("vulkan")
+    {
+        "vulkan" => {
+            log::info!("wgpu backend: Vulkan (forzado por FIGCRAFT_WGPU_BACKEND)");
+            eframe::egui_wgpu::wgpu::Backends::VULKAN
+        }
+        "gl" => {
+            log::info!("wgpu backend: OpenGL ES");
+            eframe::egui_wgpu::wgpu::Backends::GL
+        }
+        _ => {
+            log::info!("wgpu backend: auto (wgpu elige)");
+            eframe::egui_wgpu::wgpu::Backends::all()
+        }
+    }
+}
+
+/// Solo OpenGL ES (estable en PowerVR/MediaTek).
+///
+/// MEDIDO por que, y por que no es "Vulkan con menos cosas". En el movil de pruebas (Moto G56
+/// 5G, Android 16) wgpu encuentra los dos adaptadores y elige Vulkan, que en Android es el
+/// backend primario, y al crear el primer pipeline el proceso muere. Los frames interiores
+/// del tombstone no son de Rust, son del driver:
+///
+/// ```text
+/// #04-06 vulkan.mtk.so   FragmentShaderCompileState::CompileUF()+1272
+/// #02-03 libufwriter.so  BILParseStream()+164
+/// #00      libc.so       abort()+156
+/// ```
+///
+/// MEDIDO que el motor rasteriza en CPU (`tiny-skia`), asi que la GPU solo presenta pixeles
+/// y no tiene nada que hacer con esto: quedarse con GL no cuesta nada al dibujo.
 fn wgpu_solo_opengl() -> eframe::egui_wgpu::WgpuConfiguration {
-    // `WgpuSetupCreateNew` no es `#[non_exhaustive]`, pero en vez de sintaxis de actualizacion
-    // se parte de su propio constructor y se cambia el campo. Es lo que menos puede romperse
-    // al actualizar egui.
     let mut setup = eframe::egui_wgpu::WgpuSetupCreateNew::without_display_handle();
-    // avisa de que no encuentra Vulkan, pero la preferencia es Vulkan (lo decide `PowerPreference`).
-    setup.instance_descriptor.backends = eframe::egui_wgpu::wgpu::Backends::GL;
+    setup.instance_descriptor.backends = wgpu_backend();
     eframe::egui_wgpu::WgpuConfiguration { wgpu_setup: eframe::egui_wgpu::WgpuSetup::CreateNew(setup), ..Default::default() }
 }
 
