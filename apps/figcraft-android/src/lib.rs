@@ -337,6 +337,25 @@ pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidA
     // configuracion de escritorio. Se registra antes de `build`, que las lee.
     if let Some(dir) = app.internal_data_path() {
         log::info!("figcraft-android: datos en {}", dir.display());
+        // Variante de diagnostico del backend Vulkan de PowerVR. Se lee de un fichero
+        // para poder cambiarla con `run-as` entre arranques, sin recompilar el .so.
+        let variant_path = dir.join("powervr_variant");
+        match std::fs::read_to_string(&variant_path) {
+            Ok(text) => {
+                let variant = text.trim();
+                if !variant.is_empty() {
+                    log::info!("figcraft-android: POWERVR_VARIANT={variant}");
+                    unsafe { std::env::set_var("POWERVR_VARIANT", variant) };
+                }
+            }
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                log::warn!(
+                    "figcraft-android: no se pudo leer {}: {e}",
+                    variant_path.display()
+                );
+            }
+            Err(_) => {}
+        }
         browser::set_data_dir(dir);
     } else {
         log::warn!("figcraft-android: Android no dio un directorio de datos; las preferencias no se guardaran");
