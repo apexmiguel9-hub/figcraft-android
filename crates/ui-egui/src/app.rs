@@ -208,7 +208,15 @@ impl FigApp {
             if others != prefs {
                 // Android can kill the app without a clean shutdown: write preferences as soon as
                 // they change, whether or not the dialog's Save was pressed.
-                self.services.save_prefs(&self.session.prefs);
+                // Solo Android: en escritorio el campo de "Your name" ya guarda al momento y
+                // este bloque duplicaría el save (test: un cambio = un save), por eso se gatea.
+                #[cfg(target_os = "android")]
+                {
+                    self.services.save_prefs(&self.session.prefs);
+                    // Consumido aquí: si no, el bloque compartido de abajo lo guarda otra vez
+                    // la misma frame (test: un cambio = un save).
+                    self.session.prefs_unsaved = false;
+                }
             }
             // This window too: a preference set during the frame (the interface size, the theme)
             // is applied as the next frame begins, so ask for it now rather than wait for input.
