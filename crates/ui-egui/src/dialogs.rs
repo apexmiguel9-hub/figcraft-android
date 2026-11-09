@@ -195,6 +195,7 @@ pub fn keys(app: &mut FigApp, ctx: &Context) {
         || u.import_report.is_some()
         || u.missing_fonts.is_some()
         || u.confirm_close
+        || matches!(u.close_tab, Some(crate::windows::TabClose::Ask(_)))
         || u.export_preview
         || u.shortcuts_panel
         || u.preferences
@@ -209,6 +210,10 @@ pub fn keys(app: &mut FigApp, ctx: &Context) {
         || u.import_report.take().is_some()
         || u.missing_fonts.take().is_some()
     {
+        return;
+    }
+    if matches!(u.close_tab, Some(crate::windows::TabClose::Ask(_))) {
+        u.close_tab = None;
         return;
     }
     for flag in [&mut u.confirm_close, &mut u.export_preview, &mut u.shortcuts_panel, &mut u.preferences, &mut u.about] {
@@ -440,6 +445,7 @@ pub fn show(app: &mut FigApp, ctx: &Context) {
     crate::live::publish_dialog(app, ctx);
     crate::online::dialogs(app, ctx);
     crate::windows::confirm_close(app, ctx);
+    crate::windows::confirm_close_tab(app, ctx);
 }
 
 /// Preferences ▸ Interface size: a size relative to the system's display scale (100 % is the
