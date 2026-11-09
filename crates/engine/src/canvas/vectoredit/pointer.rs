@@ -91,6 +91,11 @@ pub(crate) enum VGesture {
         start: Point,
         hit: Option<VHit>,
     },
+    /// Add node tool: where the press was (page) and the segment hit (already projected).
+    AddNode {
+        start: Point,
+        hit: Option<VHit>,
+    },
     /// Paint bucket: the points dragged over so far (local).
     Paint {
         stamps: Vec<Point>,
@@ -808,6 +813,10 @@ impl Session {
                 self.tool.overlay.rubber = Some([ev.x, ev.y, ev.x, ev.y]);
                 self.vgesture(VGesture::Cut { start: ev.p(), hit: h });
             }
+            // A tap adds a node on the tapped segment when the pointer goes up; a drag cancels.
+            VTool::AddNode => {
+                self.vgesture(VGesture::AddNode { start: ev.p(), hit: h });
+            }
         }
         Ok(true)
     }
@@ -1005,6 +1014,7 @@ impl Session {
                 self.vgesture(VGesture::Erase { stamps, radius });
             }
             VGesture::Cut { start, .. } => self.tool.overlay.rubber = Some([start.x, start.y, ev.x, ev.y]),
+            VGesture::AddNode { .. } => {}
             VGesture::Paint { mut stamps } => {
                 if stamps.last().is_none_or(|l| (w * *l - ev.p()).hypot() * ev.zoom >= 2.0) && stamps.len() < 10_000 {
                     stamps.push(lp);
@@ -1027,6 +1037,33 @@ impl Session {
                 self.vgesture(VGesture::Pen { plan, origin, out });
             }
             VGesture::Width(g) => self.width_drag(ve, g, ev)?,
+        }
+        Ok(())
+    }
+
+    /// The Add node tool's pointer went up: a tap on a segment inserts a point there, projected
+    /// on the segment (curve split with de Casteljau, shape unchanged). One undo step; a drag
+    /// cancels, like a tap that misses.
+    fn add_node_up(&mut self, ve: &VectorEdit, start: Point, hit: Option<VHit>, ev: &PointerEvent) -> Result<()> {
+        let id = ve.id;
+        self.begin_interaction("Add node")?;
+        if (ev.p() - start).hypot() * ev.zoom >= 3.0 {
+            return self.cancel_interaction();
+        }
+        let Some(VHit::Segment { seg, t }) = hit else {
+            return self.cancel_interaction();
+        };
+        let mut v = None;
+        self.preview(|doc, _| {
+            v = edit(doc, id, |net| ops::split_segment(net, seg, t))?;
+            Ok(())
+        })?;
+        self.commit_interaction()?;
+        if let Some(v) = v {
+            set_state(self, |e| {
+                e.vertices = vec![v];
+                e.segments.clear();
+            })?;
         }
         Ok(())
     }
@@ -1114,6 +1151,7 @@ impl Session {
             VGesture::Erase { .. } | VGesture::Paint { .. } => self.commit_interaction()?,
             VGesture::BoxScale { pick, .. } => self.box_scale_up(pick)?,
             VGesture::Cut { start, hit } => self.cut_up(ve, start, hit, ev)?,
+            VGesture::AddNode { start, hit } => self.add_node_up(ve, start, hit, ev)?,
             VGesture::Width(g) => self.width_up(g)?,
         }
         if let Ok(ds) = self.ds_mut() {

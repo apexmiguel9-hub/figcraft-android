@@ -1,5 +1,5 @@
 //! Vector edit mode: editing a vector network's points, segments and bezier handles on the canvas,
-//! with its own tools (move, pen, bend, paint bucket, lasso, cut).
+//! with its own tools (move, pen, bend, paint bucket, lasso, cut, add node).
 //!
 //! Entering edit mode on a non-vector shape converts it to a vector first (like the incumbent).
 //! Vertex coordinates are node-local; after each edit the node is re-fitted so its box wraps the
@@ -47,13 +47,16 @@ pub enum VTool {
     Paint,
     Lasso,
     Cut,
+    /// Add node: a tap on a segment inserts a point there, projected on it, splitting
+    /// curves with de Casteljau so the shape doesn't change.
+    AddNode,
     Eraser,
     /// Variable width: width points along the stroke.
     Width,
 }
 
 impl VTool {
-    pub const ALL: [VTool; 8] = [VTool::Move, VTool::Pen, VTool::Bend, VTool::Paint, VTool::Lasso, VTool::Cut, VTool::Eraser, VTool::Width];
+    pub const ALL: [VTool; 9] = [VTool::Move, VTool::Pen, VTool::Bend, VTool::Paint, VTool::Lasso, VTool::Cut, VTool::AddNode, VTool::Eraser, VTool::Width];
     pub fn id(self) -> &'static str {
         match self {
             VTool::Move => "move",
@@ -62,6 +65,7 @@ impl VTool {
             VTool::Paint => "paint",
             VTool::Lasso => "lasso",
             VTool::Cut => "cut",
+            VTool::AddNode => "addnode",
             VTool::Eraser => "eraser",
             VTool::Width => "width",
         }
@@ -77,6 +81,7 @@ impl VTool {
             VTool::Paint => "Paint bucket",
             VTool::Lasso => "Lasso",
             VTool::Cut => "Cut",
+            VTool::AddNode => "Add node",
             VTool::Eraser => "Eraser",
             VTool::Width => "Variable width",
         }
@@ -90,6 +95,7 @@ impl VTool {
             VTool::Paint => "Shift+B",
             VTool::Lasso => "Q",
             VTool::Cut => "X",
+            VTool::AddNode => "A",
             VTool::Eraser => "Shift+E",
             VTool::Width => "Shift+W",
         }
@@ -791,6 +797,7 @@ pub fn key(s: &mut Session, name: &str, shift: bool, alt: bool, cmd: bool) -> Re
         // B (Shift+B still works, as it did before).
         ("B", _, false, false) => set_tool(s, VTool::Paint)?,
         ("Q", false, false, false) => set_tool(s, VTool::Lasso)?,
+        ("A", false, false, false) => set_tool(s, VTool::AddNode)?,
         ("X", false, false, false) => set_tool(s, VTool::Cut)?,
         ("E", true, false, false) => set_tool(s, VTool::Eraser)?,
         ("W", true, false, false) => set_tool(s, VTool::Width)?,
@@ -851,7 +858,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 "widthPoints": width_handles(doc, &ve, 1.0), "widthPoint": ve.width_point, "layers": layers, "others": others,
                 "handles": ve.handles, "regions": ve.regions, "regionVertices": ve.region_vertices, "regionHover": ve.region_hover}))
         }),
-        spec!("vector.edit.tool", "Vector edit tool", "{tool: move|pen|bend|paint|lasso|cut|eraser|width}", false, |s, p| {
+        spec!("vector.edit.tool", "Vector edit tool", "{tool: move|pen|bend|paint|lasso|cut|addnode|eraser|width}", false, |s, p| {
             editing(s)?;
             let t = string(p, "tool").and_then(|t| VTool::from_id(&t)).ok_or_else(|| bad("vector.edit.tool", "unknown tool"))?;
             set_tool(s, t)?;

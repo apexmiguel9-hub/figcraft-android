@@ -334,6 +334,28 @@ fn draw(p: &P, icon: Icon) {
             p.line(6.0, 10.0, 11.5, 2.5);
             p.line(10.0, 10.0, 4.5, 2.5);
         }
+        AddNode => {
+            // Geometría del SVG de diseño (viewBox 24, trazo 2, extremos redondeados,
+            // nodos rellenos), portée a la cuadrícula 16×16 (× 2/3):
+            // <path d="M4 18C10 18 14 6 20 6"/><path d="M18 14v6M15 17h6"/>
+            // <circle cx="4" cy="18" r="2"/><circle cx="20" cy="6" r="2"/>
+            // <circle cx="12" cy="12" r="3"/>
+            // La cúbica se muestrea para que `p.path` la dibuje como el SVG.
+            let (p0, c1, c2, p1) = ((2.6667, 12.0), (6.6667, 12.0), (9.3333, 4.0), (13.3333, 4.0));
+            let cubic = |t: f32| {
+                let u = 1.0 - t;
+                let x = u * u * u * p0.0 + 3.0 * u * u * t * c1.0 + 3.0 * u * t * t * c2.0 + t * t * t * p1.0;
+                let y = u * u * u * p0.1 + 3.0 * u * u * t * c1.1 + 3.0 * u * t * t * c2.1 + t * t * t * p1.1;
+                (x, y)
+            };
+            let pts: Vec<(f32, f32)> = (0..=12).map(|i| cubic(i as f32 / 12.0)).collect();
+            p.path(&pts, false);
+            p.line(12.0, 9.3333, 12.0, 13.3333);
+            p.line(10.0, 11.3333, 14.0, 11.3333);
+            p.dot(2.6667, 12.0, 1.3333);
+            p.dot(13.3333, 4.0, 1.3333);
+            p.dot(8.0, 8.0, 2.0);
+        }
         Crop => {
             // Two right angles overlapping into a frame, each running past the other's corner.
             p.poly(&[(4.5, 1.5), (4.5, 11.5), (14.5, 11.5)], false);

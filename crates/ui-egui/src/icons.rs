@@ -67,6 +67,7 @@ icons! {
     PaintBucket,
     Lasso,
     Cut,
+    AddNode,
     Crop,
     Boolean,
     Page,

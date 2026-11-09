@@ -425,6 +425,7 @@ fn edit_toolbar(app: &mut FigApp, ui: &mut Ui, current: VTool) {
             VTool::Paint => Icon::PaintBucket,
             VTool::Lasso => Icon::Lasso,
             VTool::Cut => Icon::Cut,
+            VTool::AddNode => Icon::AddNode,
             VTool::Eraser => Icon::Eraser,
             VTool::Width => Icon::VariableWidth,
         };
