@@ -597,5 +597,3 @@ fn the_pen_shows_its_ghost_anchor_on_the_segment_under_it() {
     assert_eq!(net(&s, id).vertices.len(), 5, "the press added the point");
     assert_eq!(ve(&s).anchor, None, "the click ended the pen's path");
 }
-
-
