@@ -213,6 +213,7 @@ fn ui_scale_step(s: &mut Session, dir: i32) -> Result<Value> {
 fn pref(s: &mut Session, p: &Value, f: fn(&mut crate::Prefs) -> &mut bool) -> Result<Value> {
     let slot = f(&mut s.prefs);
     *slot = boolean(p, "on").unwrap_or(!*slot);
+    s.prefs_unsaved = true;
     Ok(json!({"on": *slot}))
 }
 
