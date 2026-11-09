@@ -989,151 +989,152 @@ pub fn show(app: &mut FigApp, ctx: &egui::Context) {
     let scroll_h = (screen.height() - 120.0).clamp(240.0, 520.0);
     let closed = pop.show(ctx, open, Hold { rects: &held, escape: false }, |ui| {
         egui::ScrollArea::vertical().id_salt("color_picker_scroll").max_height(scroll_h).show(ui, |ui| {
-        ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
-        // The eyedropper's colour goes to this picker's paint (a stroke, an effect, a gradient stop...).
-        if let Some(c) = app.session.tool.picked.take() {
-            set_color(app, &target, &mut paint, c, stop_id(), ui);
-        }
-        // Paint type.
-        if !matches!(
-            target,
-            PickerTarget::Effect { .. } | PickerTarget::PageBackground | PickerTarget::Variable { .. } | PickerTarget::PluginField { .. }
-        ) {
-            paint_type_row(ui, app, &target, &mut paint);
-        }
-        // The paint's own blend mode, with the paints and layers under it.
-        if !matches!(
-            target,
-            PickerTarget::Effect { .. } | PickerTarget::PageBackground | PickerTarget::Variable { .. } | PickerTarget::PluginField { .. }
-        ) {
-            blend_row(ui, app, &target, &mut paint);
-        }
-        // Gradient stops.
-        let is_image = matches!(paint.kind, PaintKind::Image(_));
-        if is_image {
-            set_image_pending(ui.ctx(), None);
-        }
-        // Until a file is chosen the Image tab shows its placeholder, not the paint it will replace.
-        let placeholder = image_pending(ui.ctx(), &target);
-        let mut edit_color: Option<Color> = match &paint.kind {
-            PaintKind::Solid { color } if !placeholder => Some(color.with_alpha(color.a * paint.opacity)),
-            _ => None,
-        };
-        let sel_stop_id = stop_id();
-        if let (PaintKind::Gradient(g), false) = (paint.kind.clone(), placeholder) {
-            edit_color = gradient_controls(app, ui, &target, &mut paint, g, &t, sel_stop_id);
-        }
-        if is_image || placeholder {
-            image_well(app, ui, &target, &paint, &t);
-        }
-        if let PaintKind::Image(img) = paint.kind.clone() {
-            image_controls(app, ui, &target, &mut paint, img, &t);
-        }
-        if let PaintKind::Pattern(pt) = paint.kind.clone() {
-            pattern_controls(app, ui, &target, &mut paint, pt);
-        }
-        if let Some(color) = edit_color {
-            let mut hsb = ui
-                .data(|d| d.get_temp::<(f32, f32, f32, [u8; 4])>(Id::unique("cp_hsb")))
-                .filter(|(_, _, _, rgba)| *rgba == color.to_rgba8())
-                .map(|(h, s, b, _)| Hsb { h, s, b })
-                .unwrap_or_else(|| Hsb::from_color(color));
-            let (sq, _) = ui.allocate_exact_size(vec2(240.0, 240.0), Sense::hover());
-            let (c1, d1) = sv_square(ui, sq, &mut hsb);
-            let (hr, _) = ui.allocate_exact_size(vec2(240.0, 28.0), Sense::hover());
-            let hr = Rect::from_min_max(pos2(hr.min.x + 48.0, hr.min.y + 8.0), pos2(hr.max.x - 16.0, hr.max.y - 8.0));
-            if icons::button(
-                &mut ui
-                    .new_child(egui::UiBuilder::new().max_rect(Rect::from_min_size(pos2(hr.min.x - 36.0, hr.center().y - 12.0), vec2(24.0, 24.0)))),
-                Icon::Eyedropper,
-                24.0,
-                false,
-                tr("Pick color (I)"),
-            )
-            .clicked()
-            {
-                app.run("edit.pickColor", json!({"apply": false}));
-                return;
+            ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
+            // The eyedropper's colour goes to this picker's paint (a stroke, an effect, a gradient stop...).
+            if let Some(c) = app.session.tool.picked.take() {
+                set_color(app, &target, &mut paint, c, stop_id(), ui);
             }
-            let (c2, d2) = hue_slider(ui, hr, &mut hsb);
-            let (ar, _) = ui.allocate_exact_size(vec2(240.0, 20.0), Sense::hover());
-            let ar = Rect::from_min_max(pos2(ar.min.x + 48.0, ar.min.y + 2.0), pos2(ar.max.x - 16.0, ar.max.y - 6.0));
-            let mut new_alpha = None;
-            if let Some((a, d)) = alpha_slider(ui, ar, color) {
-                new_alpha = Some((a, d));
+            // Paint type.
+            if !matches!(
+                target,
+                PickerTarget::Effect { .. } | PickerTarget::PageBackground | PickerTarget::Variable { .. } | PickerTarget::PluginField { .. }
+            ) {
+                paint_type_row(ui, app, &target, &mut paint);
             }
-            let mut nc = hsb.to_color().with_alpha(color.a);
-            let mut done = d1 || d2;
-            let mut changed = c1 || c2;
-            if let Some((a, d)) = new_alpha {
-                nc = nc.with_alpha(a);
-                changed = true;
-                done |= d;
+            // The paint's own blend mode, with the paints and layers under it.
+            if !matches!(
+                target,
+                PickerTarget::Effect { .. } | PickerTarget::PageBackground | PickerTarget::Variable { .. } | PickerTarget::PluginField { .. }
+            ) {
+                blend_row(ui, app, &target, &mut paint);
             }
-            // Colour model fields (Hex, RGB, HSL, HSB, LCH, OKLCH or CSS) + alpha.
-            if let Some((c, d)) = model_fields(ui, nc) {
-                nc = c;
-                hsb = Hsb::from_color(nc);
-                changed = true;
-                done |= d;
+            // Gradient stops.
+            let is_image = matches!(paint.kind, PaintKind::Image(_));
+            if is_image {
+                set_image_pending(ui.ctx(), None);
             }
-            ui.data_mut(|d| d.insert_temp(Id::unique("cp_hsb"), (hsb.h, hsb.s, hsb.b, nc.to_rgba8())));
-            // A Display P3 colour sRGB can't show: the canvas (sRGB) shows the nearest one.
-            if app.session.doc().is_ok_and(|d| d.color_profile.conversion_to(figcraft_color::ColorProfile::Srgb).clips(nc)) {
-                gamut_warning(ui, &t);
+            // Until a file is chosen the Image tab shows its placeholder, not the paint it will replace.
+            let placeholder = image_pending(ui.ctx(), &target);
+            let mut edit_color: Option<Color> = match &paint.kind {
+                PaintKind::Solid { color } if !placeholder => Some(color.with_alpha(color.a * paint.opacity)),
+                _ => None,
+            };
+            let sel_stop_id = stop_id();
+            if let (PaintKind::Gradient(g), false) = (paint.kind.clone(), placeholder) {
+                edit_color = gradient_controls(app, ui, &target, &mut paint, g, &t, sel_stop_id);
             }
-            if changed {
-                match &mut paint.kind {
-                    PaintKind::Solid { color } => {
-                        *color = nc.with_alpha(1.0);
-                        paint.opacity = nc.a;
+            if is_image || placeholder {
+                image_well(app, ui, &target, &paint, &t);
+            }
+            if let PaintKind::Image(img) = paint.kind.clone() {
+                image_controls(app, ui, &target, &mut paint, img, &t);
+            }
+            if let PaintKind::Pattern(pt) = paint.kind.clone() {
+                pattern_controls(app, ui, &target, &mut paint, pt);
+            }
+            if let Some(color) = edit_color {
+                let mut hsb = ui
+                    .data(|d| d.get_temp::<(f32, f32, f32, [u8; 4])>(Id::unique("cp_hsb")))
+                    .filter(|(_, _, _, rgba)| *rgba == color.to_rgba8())
+                    .map(|(h, s, b, _)| Hsb { h, s, b })
+                    .unwrap_or_else(|| Hsb::from_color(color));
+                let (sq, _) = ui.allocate_exact_size(vec2(240.0, 240.0), Sense::hover());
+                let (c1, d1) = sv_square(ui, sq, &mut hsb);
+                let (hr, _) = ui.allocate_exact_size(vec2(240.0, 28.0), Sense::hover());
+                let hr = Rect::from_min_max(pos2(hr.min.x + 48.0, hr.min.y + 8.0), pos2(hr.max.x - 16.0, hr.max.y - 8.0));
+                if icons::button(
+                    &mut ui.new_child(
+                        egui::UiBuilder::new().max_rect(Rect::from_min_size(pos2(hr.min.x - 36.0, hr.center().y - 12.0), vec2(24.0, 24.0))),
+                    ),
+                    Icon::Eyedropper,
+                    24.0,
+                    false,
+                    tr("Pick color (I)"),
+                )
+                .clicked()
+                {
+                    app.run("edit.pickColor", json!({"apply": false}));
+                    return;
+                }
+                let (c2, d2) = hue_slider(ui, hr, &mut hsb);
+                let (ar, _) = ui.allocate_exact_size(vec2(240.0, 20.0), Sense::hover());
+                let ar = Rect::from_min_max(pos2(ar.min.x + 48.0, ar.min.y + 2.0), pos2(ar.max.x - 16.0, ar.max.y - 6.0));
+                let mut new_alpha = None;
+                if let Some((a, d)) = alpha_slider(ui, ar, color) {
+                    new_alpha = Some((a, d));
+                }
+                let mut nc = hsb.to_color().with_alpha(color.a);
+                let mut done = d1 || d2;
+                let mut changed = c1 || c2;
+                if let Some((a, d)) = new_alpha {
+                    nc = nc.with_alpha(a);
+                    changed = true;
+                    done |= d;
+                }
+                // Colour model fields (Hex, RGB, HSL, HSB, LCH, OKLCH or CSS) + alpha.
+                if let Some((c, d)) = model_fields(ui, nc) {
+                    nc = c;
+                    hsb = Hsb::from_color(nc);
+                    changed = true;
+                    done |= d;
+                }
+                ui.data_mut(|d| d.insert_temp(Id::unique("cp_hsb"), (hsb.h, hsb.s, hsb.b, nc.to_rgba8())));
+                // A Display P3 colour sRGB can't show: the canvas (sRGB) shows the nearest one.
+                if app.session.doc().is_ok_and(|d| d.color_profile.conversion_to(figcraft_color::ColorProfile::Srgb).clips(nc)) {
+                    gamut_warning(ui, &t);
+                }
+                if changed {
+                    match &mut paint.kind {
+                        PaintKind::Solid { color } => {
+                            *color = nc.with_alpha(1.0);
+                            paint.opacity = nc.a;
+                        }
+                        PaintKind::Gradient(g) => {
+                            let sel: usize = ui.data(|d| d.get_temp(sel_stop_id)).unwrap_or(0);
+                            if let Some(s) = g.stops.get_mut(sel) {
+                                s.color = nc;
+                            }
+                        }
+                        PaintKind::Image(_) | PaintKind::Pattern(_) => {}
                     }
-                    PaintKind::Gradient(g) => {
-                        let sel: usize = ui.data(|d| d.get_temp(sel_stop_id)).unwrap_or(0);
-                        if let Some(s) = g.stops.get_mut(sel) {
-                            s.color = nc;
+                    write(app, &target, &paint, !done);
+                }
+                if done {
+                    finish(app);
+                }
+            }
+            // Colours used on this page.
+            let doc_colors = page_colors(app, ui);
+            if !doc_colors.is_empty() {
+                ui.horizontal(|ui| {
+                    ui.add_space(16.0);
+                    widgets::label(ui, tr("On this page"), t.text_secondary);
+                });
+                // Inset on both sides: `add_space` would only indent the first row of a wrap.
+                inset(ui, |ui| {
+                    for c in &doc_colors {
+                        if widgets::swatch(ui, &Paint::solid(*c), 14.0).on_hover_text(c.to_hex()).clicked() {
+                            set_color(app, &target, &mut paint, *c, sel_stop_id, ui);
                         }
                     }
-                    PaintKind::Image(_) | PaintKind::Pattern(_) => {}
-                }
-                write(app, &target, &paint, !done);
+                });
             }
-            if done {
-                finish(app);
+            // Recent colours.
+            let recent = app.session.recent_colors.clone();
+            if !recent.is_empty() {
+                ui.horizontal(|ui| {
+                    ui.add_space(16.0);
+                    widgets::label(ui, tr("Recent"), t.text_secondary);
+                });
+                inset(ui, |ui| {
+                    for c in recent.iter().take(14) {
+                        if widgets::swatch(ui, &Paint::solid(*c), 14.0).clicked() {
+                            set_color(app, &target, &mut paint, *c, sel_stop_id, ui);
+                        }
+                    }
+                });
             }
-        }
-        // Colours used on this page.
-        let doc_colors = page_colors(app, ui);
-        if !doc_colors.is_empty() {
-            ui.horizontal(|ui| {
-                ui.add_space(16.0);
-                widgets::label(ui, tr("On this page"), t.text_secondary);
-            });
-            // Inset on both sides: `add_space` would only indent the first row of a wrap.
-            inset(ui, |ui| {
-                for c in &doc_colors {
-                    if widgets::swatch(ui, &Paint::solid(*c), 14.0).on_hover_text(c.to_hex()).clicked() {
-                        set_color(app, &target, &mut paint, *c, sel_stop_id, ui);
-                    }
-                }
-            });
-        }
-        // Recent colours.
-        let recent = app.session.recent_colors.clone();
-        if !recent.is_empty() {
-            ui.horizontal(|ui| {
-                ui.add_space(16.0);
-                widgets::label(ui, tr("Recent"), t.text_secondary);
-            });
-            inset(ui, |ui| {
-                for c in recent.iter().take(14) {
-                    if widgets::swatch(ui, &Paint::solid(*c), 14.0).clicked() {
-                        set_color(app, &target, &mut paint, *c, sel_stop_id, ui);
-                    }
-                }
-            });
-        }
-        ui.add_space(12.0);
+            ui.add_space(12.0);
         });
     });
     if closed {

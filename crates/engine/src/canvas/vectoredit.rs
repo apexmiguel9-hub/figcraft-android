@@ -56,7 +56,8 @@ pub enum VTool {
 }
 
 impl VTool {
-    pub const ALL: [VTool; 9] = [VTool::Move, VTool::Pen, VTool::Bend, VTool::Paint, VTool::Lasso, VTool::Cut, VTool::AddNode, VTool::Eraser, VTool::Width];
+    pub const ALL: [VTool; 9] =
+        [VTool::Move, VTool::Pen, VTool::Bend, VTool::Paint, VTool::Lasso, VTool::Cut, VTool::AddNode, VTool::Eraser, VTool::Width];
     pub fn id(self) -> &'static str {
         match self {
             VTool::Move => "move",
