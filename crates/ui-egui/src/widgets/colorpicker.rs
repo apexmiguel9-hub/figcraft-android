@@ -984,7 +984,11 @@ pub fn show(app: &mut FigApp, ctx: &egui::Context) {
     // Only the opening control is held out: any other sidebar or canvas press dismisses it.
     let mut held: Vec<Rect> = app.ui.picker_button.into_iter().collect();
     held.extend(crate::variable_ui::picker_rect(ctx));
+    // En Android el picker es más alto que la pantalla: el cuerpo hace scroll dentro del
+    // popover, como antes con `fixed_size` + `vscroll` (medido: sin esto salía cortado).
+    let scroll_h = (screen.height() - 120.0).clamp(240.0, 520.0);
     let closed = pop.show(ctx, open, Hold { rects: &held, escape: false }, |ui| {
+        egui::ScrollArea::vertical().id_salt("color_picker_scroll").max_height(scroll_h).show(ui, |ui| {
         ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
         // The eyedropper's colour goes to this picker's paint (a stroke, an effect, a gradient stop...).
         if let Some(c) = app.session.tool.picked.take() {
@@ -1130,6 +1134,7 @@ pub fn show(app: &mut FigApp, ctx: &egui::Context) {
             });
         }
         ui.add_space(12.0);
+        });
     });
     if closed {
         set_image_pending(ctx, None);
