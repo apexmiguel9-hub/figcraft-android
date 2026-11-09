@@ -986,7 +986,9 @@ pub fn show(app: &mut FigApp, ctx: &egui::Context) {
     held.extend(crate::variable_ui::picker_rect(ctx));
     // En Android el picker es más alto que la pantalla: el cuerpo hace scroll dentro del
     // popover, como antes con `fixed_size` + `vscroll` (medido: sin esto salía cortado).
-    let scroll_h = (screen.height() - 120.0).clamp(240.0, 520.0);
+    // Sin tope artificial de 520: en pantallas altas el contenido (SV + sliders + swatches)
+    // debe caber entero; scroll_h limita al viewport, no recorta las filas visibles.
+    let scroll_h = (screen.height() - 120.0).clamp(240.0, 2000.0);
     let closed = pop.show(ctx, open, Hold { rects: &held, escape: false }, |ui| {
         egui::ScrollArea::vertical().id_salt("color_picker_scroll").max_height(scroll_h).show(ui, |ui| {
             ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
