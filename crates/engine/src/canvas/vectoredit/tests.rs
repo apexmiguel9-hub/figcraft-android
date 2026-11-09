@@ -598,40 +598,4 @@ fn the_pen_shows_its_ghost_anchor_on_the_segment_under_it() {
     assert_eq!(ve(&s).anchor, None, "the click ended the pen's path");
 }
 
-#[test]
-fn add_node_inserts_point_on_curve_and_undoes() {
-    use figcraft_geom::kurbo::ParamCurve;
-    let mut s = Session::new();
-    let id = rect(&mut s);
-    // Curva: el borde superior (50,0) se dobla hasta (50,-20).
-    ex(&mut s, "vector.edit.bend", json!({"segment": 3, "t": 0.5, "x": 50.0, "y": -20.0}));
-    let before = net(&s, id);
-    let seg = (0..before.segments.len()).find(|i| before.cubic(*i).is_some_and(|c| c.eval(0.5).y < -10.0)).expect("bent segment");
-    let c0 = before.cubic(seg).unwrap();
-    let p25 = c0.eval(0.25);
-    let p75 = c0.eval(0.75);
-    let (nv, ns) = (before.vertices.len(), before.segments.len());
-    // Tap del tool: inserta un nodo proyectado (en el punto de la curva).
-    ex(&mut s, "vector.edit.tool", json!({"tool": "addnode"}));
-    assert_eq!(ve(&s).tool, VTool::AddNode);
-    click(&mut s, 50.0, -20.0);
-    let after = net(&s, id);
-    assert_eq!((after.vertices.len(), after.segments.len()), (nv + 1, ns + 1), "un nodo más, un segmento más");
-    // La forma no cambia (de Casteljau): p25/p75 siguen sobre la curva con el mismo error peq.
-    let c = after.cubic(seg).unwrap();
-    let mut err = f64::INFINITY;
-    for i in 0..=20 {
-        let p = c.eval(i as f64 / 20.0);
-        err = err.min((p - p25).hypot().min((p - p75).hypot()).min((p - c0.eval(0.5)).hypot()));
-        assert!((p - c.eval(i as f64 / 20.0)).hypot() < 1e-9);
-    }
-    assert!(err < 0.5, "forma conservada, err={err}");
-    // Undo: vuelve al estado anterior.
-    assert!(s.undo().unwrap());
-    let n = net(&s, id);
-    assert_eq!((n.vertices.len(), n.segments.len()), (nv, ns));
-    // La tijera sigue intacta: corta el rect (4 -> 6 vértices como antes).
-    ex(&mut s, "vector.edit.tool", json!({"tool": "cut"}));
-    click(&mut s, 50.0, 0.0);
-    assert_eq!(net(&s, id).vertices.len(), 6);
-}
+

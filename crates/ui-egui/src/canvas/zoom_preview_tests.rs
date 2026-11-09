@@ -83,6 +83,7 @@ fn job(doc: &Arc<Document>, page: NodeId, uid: u64, view: View) -> Job {
         dots: None,
         uid,
         zoom_preview: true,
+        gesture: false,
         at: Instant::now(),
     }
 }
