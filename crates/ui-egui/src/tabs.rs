@@ -129,9 +129,13 @@ pub fn tab_bar(app: &mut FigApp, ui: &mut Ui) {
         ui.painter().line_segment([pos2(x, rect.min.y), pos2(x, rect.max.y)], Stroke::new(1.0, t.border));
         // Undo / redo, always in reach: on Android the Edit menu is two taps away from the canvas
         // (the main menu and then Edit), which is too much for the action used all the time.
-        history_buttons(app, ui, &t, x, rect);
-        x += 64.0;
-        ui.painter().line_segment([pos2(x, rect.min.y), pos2(x, rect.max.y)], Stroke::new(1.0, t.border));
+        // En escritorio upstream no estan: moverían las pestañas y romperían la posición
+        // que los tests de escritorio dan por supuesta, así que solo en Android.
+        if cfg!(target_os = "android") {
+            history_buttons(app, ui, &t, x, rect);
+            x += 64.0;
+            ui.painter().line_segment([pos2(x, rect.min.y), pos2(x, rect.max.y)], Stroke::new(1.0, t.border));
+        }
         let document_tabs: Vec<usize> = app.session.docs.iter().enumerate().filter_map(|(i, d)| app.shows(d.uid).then_some(i)).collect();
         let now = ui.input(|input| input.time);
         let motion_id = ui.scope_id().with("tab_motion");
