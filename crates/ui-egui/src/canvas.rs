@@ -615,6 +615,7 @@ mod builder_poly_tests;
 
 #[cfg(test)]
 mod loupe_tests;
+#[cfg(test)]
 mod outline_tests;
 
 #[cfg(test)]

@@ -149,7 +149,7 @@ fn import_dropped(app: &mut FigApp, ctx: &egui::Context, hover_pos: Option<egui:
 /// antes, en `gestos_tactiles`, que devuelve `true` cuando hay dos.
 fn gestures_mouse(app: &mut FigApp, ui: &mut Ui, resp: &egui::Response, pos: Pos2, mods: egui::Modifiers) -> bool {
     let ctx = ui.ctx().clone();
-    let (scroll, zoom_delta) = ctx.input(|i| (i.smooth_scroll_delta, i.zoom_delta()));
+    let zoom_delta = ctx.input(|i| i.zoom_delta());
     let (scroll, zoom_delta) = wheel_zoom(app, &ctx, zoom_delta, mods.shift);
     if !resp.hovered() {
         return false;

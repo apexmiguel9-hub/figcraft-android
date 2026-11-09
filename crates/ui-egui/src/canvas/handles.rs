@@ -567,7 +567,6 @@ pub fn input(app: &mut FigApp, ctx: &egui::Context, pos: Pos2) -> bool {
         }
         return true;
     }
-    let Some(pos) = pos else { return false };
     // Hover cursors / press to start.
     if let Some((id, fills, index, g)) = gradient_target(app) {
         let pts = [unit_to_screen(app, id, g.from), unit_to_screen(app, id, g.to), unit_to_screen(app, id, g.width)];
