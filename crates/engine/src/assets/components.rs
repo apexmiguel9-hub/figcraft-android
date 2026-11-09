@@ -39,6 +39,7 @@ use figcraft_doc::{
 use figcraft_geom::Affine;
 use serde_json::Value;
 
+mod cycles;
 mod diff;
 mod guard;
 mod instances;
@@ -47,6 +48,9 @@ mod rebase;
 mod sync;
 mod variants;
 
+pub use cycles::{
+    break_component_cycles, check_component_cycles, component_cycle, contains_itself_error, cycle_text, new_cycle, would_contain_itself,
+};
 pub use diff::{diff_groups, property_owners, set_boolean_default, variable_groups};
 pub use guard::{check_override_edit, check_structure_edit, refused_override, unlink_layers};
 pub(crate) use instances::copy_group;
@@ -143,6 +147,10 @@ pub fn inside_instance(doc: &Document, id: NodeId) -> bool {
 /// main layer's, for files from before `modes` was an override group. Copies follow their main
 /// layer's modes, so a layer on other modes chose them itself.
 pub fn mark_layer_modes(doc: &mut Document) {
+    // Without an instance nothing can be inside one: skip the per-layer ancestry lookups.
+    if !doc.nodes().any(|n| matches!(n.kind, NodeKind::Instance { .. })) {
+        return;
+    }
     let chose: Vec<NodeId> = doc
         .nodes()
         .filter(|n| !n.overrides.contains("modes") && n.source.and_then(|s| doc.node(s)).is_some_and(|m| m.var_modes != n.var_modes))
@@ -278,6 +286,16 @@ pub fn default_props(comp: &Node) -> BTreeMap<String, Value> {
         }
     }
     out
+}
+
+/// Component `c`'s property definitions, in the order they show ([`figcraft_doc::ordered_props`]).
+pub fn prop_list(doc: &Document, c: NodeId) -> Vec<(String, PropDef)> {
+    match doc.node(c).map(|n| &n.kind) {
+        Some(NodeKind::Component { props, prop_order, .. }) => {
+            figcraft_doc::ordered_props(props, prop_order).into_iter().map(|(k, d)| (k.clone(), d.clone())).collect()
+        }
+        _ => Vec::new(),
+    }
 }
 
 /// Whether instances store a value for the property (every kind but slots).

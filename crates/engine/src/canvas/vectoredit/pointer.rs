@@ -15,7 +15,7 @@ use super::{
     EditPart, VHit, VTool, VectorEdit, edit, editing, hit, hit_any, hit_tol, local_offset, network, ops, points_of, selected_points, set_state,
 };
 use crate::snap::Targets;
-use crate::tools::{Cursor, Gesture, Handle, PenCursor, PointerEvent, PointerKind};
+use crate::tools::{Cursor, Gesture, Handle, PenCursor, PointerEvent, PointerKind, within_slop};
 use crate::{Result, Session};
 
 /// An in-progress edit-mode gesture (cheap to clone: snap targets are shared).
@@ -69,10 +69,13 @@ pub(crate) enum VGesture {
         moved: bool,
         smooth: bool,
     },
-    /// Marquee and lasso: `base` is each edited layer's selection to add to.
+    /// Marquee and lasso: `base` is each edited layer's selection to add to. `leave` is a press
+    /// on another layer: released without a drag, it leaves edit mode and goes to the
+    /// normal tool.
     Marquee {
         start: Point,
         base: Vec<EditPart>,
+        leave: Option<PointerEvent>,
     },
     Lasso {
         points: Vec<Point>,
@@ -85,6 +88,11 @@ pub(crate) enum VGesture {
     },
     /// Cut tool: where the press was (page) and what it was on.
     Cut {
+        start: Point,
+        hit: Option<VHit>,
+    },
+    /// Add node tool: where the press was (page) and the segment hit (already projected).
+    AddNode {
         start: Point,
         hit: Option<VHit>,
     },
@@ -204,6 +212,7 @@ impl Session {
             PointerKind::Down => self.vector_down(&ve, ev),
             PointerKind::Move => self.vector_drag(&ve, ev).map(|()| true),
             PointerKind::Up => self.vector_up(&ve, ev).map(|()| true),
+            PointerKind::DoubleClick if ve.tool == VTool::Pen => self.pen_double_click_editing(ve.id, ev).map(|()| true),
             PointerKind::DoubleClick => {
                 let tol = hit_tol(ev.zoom);
                 let doc = self.doc()?.clone();
@@ -215,6 +224,21 @@ impl Session {
                 Ok(true)
             }
         }
+    }
+
+    /// A double-click with the pen in edit mode (#1430): the path ends and the layer `id` goes on
+    /// being edited with the Move tool. When the double-click began something new (a point split
+    /// into a segment, or a new path's first point), that edit of its first press is taken back.
+    fn pen_double_click_editing(&mut self, id: NodeId, ev: &PointerEvent) -> Result<()> {
+        if let Some((at, depth)) = self.tool.pen_press.take()
+            && (at - ev.p()).hypot() * ev.zoom < 8.0
+        {
+            while self.undo_depth().0 > depth && self.undo()? {}
+        }
+        if editing(self).is_err() {
+            super::begin(self, id)?;
+        }
+        super::set_tool(self, VTool::Move)
     }
 
     fn vgesture(&mut self, g: VGesture) {
@@ -707,21 +731,18 @@ impl Session {
                     }
                 }
                 None => {
-                    // A press on another layer (and not shift) leaves edit mode, so the normal tool
-                    // takes it; empty canvas only clears the points and starts a marquee (a
-                    // double-click or Escape leaves edit mode).
+                    // Every drag here marquees (#1508). A click on another layer (and not shift)
+                    // leaves edit mode, so the normal tool takes it; a click on empty canvas only
+                    // clears the points (a double-click or Escape leaves edit mode).
                     let inside =
                         ve.parts().iter().any(|p| doc.world_render_bounds(p.id).is_some_and(|b| b.inflate(tol * 4.0, tol * 4.0).contains(ev.p())));
                     let page = self.ds()?.page;
                     let other = !inside && self.hit(&doc, page, ev.p(), tol * 2.0).is_some();
-                    if other && !ev.shift {
-                        super::end(self)?;
-                        return Ok(false);
-                    }
                     if !ev.shift {
                         set_state(self, VectorEdit::clear_selection)?;
                     }
-                    self.vgesture(VGesture::Marquee { start: ev.p(), base: Self::select_base(ve, ev.shift) });
+                    let leave = (other && !ev.shift).then(|| ev.clone());
+                    self.vgesture(VGesture::Marquee { start: ev.p(), base: Self::select_base(ve, ev.shift), leave });
                 }
             },
             VTool::Bend => match h {
@@ -745,11 +766,12 @@ impl Session {
                     self.begin_interaction("Bend")?;
                     self.vgesture(VGesture::BendSegment { seg, t });
                 }
-                None => self.vgesture(VGesture::Marquee { start: ev.p(), base: Self::select_base(ve, ev.shift) }),
+                None => self.vgesture(VGesture::Marquee { start: ev.p(), base: Self::select_base(ve, ev.shift), leave: None }),
             },
             VTool::Pen => {
                 let at = if h.is_none() && !ev.shift { self.snap_pen(ev, Some(id), &[])?.0 } else { ev.p() };
                 let Some(plan) = self.pen_plan(ve, h, w.inverse() * at, ev.shift) else { return Ok(true) };
+                self.tool.pen_press = ve.anchor.is_none().then(|| (ev.p(), self.undo_depth().0));
                 self.begin_interaction("Pen")?;
                 let out = ve.pen_out;
                 let mut v = None;
@@ -790,6 +812,10 @@ impl Session {
             VTool::Cut => {
                 self.tool.overlay.rubber = Some([ev.x, ev.y, ev.x, ev.y]);
                 self.vgesture(VGesture::Cut { start: ev.p(), hit: h });
+            }
+            // A tap adds a node on the tapped segment when the pointer goes up; a drag cancels.
+            VTool::AddNode => {
+                self.vgesture(VGesture::AddNode { start: ev.p(), hit: h });
             }
         }
         Ok(true)
@@ -958,7 +984,7 @@ impl Session {
                 self.preview(|doc, _| edit(doc, id, |net| ops::make_smooth(net, v, d)))?;
                 self.vgesture(VGesture::BendVertex { v, origin, moved: true, smooth });
             }
-            VGesture::Marquee { start, base } => {
+            VGesture::Marquee { start, base, .. } => {
                 let r = Rect::from_points(start, ev.p());
                 self.tool.overlay.marquee = Some([r.x0, r.y0, r.x1, r.y1]);
                 self.select_parts(&base, |doc, id| super::vertices_in(doc, id, r), false)?;
@@ -988,6 +1014,7 @@ impl Session {
                 self.vgesture(VGesture::Erase { stamps, radius });
             }
             VGesture::Cut { start, .. } => self.tool.overlay.rubber = Some([start.x, start.y, ev.x, ev.y]),
+            VGesture::AddNode { .. } => {}
             VGesture::Paint { mut stamps } => {
                 if stamps.last().is_none_or(|l| (w * *l - ev.p()).hypot() * ev.zoom >= 2.0) && stamps.len() < 10_000 {
                     stamps.push(lp);
@@ -1010,6 +1037,33 @@ impl Session {
                 self.vgesture(VGesture::Pen { plan, origin, out });
             }
             VGesture::Width(g) => self.width_drag(ve, g, ev)?,
+        }
+        Ok(())
+    }
+
+    /// The Add node tool's pointer went up: a tap on a segment inserts a point there, projected
+    /// on the segment (curve split with de Casteljau, shape unchanged). One undo step; a drag
+    /// cancels, like a tap that misses.
+    fn add_node_up(&mut self, ve: &VectorEdit, start: Point, hit: Option<VHit>, ev: &PointerEvent) -> Result<()> {
+        let id = ve.id;
+        self.begin_interaction("Add node")?;
+        if (ev.p() - start).hypot() * ev.zoom >= 3.0 {
+            return self.cancel_interaction();
+        }
+        let Some(VHit::Segment { seg, t }) = hit else {
+            return self.cancel_interaction();
+        };
+        let mut v = None;
+        self.preview(|doc, _| {
+            v = edit(doc, id, |net| ops::split_segment(net, seg, t))?;
+            Ok(())
+        })?;
+        self.commit_interaction()?;
+        if let Some(v) = v {
+            set_state(self, |e| {
+                e.vertices = vec![v];
+                e.segments.clear();
+            })?;
         }
         Ok(())
     }
@@ -1062,11 +1116,17 @@ impl Session {
                 }
             }
             VGesture::BendVertex { v, moved, smooth, .. } => {
+                let id = ve.id;
                 if moved {
                     self.commit_interaction()?;
                 } else if smooth {
-                    let id = ve.id;
                     self.preview(|doc, _| edit(doc, id, |net| ops::make_sharp(net, v)))?;
+                    self.commit_interaction()?;
+                } else if network(self.doc()?, id).is_some_and(|n| n.incident(v).len() == 2) {
+                    // "Click on a point or path where you want to add a curve" (Edit vector
+                    // layers): a sharp point between two segments gets handles along the line
+                    // between its neighbours (#1875); an endpoint has nothing to curve.
+                    self.preview(|doc, _| edit(doc, id, |net| ops::auto_smooth(net, v)))?;
                     self.commit_interaction()?;
                 } else {
                     self.cancel_interaction()?;
@@ -1074,6 +1134,11 @@ impl Session {
             }
             VGesture::Handle { .. } | VGesture::BendSegment { .. } | VGesture::Pen { .. } | VGesture::BoxRotate { .. } => {
                 self.commit_interaction()?
+            }
+            VGesture::Marquee { start, leave: Some(press), .. } if within_slop(ev, start) => {
+                super::end(self)?;
+                self.pointer(&press)?;
+                return self.pointer(ev);
             }
             // The active layer moves to one with points selected when it has none.
             VGesture::Marquee { .. } | VGesture::Lasso { .. } => set_state(self, |e| {
@@ -1086,6 +1151,7 @@ impl Session {
             VGesture::Erase { .. } | VGesture::Paint { .. } => self.commit_interaction()?,
             VGesture::BoxScale { pick, .. } => self.box_scale_up(pick)?,
             VGesture::Cut { start, hit } => self.cut_up(ve, start, hit, ev)?,
+            VGesture::AddNode { start, hit } => self.add_node_up(ve, start, hit, ev)?,
             VGesture::Width(g) => self.width_up(g)?,
         }
         if let Ok(ds) = self.ds_mut() {

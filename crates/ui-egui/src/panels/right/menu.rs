@@ -1,4 +1,4 @@
-use super::{BlendMode, Color32, CornerRadius, FIELD_H, Id, PAD, Rect, Sense, Tokens, Ui, a11y, pos2, regular, tr, vec2};
+use super::{BlendMode, Color32, CornerRadius, FIELD_H, FigApp, Id, NodeId, PAD, Rect, Sense, Tokens, Ui, a11y, json, pos2, regular, tr, vec2};
 
 /// The smallest width a popup menu is measured in (see [`menu_popup`]).
 const MENU_MIN_W: f32 = 48.0;
@@ -14,16 +14,16 @@ pub(crate) fn menu_style(s: &mut egui::Style) {
     s.wrap_mode = Some(egui::TextWrapMode::Extend);
 }
 
-/// The menu a dropdown or button opens: as wide as its widest row and at least as wide as
-/// `anchor`. egui measures a popup in a first, invisible pass as wide as the width it is given
-/// (else its 600 px default area width) and keeps the size measured; rows ([`menu_row`]) take the
-/// larger of that width and their content, so the menu fits its content. Chain `.width(w)` for a
-/// menu at least `w` wide.
-/// The blend modes as menu items in groups (pass-through only for layers); the one picked.
-pub fn blend_menu(ui: &mut Ui, with_pass_through: bool) -> Option<BlendMode> {
+/// The blend modes as menu items in groups (pass-through only for layers); the one picked. Each
+/// row `preview`s its mode on the canvas while hovered.
+pub fn blend_menu(ui: &mut Ui, with_pass_through: bool, mut preview: impl FnMut(BlendMode)) -> Option<BlendMode> {
     let mut picked = None;
     for b in BlendMode::ALL.into_iter().filter(|b| with_pass_through || *b != BlendMode::PassThrough) {
-        if menu_item(ui, tr(b.label()), "") {
+        let resp = menu_row(ui, tr(b.label()), "", 0.0, |_, _, _| {});
+        if resp.hovered() {
+            preview(b);
+        }
+        if resp.clicked() {
             picked = Some(b);
             ui.close();
         }
@@ -34,6 +34,16 @@ pub fn blend_menu(ui: &mut Ui, with_pass_through: bool) -> Option<BlendMode> {
     picked
 }
 
+/// Show `blend` on `ids` on the canvas while its row in a blend mode menu is hovered.
+pub(crate) fn preview_blend(app: &mut FigApp, ctx: &egui::Context, ids: &[NodeId], blend: BlendMode) {
+    app.preview_text(ctx, "node.set", json!({"ids": ids, "props": {"blend": blend.label()}}));
+}
+
+/// The menu a dropdown or button opens: as wide as its widest row and at least as wide as
+/// `anchor`. egui measures a popup in a first, invisible pass as wide as the width it is given
+/// (else its 600 px default area width) and keeps the size measured; rows ([`menu_row`]) take the
+/// larger of that width and their content, so the menu fits its content. Chain `.width(w)` for a
+/// menu at least `w` wide.
 pub fn menu_popup(anchor: &egui::Response) -> egui::Popup<'static> {
     egui::Popup::menu(anchor).width(anchor.rect.width().max(MENU_MIN_W)).style(menu_style)
 }
@@ -71,6 +81,16 @@ pub(crate) fn menu_row_width(label_w: f32, trail: f32) -> f32 {
 /// A menu row (see [`menu_item_with`]); its response tells hovering too. It spans the menu and
 /// is at least as wide as its label, shortcut and art.
 pub fn menu_row(ui: &mut Ui, label: &str, shortcut: &str, art_w: f32, art: impl FnOnce(&egui::Painter, Rect, Color32)) -> egui::Response {
+    lit_row(ui, label, shortcut, art_w, art, false)
+}
+
+/// A plain menu row highlighted when `lit`, as if hovered: the row Up and Down are on in a menu
+/// whose search field keeps the keyboard.
+pub(crate) fn menu_row_lit(ui: &mut Ui, label: &str, lit: bool) -> egui::Response {
+    lit_row(ui, label, "", 0.0, |_, _, _| {}, lit)
+}
+
+fn lit_row(ui: &mut Ui, label: &str, shortcut: &str, art_w: f32, art: impl FnOnce(&egui::Painter, Rect, Color32), lit: bool) -> egui::Response {
     let t = Tokens::get(ui.ctx());
     let text = ui.painter().layout_no_wrap(label.to_owned(), regular(11.5), Color32::PLACEHOLDER);
     let keys =
@@ -81,7 +101,7 @@ pub fn menu_row(ui: &mut Ui, label: &str, shortcut: &str, art_w: f32, art: impl 
     a11y::menu_item(&resp, label, shortcut, None);
     // The keyboard's item is highlighted like the hovered one.
     a11y::own_focus(&resp);
-    let hovered = resp.hovered() || resp.has_focus();
+    let hovered = lit || resp.hovered() || resp.has_focus();
     if hovered {
         ui.painter().rect_filled(r, CornerRadius::same(5), t.menu_hover);
     }
@@ -127,9 +147,10 @@ pub(crate) fn row_rect(ui: &mut Ui, h: f32, add: impl FnOnce(&mut Ui)) -> Rect {
 pub(crate) fn block(ui: &mut Ui, h: f32, inset_y: f32, add: impl FnOnce(&mut Ui)) -> Rect {
     let w = ui.available_width();
     let (r, _) = ui.allocate_exact_size(vec2(w, h), Sense::hover());
-    let mut child =
-        ui.new_child(egui::UiBuilder::new().max_rect(r.shrink2(vec2(PAD, inset_y))).layout(egui::Layout::left_to_right(egui::Align::Center)));
-    child.spacing_mut().item_spacing = vec2(8.0, 0.0);
+    // The section's grid: 16 in from the left, 8 from the right (not 16 on both sides).
+    let inner = Rect::from_min_max(pos2(r.min.x + PAD, r.min.y + inset_y), pos2(r.max.x - crate::widgets::PAD_RIGHT, r.max.y - inset_y));
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::left_to_right(egui::Align::Center)));
+    child.spacing_mut().item_spacing = vec2(crate::widgets::GUTTER, 0.0);
     add(&mut child);
     r
 }

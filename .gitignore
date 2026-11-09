@@ -7,8 +7,11 @@ plans/
 local.properties
 .gradle/
 apps/figcraft-android/android/app/src/main/jniLibs/
+/plugins/target/
 /dist/
 /corpus/
 /log/
 .DS_Store
 *.profraw
+.cache/
+.vscode/

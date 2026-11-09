@@ -28,6 +28,8 @@ pub enum StrokeCap {
 }
 
 impl StrokeCap {
+    /// The caps a dash can have.
+    pub const DASH: [StrokeCap; 3] = [StrokeCap::None, StrokeCap::Round, StrokeCap::Square];
     pub const ALL: [StrokeCap; 8] = [
         StrokeCap::None,
         StrokeCap::Round,
@@ -52,6 +54,14 @@ impl StrokeCap {
     }
     pub fn is_arrow(self) -> bool {
         !matches!(self, StrokeCap::None | StrokeCap::Round | StrokeCap::Square)
+    }
+    /// The cap shape this draws on the stroke's band (arrowheads are drawn on top of it).
+    pub fn shape(self) -> StrokeCap {
+        match self {
+            StrokeCap::Round | StrokeCap::CircleFilled => StrokeCap::Round,
+            StrokeCap::Square | StrokeCap::DiamondFilled => StrokeCap::Square,
+            _ => StrokeCap::None,
+        }
     }
 }
 
@@ -82,6 +92,9 @@ pub struct StrokeProps {
     pub miter_limit: f64,
     /// Dash pattern (dash, gap, …); empty = solid.
     pub dashes: Vec<f64>,
+    /// The cap of every dash, both ends (`None`: dashes take `cap_start` and `cap_end`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dash_cap: Option<StrokeCap>,
     /// Variable width: how the width changes along the path (`None` = uniform).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub width_profile: Option<WidthProfile>,
@@ -151,6 +164,7 @@ impl Default for StrokeProps {
             join: StrokeJoin::Miter,
             miter_limit: 4.0,
             dashes: Vec::new(),
+            dash_cap: None,
             width_profile: None,
             brush: None,
         }
@@ -158,6 +172,14 @@ impl Default for StrokeProps {
 }
 
 impl StrokeProps {
+    /// The start and end cap the band is drawn with: a dashed stroke's dash cap when it has one.
+    pub fn band_caps(&self) -> [StrokeCap; 2] {
+        match self.dash_cap.filter(|_| !self.dashes.is_empty()) {
+            Some(c) => [c, c],
+            None => [self.cap_start, self.cap_end],
+        }
+    }
+
     /// The variable width profile, when there is one with points.
     pub fn profile(&self) -> Option<&WidthProfile> {
         self.width_profile.as_ref().filter(|p| !p.points.is_empty())
@@ -638,9 +660,10 @@ pub struct Glass {
     pub depth: f64,
     /// Colour splitting along the curved edge (0–1).
     pub dispersion: f64,
-    /// Blur of the backdrop (a blur radius, document units).
+    /// Blur of the backdrop (a blur radius, document units, 0–[`Self::MAX_FROST`]).
     pub frost: f64,
-    /// How widely the light spreads over the glass (0–1).
+    /// Which way the curved edge bends the backdrop: towards the shape's core (0; along the edge's
+    /// normal for a shape too big to work one out) to away from the layer's centre (1).
     pub splay: f64,
 }
 
@@ -651,6 +674,34 @@ impl Default for Glass {
 }
 
 impl Glass {
+    /// The most frost a glass takes, as the reference tool's Frost field (0–100).
+    pub const MAX_FROST: f64 = 100.0;
+
+    /// The fields a variable binds on a glass effect (`effects/<i>/<field>`), see [`Self::set_bound`].
+    pub const BOUND_FIELDS: [&'static str; 7] = ["lightAngle", "lightIntensity", "refraction", "depth", "dispersion", "radius", "splay"];
+
+    /// Sets `field` (one of [`Self::BOUND_FIELDS`]) from a bound number variable, read as the
+    /// Design panel's field shows it: intensity, refraction, dispersion and splay in percent, the
+    /// frost as `radius`, each clamped to the field's range. False for a field glass doesn't have
+    /// or a value that isn't finite (nothing changes).
+    pub fn set_bound(&mut self, field: &str, x: f64) -> bool {
+        if !x.is_finite() {
+            return false;
+        }
+        let pct = (x / 100.0).clamp(0.0, 1.0);
+        match field {
+            "lightAngle" => self.light_angle = x.clamp(-180.0, 180.0),
+            "lightIntensity" => self.light_intensity = pct,
+            "refraction" => self.refraction = pct,
+            "depth" => self.depth = x.clamp(1.0, 1000.0),
+            "dispersion" => self.dispersion = pct,
+            "radius" => self.frost = x.clamp(0.0, Self::MAX_FROST),
+            "splay" => self.splay = pct,
+            _ => return false,
+        }
+        true
+    }
+
     /// The values clamped to their ranges (non-finite ones at their defaults).
     pub fn sanitized(&self) -> Glass {
         let d = Glass::default();
@@ -661,15 +712,23 @@ impl Glass {
             refraction: ok(self.refraction, d.refraction, 0.0, 1.0),
             depth: ok(self.depth, d.depth, 1.0, 1000.0),
             dispersion: ok(self.dispersion, d.dispersion, 0.0, 1.0),
-            frost: ok(self.frost, d.frost, 0.0, 1000.0),
+            frost: ok(self.frost, d.frost, 0.0, Self::MAX_FROST),
             splay: ok(self.splay, d.splay, 0.0, 1.0),
         }
     }
 
-    /// Furthest the curved edge moves the backdrop (document units).
+    /// How far `dispersion` splits the colour channels, as a share of the bend: at full dispersion
+    /// red moves up to this much further and blue as much less. Matched to the reference tool:
+    /// across a black-to-white edge in the bend, red and blue part about 4.7 px at 100% and 2.4 px
+    /// at 50% (at 2×, depth 20, refraction 80%).
+    pub const DISPERSION_SPREAD: f64 = 0.16;
+
+    /// Furthest the curved edge moves the backdrop (document units): at most `depth` × `refraction`
+    /// (all of it a bevel in from the edge), and red's dispersion steps up to
+    /// [`Self::DISPERSION_SPREAD`] × `dispersion` times that again.
     pub fn max_bend(&self) -> f64 {
         let g = self.sanitized();
-        g.refraction * g.depth * (1.0 + g.dispersion * 0.25)
+        g.refraction * g.depth * (1.0 + Self::DISPERSION_SPREAD * g.dispersion)
     }
 }
 
@@ -868,6 +927,11 @@ impl Effect {
             EffectKind::Texture(t) if !t.clip_to_shape => t.radius.abs(),
             _ => 0.0,
         }
+    }
+    /// Whether this is a visible layer blur or texture: what moves the layer's own pixels, one
+    /// after another in list order.
+    pub fn moves_the_layer(&self) -> bool {
+        self.visible && matches!(self.kind, EffectKind::LayerBlur(_) | EffectKind::Texture(_))
     }
     /// A layer or background blur's settings.
     pub fn blur(&self) -> Option<&Blur> {
@@ -1337,13 +1401,14 @@ impl ExportSize {
         (value.is_finite() && value > 0.0 && value <= max).then_some(self)
     }
 
-    /// "2x", "512w", "512h".
+    /// "2x", "0.125x", "512w", "512h". Not rounded, so `parse` reads it back as the same size.
     pub fn label(self) -> String {
-        let n = |v: f64| crate::text::trim_num(v);
+        // `{}` prints the shortest text that parses back to the same `f64`, and whole numbers
+        // without a fraction ("2", not "2.0").
         match self {
-            ExportSize::Scale { value } => format!("{}x", n(value)),
-            ExportSize::Width { value } => format!("{}w", n(value)),
-            ExportSize::Height { value } => format!("{}h", n(value)),
+            ExportSize::Scale { value } => format!("{value}x"),
+            ExportSize::Width { value } => format!("{value}w"),
+            ExportSize::Height { value } => format!("{value}h"),
         }
     }
 

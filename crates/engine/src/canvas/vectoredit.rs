@@ -1,5 +1,5 @@
 //! Vector edit mode: editing a vector network's points, segments and bezier handles on the canvas,
-//! with its own tools (move, pen, bend, paint bucket, lasso, cut).
+//! with its own tools (move, pen, bend, paint bucket, lasso, cut, add node).
 //!
 //! Entering edit mode on a non-vector shape converts it to a vector first (like the incumbent).
 //! Vertex coordinates are node-local; after each edit the node is re-fitted so its box wraps the
@@ -47,13 +47,17 @@ pub enum VTool {
     Paint,
     Lasso,
     Cut,
+    /// Add node: a tap on a segment inserts a point there, projected on it, splitting
+    /// curves with de Casteljau so the shape doesn't change.
+    AddNode,
     Eraser,
     /// Variable width: width points along the stroke.
     Width,
 }
 
 impl VTool {
-    pub const ALL: [VTool; 8] = [VTool::Move, VTool::Pen, VTool::Bend, VTool::Paint, VTool::Lasso, VTool::Cut, VTool::Eraser, VTool::Width];
+    pub const ALL: [VTool; 9] =
+        [VTool::Move, VTool::Pen, VTool::Bend, VTool::Paint, VTool::Lasso, VTool::Cut, VTool::AddNode, VTool::Eraser, VTool::Width];
     pub fn id(self) -> &'static str {
         match self {
             VTool::Move => "move",
@@ -62,6 +66,7 @@ impl VTool {
             VTool::Paint => "paint",
             VTool::Lasso => "lasso",
             VTool::Cut => "cut",
+            VTool::AddNode => "addnode",
             VTool::Eraser => "eraser",
             VTool::Width => "width",
         }
@@ -77,6 +82,7 @@ impl VTool {
             VTool::Paint => "Paint bucket",
             VTool::Lasso => "Lasso",
             VTool::Cut => "Cut",
+            VTool::AddNode => "Add node",
             VTool::Eraser => "Eraser",
             VTool::Width => "Variable width",
         }
@@ -90,6 +96,7 @@ impl VTool {
             VTool::Paint => "Shift+B",
             VTool::Lasso => "Q",
             VTool::Cut => "X",
+            VTool::AddNode => "A",
             VTool::Eraser => "Shift+E",
             VTool::Width => "Shift+W",
         }
@@ -413,7 +420,9 @@ pub fn hit_tol(zoom: f64) -> f64 {
 }
 
 /// Hit test in page coordinates with a tolerance in page units. Visible handles win, then
-/// vertices, then segments.
+/// vertices, then segments; between a handle and a point both within reach, the nearer one on
+/// the page, the handle on a tie (the handles of a short segment end a few pixels from their
+/// point, and a click on the point is on the point, #1875).
 pub fn hit(doc: &Document, ve: &VectorEdit, p: Point, tol: f64) -> Option<VHit> {
     let net = network(doc, ve.id)?;
     let w = doc.world_transform(ve.id);
@@ -424,17 +433,31 @@ pub fn hit(doc: &Document, ve: &VectorEdit, p: Point, tol: f64) -> Option<VHit> 
     if !(lp.x.is_finite() && lp.y.is_finite()) {
         return None;
     }
-    for (si, start) in visible_handles(net, ve) {
-        let (Some(seg), Some(t)) = (net.segments.get(si), net.handle(si, start)) else { continue };
-        let Some(v) = net.vertices.get(if start { seg.a } else { seg.b }) else { continue };
-        if (Point::new(v.x + t.0, v.y + t.1) - lp).hypot() <= tl {
-            return Some(VHit::Handle { seg: si, start });
-        }
-    }
-    let nearest_vertex =
-        net.vertices.iter().enumerate().map(|(i, v)| (i, (v.point() - lp).hypot())).filter(|(_, d)| *d <= tl).min_by(|a, b| a.1.total_cmp(&b.1));
-    if let Some((index, _)) = nearest_vertex {
-        return Some(VHit::Vertex { index });
+    // Candidates are within the tolerance as before; the nearest is judged on the page, where a
+    // non-uniform scale doesn't distort it.
+    let on_page = |q: Point| (w * q - p).hypot();
+    let nearest_handle = visible_handles(net, ve)
+        .into_iter()
+        .filter_map(|(si, start)| {
+            let (seg, t) = (net.segments.get(si)?, net.handle(si, start)?);
+            let v = net.vertices.get(if start { seg.a } else { seg.b })?;
+            let end = Point::new(v.x + t.0, v.y + t.1);
+            ((end - lp).hypot() <= tl).then(|| ((si, start), on_page(end)))
+        })
+        .min_by(|a, b| a.1.total_cmp(&b.1));
+    let nearest_vertex = net
+        .vertices
+        .iter()
+        .enumerate()
+        .filter(|(_, v)| (v.point() - lp).hypot() <= tl)
+        .map(|(i, v)| (i, on_page(v.point())))
+        .min_by(|a, b| a.1.total_cmp(&b.1));
+    match (nearest_handle, nearest_vertex) {
+        // A tie (a handle's end on another point) goes to the handle, as handles always won before.
+        (Some(((seg, start), dh)), Some((_, dv))) if dh <= dv => return Some(VHit::Handle { seg, start }),
+        (Some(((seg, start), _)), None) => return Some(VHit::Handle { seg, start }),
+        (_, Some((index, _))) => return Some(VHit::Vertex { index }),
+        (None, None) => {}
     }
     use figcraft_geom::kurbo::ParamCurveNearest;
     let nearest_seg = (0..net.segments.len())
@@ -751,13 +774,10 @@ pub fn key(s: &mut Session, name: &str, shift: bool, alt: bool, cmd: bool) -> Re
     }
     match (name, shift, alt, cmd) {
         ("Escape", ..) => escape(s)?,
-        ("Enter", ..) => {
-            if ve.anchor.is_some() {
-                escape(s)?;
-            } else {
-                end(s)?;
-            }
-        }
+        // With the pen, Enter ends its path and goes on editing with the Move tool (#1430); the next
+        // Enter leaves edit mode.
+        ("Enter", ..) if ve.tool == VTool::Pen => set_tool(s, VTool::Move)?,
+        ("Enter", ..) => end(s)?,
         ("Backspace" | "Delete", false, false, false) if ve.tool == VTool::Width => {
             // The selected width point (nothing else is selected with the Variable width tool).
             if let Some(i) = ve.width_point {
@@ -778,6 +798,7 @@ pub fn key(s: &mut Session, name: &str, shift: bool, alt: bool, cmd: bool) -> Re
         // B (Shift+B still works, as it did before).
         ("B", _, false, false) => set_tool(s, VTool::Paint)?,
         ("Q", false, false, false) => set_tool(s, VTool::Lasso)?,
+        ("A", false, false, false) => set_tool(s, VTool::AddNode)?,
         ("X", false, false, false) => set_tool(s, VTool::Cut)?,
         ("E", true, false, false) => set_tool(s, VTool::Eraser)?,
         ("W", true, false, false) => set_tool(s, VTool::Width)?,
@@ -838,7 +859,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 "widthPoints": width_handles(doc, &ve, 1.0), "widthPoint": ve.width_point, "layers": layers, "others": others,
                 "handles": ve.handles, "regions": ve.regions, "regionVertices": ve.region_vertices, "regionHover": ve.region_hover}))
         }),
-        spec!("vector.edit.tool", "Vector edit tool", "{tool: move|pen|bend|paint|lasso|cut|eraser|width}", false, |s, p| {
+        spec!("vector.edit.tool", "Vector edit tool", "{tool: move|pen|bend|paint|lasso|cut|addnode|eraser|width}", false, |s, p| {
             editing(s)?;
             let t = string(p, "tool").and_then(|t| VTool::from_id(&t)).ok_or_else(|| bad("vector.edit.tool", "unknown tool"))?;
             set_tool(s, t)?;
@@ -1229,17 +1250,31 @@ pub(crate) fn cut_across(s: &mut Session, a: Point, b: Point) -> Result<Vec<Node
 /// under it, the others get the same (points outside closed areas are skipped). A vector without
 /// fills gets the default fill so the painted area shows.
 pub fn paint_all(doc: &mut Document, id: NodeId, pts: &[Point]) -> Result<bool> {
+    let inherited = doc.get(id)?.fills.clone();
     let filled = edit(doc, id, |net| {
         let mut want = None;
         for p in pts {
-            want = net.paint_to(*p, want).or(want);
+            want = net.paint_to_with(*p, want, Some(&inherited)).or(want);
         }
         want
     })?
     .ok_or_else(|| bad("vector.edit.paint", "click inside a closed area"))?;
     let n = doc.get_mut(id)?;
     if filled && n.fills.iter().all(|f| !f.visible) {
-        n.fills = vec![figcraft_color::Paint::solid(figcraft_color::Color::DEFAULT_SHAPE)];
+        let default = figcraft_color::Paint::solid(figcraft_color::Color::DEFAULT_SHAPE);
+        let targets: std::collections::BTreeSet<usize> = match &n.kind {
+            NodeKind::Vector { network } => pts.iter().filter_map(|point| network.region_at(*point)).collect(),
+            _ => std::collections::BTreeSet::new(),
+        };
+        if let NodeKind::Vector { network } = &mut n.kind {
+            for (index, region) in network.regions.iter_mut().enumerate() {
+                if region.fills.is_none() && !targets.contains(&index) {
+                    // Freeze an untouched inherited region before adding a node-wide default.
+                    region.fills = Some(Vec::new());
+                }
+            }
+        }
+        n.fills = vec![default];
     }
     Ok(filled)
 }

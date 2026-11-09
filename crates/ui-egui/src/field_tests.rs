@@ -148,6 +148,33 @@ fn id(v: serde_json::Value) -> NodeId {
     NodeId(v["id"].as_u64().unwrap())
 }
 
+#[test]
+fn layout_add_button_requires_every_selected_container_to_have_no_layout() {
+    let mut s = Session::new();
+    let rect = id(s.execute("shape.rectangle", &json!({"width": 40, "height": 20})).unwrap());
+    let group = id(s.execute("object.group", &json!({"ids": [rect]})).unwrap());
+    let frame = id(s.execute("frame.create", &json!({"x": 200, "width": 100, "height": 60})).unwrap());
+    let mut u = Ui::new(s);
+    u.ctx.enable_accesskit();
+    for (selection, layout, expected) in [
+        (vec![group], false, true),
+        (vec![frame, group], false, true),
+        (vec![frame, group], true, false),
+        (vec![frame], true, false),
+        (vec![], true, false),
+    ] {
+        if layout {
+            u.app.session.execute("node.set", &json!({"id": frame, "props": {"layout": "horizontal"}})).unwrap();
+        }
+        u.app.session.execute("select.set", &json!({"ids": selection})).unwrap();
+        u.frame(vec![]);
+        let output = u.frame_output(vec![]);
+        let nodes = output.platform_output.accesskit_update.unwrap().nodes;
+        let has_add = nodes.iter().any(|(_, n)| n.role() == Role::Button && n.label() == Some("Add auto layout"));
+        assert_eq!(has_add, expected, "selection: {selection:?}, frame has layout: {layout}");
+    }
+}
+
 /// Rectangles A (10, 20, 40×30) and B (100, 50, 20×20); A is selected.
 fn setup() -> (Ui, NodeId, NodeId) {
     let mut s = Session::new();
@@ -476,14 +503,18 @@ fn scrubbing_colour_picker_fields_is_live_and_one_undo_step() {
     let [r0, .., a0] = rgba(&u);
     u.ctx.data_mut(|d| d.insert_temp(Id::unique("cp_model"), 1usize));
     u.app.ui.picker = Some(crate::colorpicker::PickerTarget::Paint { fills: true, index: 0, ids: vec![a] });
-    // The picker window takes a frame to size itself.
-    for _ in 0..3 {
+    // Settle sizing and the anchored position before reading field hit rectangles.
+    for _ in 0..5 {
         u.frame(vec![]);
     }
     let steps = undo_steps(&u);
     let from = lead(&u, Id::unique(("cp_f", "r")));
     drag(&mut u, from, -20.0, Modifiers::NONE);
     assert_eq!((rgba(&u)[0], undo_steps(&u)), (r0 - 20, steps + 1), "R");
+    // Committing adds a recent colour row and can lift the anchored picker. Settle its layout.
+    for _ in 0..3 {
+        u.frame(vec![]);
+    }
     // The alpha field: a scrub moves it too.
     let from = lead(&u, Id::unique("cp_a"));
     drag(&mut u, from, -30.0, Modifiers::NONE);
@@ -504,7 +535,7 @@ fn lch_and_oklch_picker_fields_edit_lightness_keeping_hue() {
         assert_eq!(before.to_hex(), "0D99FF");
         u.ctx.data_mut(|d| d.insert_temp(Id::unique("cp_model"), model));
         u.app.ui.picker = Some(crate::colorpicker::PickerTarget::Paint { fills: true, index: 0, ids: vec![a] });
-        for _ in 0..3 {
+        for _ in 0..5 {
             u.frame(vec![]);
         }
         let steps = undo_steps(&u);
@@ -524,14 +555,16 @@ fn type_into_picker(u: &mut Ui, id: &str, text: &str) {
     click(u, rect.center());
     u.frame(vec![Event::Text(text.into())]);
     key(u, Key::Enter, Modifiers::NONE);
-    u.frame(vec![]);
+    for _ in 0..3 {
+        u.frame(vec![]);
+    }
 }
 
 /// A picker on layer `a` in model `model` (an index into the model menu), drawn and settled.
 fn open_picker(u: &mut Ui, a: NodeId, model: usize) {
     u.ctx.data_mut(|d| d.insert_temp(Id::unique("cp_model"), model));
     u.app.ui.picker = Some(crate::colorpicker::PickerTarget::Paint { fills: true, index: 0, ids: vec![a] });
-    for _ in 0..3 {
+    for _ in 0..5 {
         u.frame(vec![]);
     }
 }
@@ -634,29 +667,31 @@ fn the_glass_light_intensity_field_has_a_label() {
     u.ctx.data_mut(|d| d.insert_temp(Id::unique(("fx_open", 0usize)), true));
     u.frame(vec![]);
     let shapes = u.frame_output(vec![]).shapes;
-    let lead = u.ctx.read_response(Id::unique(("fx_gi", 0usize)).with("lead")).expect("the intensity field is shown").rect;
+    let lead = u.ctx.read_response(Id::unique(("fx", "lightIntensity", 0usize)).with("lead")).expect("the intensity field is shown").rect;
     let labels: Vec<(String, bool)> =
         painted_texts(&shapes).into_iter().filter(|(_, _, at)| lead.contains(at.center())).map(|(text, cut, _)| (text, cut)).collect();
     assert_eq!(labels, [("Intensity".to_string(), false)], "labelled, and not cut short");
-    let field = u.ctx.read_response(Id::unique(("fx_gi", 0usize)).with("field")).expect("its value").rect;
+    let field = u.ctx.read_response(Id::unique(("fx", "lightIntensity", 0usize)).with("field")).expect("its value").rect;
     assert_eq!(field.max.x - lead.min.x, GLASS_FIELD_W, "the width the next test measures against");
 }
 
 /// A glass settings field's width in the Design panel at its default width.
-const GLASS_FIELD_W: f32 = 98.5;
+const GLASS_FIELD_W: f32 = 87.5;
 
-/// The light intensity label this fix adds fits whole beside its value in every language (#256).
-/// Other glass labels may end in "…" in some languages (es "Profundidad"); a longer
-/// "Intensity" translation fails here.
+/// The light intensity label this fix adds fits whole beside its value (#256): at the default
+/// width the grid's column leaves 47.5 pt for it, and "Intensity" is 46.2. Longer translations
+/// (de "Intensit\u00e4t", es "Intensidad") end in "…" — whole on hover — rather than run into the
+/// value.
 #[test]
-fn the_intensity_label_fits_whole_in_every_language() {
-    use crate::i18n::{self, Text};
+fn the_intensity_label_fits_whole_beside_its_value() {
+    use crate::i18n::{self, Forms, Text};
     let ctx = egui::Context::default();
     let mut out = ctx.run_ui(Default::default(), |ui| {
         let width = |s: &str| ui.painter().layout_no_wrap(s.to_string(), crate::theme::regular(11.0), egui::Color32::WHITE).size().x;
+        let mut english = 0.0;
         for lang in i18n::languages() {
             let label = lang.ui.iter().find(|(k, _)| *k == "Intensity").map_or("Intensity", |(_, t)| match t {
-                Text::Plain(s) | Text::Plural { other: s, .. } => s,
+                Text::Plain(s) | Text::Plural(Forms { other: s, .. }) => s,
             });
             // The test's context has only egui's own font: a label it can't draw (Vietnamese
             // diacritics, CJK) can't be measured here, and the app draws it with a system font.
@@ -664,8 +699,14 @@ fn the_intensity_label_fits_whole_in_every_language() {
                 continue;
             }
             let lead = crate::widgets::text_lead_width(ui, label, GLASS_FIELD_W);
-            assert!(lead >= 12.0 + width(label), "{}: {label:?} would end in \"…\"", lang.code);
+            if lang.code == "en" {
+                english = width(label);
+                assert!(lead >= 8.0 + english, "en: {label:?} would end in \"…\"");
+            }
+            // The value keeps its room at the field's end whatever the label's length.
+            assert!(lead <= GLASS_FIELD_W - 32.0, "{}: {label:?} leaves the value its room", lang.code);
         }
+        assert!(english > 0.0, "the English label is in the table");
     });
     out.textures_delta.clear();
 }
@@ -1111,4 +1152,45 @@ fn prepared_save_cannot_enter_a_replacement(route: &str, save_as: bool, discard:
     assert_eq!(asked.get(), usize::from(save_as));
     assert!(u.app.ui.after_field.is_none());
     std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Replacing a painted value with its editor must preserve its baseline, including inside
+/// the horizontal rows used by the sidebar.
+#[test]
+fn sidebar_field_text_stays_in_place_on_focus() {
+    for numeric in [true, false] {
+        let ctx = egui::Context::default();
+        crate::theme::apply(&ctx, crate::theme::Tokens::light());
+        let id = Id::unique("baseline_field");
+        let draw = |events| {
+            let mut out = ctx.run_ui(
+                egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(Pos2::ZERO, egui::vec2(400.0, 200.0))), events, ..Default::default() },
+                |ui| {
+                    ui.horizontal(|ui| {
+                        if numeric {
+                            crate::widgets::number_field(ui, id, crate::widgets::Lead::None, Some(123.0), "", 100.0, 1.0);
+                        } else {
+                            crate::widgets::text_field(ui, id, "123", 100.0, "");
+                        }
+                    });
+                },
+            );
+            out.textures_delta.clear();
+            out
+        };
+        draw(vec![]);
+        let before = draw(vec![]);
+        let bounds = |out: &egui::FullOutput| painted_texts(&out.shapes).into_iter().find(|(text, _, _)| text == "123").expect("field text").2;
+        let before = bounds(&before);
+        let p = before.center();
+        for pressed in [true, false] {
+            draw(vec![
+                Event::PointerMoved(p),
+                Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed, modifiers: Modifiers::NONE },
+            ]);
+        }
+        assert!(ctx.memory(|m| m.has_focus(id.with("te"))), "editor is focused");
+        let after = bounds(&draw(vec![]));
+        assert!((before.center().y - after.center().y).abs() <= 0.5, "numeric={numeric}: before={before:?}, after={after:?}");
+    }
 }

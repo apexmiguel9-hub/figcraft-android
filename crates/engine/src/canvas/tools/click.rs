@@ -22,11 +22,34 @@ impl Session {
         }
     }
 
+    /// A double-click on an edge handle of the one selected layer auto layout sizes: Hug contents
+    /// on that axis for an auto layout frame, Fill container with Alt for a child of one (a
+    /// vertical edge sizes the width, a horizontal one the height). Whether it applied: on any
+    /// other layer, or off the edges, the double-click goes on as before.
+    fn edge_double_click(&mut self, doc: &Document, sel: &[NodeId], ev: &PointerEvent) -> Result<bool> {
+        let [id] = sel[..] else { return Ok(false) };
+        let Some(super::Handle::Edge(edge)) = super::handles::handle_at(doc, sel, ev.p(), ev.zoom) else { return Ok(false) };
+        let Some(n) = doc.node(id) else { return Ok(false) };
+        let applies = if ev.alt {
+            !n.child_layout.absolute && n.parent.and_then(|p| doc.node(p)).is_some_and(|p| p.layout.is_some())
+        } else {
+            n.layout.is_some()
+        };
+        if !applies {
+            return Ok(false);
+        }
+        // Edges run top, right, bottom, left: the odd ones are vertical and size the width.
+        let mut props = serde_json::Map::new();
+        props.insert(if edge % 2 == 1 { "sizingH" } else { "sizingV" }.to_string(), json!(if ev.alt { "fill" } else { "hug" }));
+        self.execute("node.set", &json!({"id": id, "props": props}))?;
+        Ok(true)
+    }
+
     pub(super) fn double_click(&mut self, ev: &PointerEvent) -> Result<()> {
         let ds = self.ds()?;
         let (doc, sel, page) = (ds.doc.clone(), ds.selection.clone(), ds.page);
         if self.tool.tool == ToolId::Pen {
-            return self.pen_finish();
+            return self.pen_double_click(ev);
         }
         let edits = !self.tool.dev_mode;
         // A frame's or section's name label: rename it there (the canvas puts a field over it).
@@ -60,6 +83,14 @@ impl Session {
             self.tool.gesture = Gesture::None;
             self.tool.overlay.marquee = None;
             self.cancel_interaction()?;
+        }
+        // An edge of an auto layout object's bounding box: Hug contents on that axis, with Alt
+        // Fill container ("Tip: Double-click the vertical or horizontal edge of an auto layout
+        // object's bounding box to set it to Hug contents." and "Hold ⌥ Option or Alt and
+        // double-click the vertical or horizontal edge of an auto layout object's bounding box to
+        // set it to Fill container.", Guide to auto layout).
+        if edits && matches!(self.tool.tool, ToolId::Move | ToolId::Scale) && !(ev.shift || ev.cmd) && self.edge_double_click(&doc, &sel, ev)? {
+            return Ok(());
         }
         let hit_here = self.hit(&doc, page, ev.p(), ev.tol() * 2.0);
         // A double-click anywhere on the one selected shape edits its points, like Enter: also
@@ -334,6 +365,10 @@ impl Session {
         let sel = ds.selection.clone();
         if self.tool.pick_only {
             self.tool.picked = Some(c);
+        } else if ev.cmd && ev.shift {
+            // Cmd/Ctrl+Shift: make a colour style or variable of it instead (the UI asks which
+            // and what to call it; nothing is applied).
+            self.request_ui("dialog.createFromColor", json!({"color": c.to_css_hex()}));
         } else if !sel.is_empty() {
             self.execute("node.set", &json!({"ids": sel, "props": {"fill": c.to_css_hex()}}))?;
         }

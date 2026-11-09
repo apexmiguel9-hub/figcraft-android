@@ -5,7 +5,7 @@
 //! laid out for it. Everything written reads back; what the format can't say is written as its
 //! value with a warning; damaged files never panic.
 
-use figcraft_doc::{Collection, Mode, Style, StyleKind, Variable, VariableType, VariableValue};
+use figcraft_doc::{Collection, ColorOperand, Mode, Style, StyleKind, Variable, VariableType, VariableValue};
 use serde_json::json;
 
 use super::*;
@@ -383,6 +383,36 @@ fn bindings_the_format_cant_say_keep_their_value_with_a_warning() {
     assert!(back.variables.get("lost").is_none());
 }
 
+/// A colour calculation has no encoding here: it is written as the colour it shows in each mode,
+/// and one that can't resolve is left out with a warning rather than written as something else.
+#[test]
+fn colour_calculations_are_written_as_the_colour_they_show() {
+    let mut doc = themed();
+    let fade = |source: &str| VariableValue::ColorAlpha { variable: source.into(), opacity: 0.5 };
+    let mix = VariableValue::ColorMix {
+        from: ColorOperand::Variable { variable: "v-fg".into() },
+        to: ColorOperand::Literal { literal: Color::new(1.0, 0.0, 0.0, 1.0) },
+        t: 0.5,
+    };
+    doc.variables.variables.push(var("v-veil", "color/veil", "c-theme", VariableType::Color, &[("m-light", fade("v-bg")), ("m-dark", mix)]));
+    doc.variables.variables.push(var("v-broken", "color/broken", "c-theme", VariableType::Color, &[("m-light", fade("v-gone"))]));
+    let (bytes, warnings) = export(&doc, None).unwrap();
+    assert!(warnings.iter().any(|w| w == crate::CALCULATIONS_LEFT_OUT), "{warnings:?}");
+    let (back, _) = import(&bytes, "x").unwrap();
+    assert!(back.variables.get("color/broken").is_none_or(|v| v.values.is_empty()), "left out, not written as something else");
+    let theme = back.variables.collections.iter().find(|c| c.name == "Theme").unwrap();
+    let veil = back.variables.get("color/veil").unwrap();
+    let shown: Vec<String> = theme
+        .modes
+        .iter()
+        .map(|m| match veil.values.get(&m.id) {
+            Some(VariableValue::Color(c)) => c.to_css_hex(),
+            other => panic!("{}: {other:?}", m.name),
+        })
+        .collect();
+    assert_eq!(shown, ["#FFFFFF80", "#DF6060"]);
+}
+
 /// A style of each kind linked from a layer, and one that nothing uses.
 fn styled() -> Document {
     let mut doc = Document::new("Styled");
@@ -526,8 +556,15 @@ fn text_styles_on_part_of_a_text_are_written_as_values() {
 fn sized() -> (Document, [NodeId; 3]) {
     let mut doc = Document::new("Sized");
     let page = doc.first_page().unwrap();
-    let main =
-        add(&mut doc, page, NodeKind::Component { description: String::new(), props: BTreeMap::new() }, "Card", (0.0, 0.0), (100.0, 60.0), &|_| {});
+    let main = add(
+        &mut doc,
+        page,
+        NodeKind::Component { description: String::new(), props: BTreeMap::new(), prop_order: Vec::new() },
+        "Card",
+        (0.0, 0.0),
+        (100.0, 60.0),
+        &|_| {},
+    );
     add(&mut doc, main, NodeKind::Rectangle, "Box", (10.0, 10.0), (40.0, 40.0), &|n| {
         n.constraints = Constraints { horizontal: HConstraint::Scale, vertical: VConstraint::Scale };
     });
@@ -623,10 +660,17 @@ fn an_instance_named_after_its_set_has_no_name_of_its_own() {
 fn layers_bound_like_their_mains_are_no_overrides_in_another_mode() {
     let mut doc = themed();
     let page = doc.first_page().unwrap();
-    let main =
-        add(&mut doc, page, NodeKind::Component { description: String::new(), props: BTreeMap::new() }, "Chip", (0.0, 300.0), (80.0, 30.0), &|n| {
+    let main = add(
+        &mut doc,
+        page,
+        NodeKind::Component { description: String::new(), props: BTreeMap::new(), prop_order: Vec::new() },
+        "Chip",
+        (0.0, 300.0),
+        (80.0, 30.0),
+        &|n| {
             n.bound.insert("fill".into(), "v-bg".into());
-        });
+        },
+    );
     add(&mut doc, main, NodeKind::Text(TextData::new("Chip")), "Chip label", (8.0, 6.0), (40.0, 16.0), &|n| {
         n.fills = vec![solid(0.0, 0.0, 0.0)];
         n.bound.insert("fill".into(), "v-fg".into());
@@ -662,15 +706,22 @@ fn layers_of_a_swapped_nested_instance_keep_what_they_change() {
     let other = add(
         &mut doc,
         page,
-        NodeKind::Component { description: String::new(), props: BTreeMap::new() },
+        NodeKind::Component { description: String::new(), props: BTreeMap::new(), prop_order: Vec::new() },
         "Other",
         (0.0, 400.0),
         (100.0, 60.0),
         &|_| {},
     );
     add(&mut doc, other, NodeKind::Ellipse { start: 0.0, sweep: std::f64::consts::TAU, inner: 0.0 }, "Dot", (10.0, 10.0), (40.0, 40.0), &|_| {});
-    let row =
-        add(&mut doc, page, NodeKind::Component { description: String::new(), props: BTreeMap::new() }, "Row", (0.0, 500.0), (300.0, 80.0), &|_| {});
+    let row = add(
+        &mut doc,
+        page,
+        NodeKind::Component { description: String::new(), props: BTreeMap::new(), prop_order: Vec::new() },
+        "Row",
+        (0.0, 500.0),
+        (300.0, 80.0),
+        &|_| {},
+    );
     let mut g = Gen { r: Lcg(3), doc, image: String::new(), frames: Vec::new(), layers: Vec::new() };
     let thumb = g.instance(card, row, BTreeMap::new());
     g.doc.node_mut(thumb).unwrap().name = "Thumb".into();

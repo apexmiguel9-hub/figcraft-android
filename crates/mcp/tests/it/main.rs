@@ -1,6 +1,8 @@
 //! The crate's integration tests, built as one test binary.
 
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod agent_comments;
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod agent_tasks;
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod attached;
@@ -14,6 +16,8 @@ mod export_hidden_roots;
 mod export_xml;
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod garbage;
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod inspect_fields;
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod inspect_response_limit;
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]

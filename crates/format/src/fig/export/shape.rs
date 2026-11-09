@@ -157,6 +157,9 @@ impl<'d> Exporter<'d> {
     /// The editable network (with per-point corner radii, handle mirroring and end caps) and,
     /// when it has filled areas, their outline.
     pub(super) fn vector(&mut self, n: &Node, net: &VectorNetwork, f: &mut Fields) {
+        if net.regions.iter().any(|region| region.fills.is_some() || region.paint_space.is_some()) {
+            self.warn("vector region paints were left out of the .fig export");
+        }
         let entries: usize = net.regions.iter().flat_map(|r| &r.loops).map(Vec::len).sum();
         if net.vertices.len() + net.segments.len() + entries > MAX_NETWORK {
             self.warn("vector networks too large for the format were written as outlines");
@@ -279,7 +282,7 @@ impl<'d> Exporter<'d> {
         if !(plain && weight.is_finite() && weight > 0.0 && w.is_finite() && h.is_finite()) {
             return;
         }
-        let whole = matches!(n.kind, NodeKind::Ellipse { sweep, inner, .. } if inner == 0.0 && sweep.abs() >= std::f64::consts::TAU - 1e-9);
+        let whole = matches!(n.kind, NodeKind::Ellipse { sweep, inner, .. } if inner == 0.0 && figcraft_doc::geom::full_sweep(sweep));
         if boxy || whole {
             let (out, inset) = match sp.align {
                 StrokeAlign::Inside => (0.0, weight),

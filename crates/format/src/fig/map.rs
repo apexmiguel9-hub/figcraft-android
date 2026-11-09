@@ -91,14 +91,19 @@ pub(super) fn adapt_warning(w: String) -> Option<String> {
     if w.contains("geometry=paths") {
         return None;
     }
-    if w.contains("without image data") {
-        let count = w.split_whitespace().next().unwrap_or("Some");
-        return Some(format!("{count} image fill(s) whose image isn't in the file show a grey placeholder"));
-    }
     Some(w.replace("the variables JSON", "the file").replace("the file JSON", "the file"))
 }
 
 // ---- small readers ----
+
+/// A generated child is identified by one exact template GUID, not its array position.
+fn generated_record<'a>(v: &View<'a>, field: &str, local_id: u32) -> Option<&'a Kv<'a>> {
+    v.get(field)?.get("overrides")?.list().iter().find(|row| {
+        row.get("guidPath").and_then(|path| path.get("guids")).map(Kv::list).is_some_and(|guids| {
+            guids.len() == 1 && num(&guids[0], "sessionID") == Some(40_000_000.0) && num(&guids[0], "localID") == Some(f64::from(local_id))
+        })
+    })
+}
 
 fn num(n: &Kv, k: &str) -> Option<f64> {
     n.get(k).and_then(Kv::f64)
@@ -174,12 +179,15 @@ impl<'a> View<'a> {
         v
     }
 
-    /// This view with `style` just above the node itself: the style beats the node's own copy of
-    /// its fields (stale when the style changed since), and override rows beat both.
-    fn styled(&self, style: Option<&'a Kv<'a>>) -> Self {
+    /// This view with `style` just above the layer that links it in `key` (or `legacy`): the style
+    /// beats that layer's and lower layers' copies of its fields (stale when the style changed
+    /// since, or written for the style linked before), and override rows above the link beat it.
+    fn styled(&self, style: Option<&'a Kv<'a>>, key: &str, legacy: &str) -> Self {
         let mut v = self.clone();
         if let Some(s) = style {
-            v.layers.insert(v.layers.len().min(1), s);
+            let linked_in = |k: &str| v.layers.iter().rposition(|l| l.get(k).is_some());
+            let at = linked_in(key).or_else(|| linked_in(legacy)).map_or(1, |i| i + 1);
+            v.layers.insert(at.min(v.layers.len()), s);
         }
         v
     }
@@ -248,6 +256,9 @@ struct Mapper<'a> {
     networks: Vec<Option<VectorNetwork>>,
     /// Index in `networks` by what a network is made from: its blob, its scale and its style table.
     network_ids: HashMap<(usize, u64, u64, usize), usize>,
+    /// Region paint elements (paints and gradient stops) read so far: one budget for the whole
+    /// file, since layers with region paints don't share their network.
+    region_paint_elements: usize,
 }
 
 impl<'a> Mapper<'a> {
@@ -271,8 +282,12 @@ impl<'a> Mapper<'a> {
             if !nodes.get(&id).is_some_and(|latest| std::ptr::eq(*latest, n)) {
                 continue;
             }
+            // Variables and their collections are read from the node list (`of_type`), never
+            // as layers: out of the layer tree, an instance's expansion doesn't walk them again for
+            // every instance without counting them (#1077).
             if let Some(p) = n.get("parentIndex")
                 && let Some(parent) = p.get("guid").and_then(guid)
+                && !matches!(n.get("type").and_then(Kv::str), Some("VARIABLE" | "VARIABLE_SET"))
             {
                 kids.entry(parent).or_default().push((p.get("position").and_then(Kv::str).unwrap_or(""), id.clone()));
             }
@@ -322,6 +337,7 @@ impl<'a> Mapper<'a> {
             reserved: 0,
             networks: Vec::new(),
             network_ids: HashMap::new(),
+            region_paint_elements: 0,
         }
     }
 
@@ -331,7 +347,10 @@ impl<'a> Mapper<'a> {
     /// the reference has neither or the asset names nothing (or ambiguously) in the file.
     /// Original code for this importer: the field names are those of the schema each file embeds.
     fn resource_id(&self, v: &Kv) -> Option<String> {
-        if let Some(g) = v.get("guid").and_then(guid).filter(|g| *g != NO_STYLE) {
+        // A guid names the resource when this file holds a node by it. One from another file (the
+        // library a style or collection came from, as a paste carries) names nothing here: the
+        // asset it also names finds the file's copy (#1638).
+        if let Some(g) = v.get("guid").and_then(guid).filter(|g| *g != NO_STYLE && self.nodes.contains_key(g)) {
             return Some(g);
         }
         let asset = v.get("assetRef")?;

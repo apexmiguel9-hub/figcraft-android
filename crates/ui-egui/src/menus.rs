@@ -188,6 +188,11 @@ pub fn invoke(app: &mut FigApp, id: &str) {
         "collab.join" => crate::live::open_join(app, ""),
         // So is the server address for publishing (it carries the server key).
         "collab.publish" => crate::live::open_publish(app),
+        "edit.copyProperties" => {
+            if app.run(id, json!({})).is_some() {
+                app.toast(tr("Properties copied"));
+            }
+        }
         "edit.copy" | "edit.cut" => {
             let ids = app.session.selection();
             // For other apps: text layers' text, other layers as SVG; taken before a cut removes them.
@@ -502,6 +507,10 @@ pub fn popups(app: &mut FigApp, ctx: &egui::Context) {
                     .ok()
                     .filter(|doc| figcraft_engine::cmd::component::can_combine_variants(doc, &app.session.selection()))
                     .map(|_| i18n::command("component.combineVariants", "Combine as variants"));
+                // One layer with an image fill can be cropped (judged on the selection, as above).
+                let crop = app.session.doc().ok().is_some_and(|doc| {
+                    matches!(app.session.selection().as_slice(), [id] if doc.node(*id).and_then(figcraft_engine::cmd::image::top_image_fill).is_some())
+                });
                 let copy_link = i18n::command("edit.copyLink", "Copy link to selection");
                 let mut entries: Vec<(&str, &str)> = if has_sel {
                     vec![
@@ -524,6 +533,7 @@ pub fn popups(app: &mut FigApp, ctx: &egui::Context) {
                         (tr("Use as mask"), "object.mask"),
                         ("-", ""),
                         (tr("Add auto layout"), "layout.add"),
+                        (tr("Remove all auto layout"), "layout.removeAll"),
                         (tr("Create component"), "component.create"),
                         (tr("Detach instance"), "component.detach"),
                         ("-", ""),
@@ -561,6 +571,9 @@ pub fn popups(app: &mut FigApp, ctx: &egui::Context) {
                     && let Some(at) = entries.iter().position(|e| e.1 == "component.create")
                 {
                     entries.insert(at + 1, (label, "component.combineVariants"));
+                }
+                if crop && let Some(at) = entries.iter().position(|e| e.1 == "object.mask") {
+                    entries.insert(at + 1, (tr("Crop image"), "image.crop"));
                 }
                 // An instance's actions reach its main component: replace "Create component" with
                 // "Go to main component" (as in Figma's context menu).

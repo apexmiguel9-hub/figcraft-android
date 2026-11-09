@@ -60,7 +60,7 @@ impl FigApp {
     }
 
     /// Show an error as a toast, kept as the last error.
-    pub(crate) fn show_error(&mut self, msg: String) {
+    pub fn show_error(&mut self, msg: String) {
         self.toast(msg.clone());
         self.ui.last_error = Some(msg);
     }
@@ -126,6 +126,7 @@ impl FigApp {
                 }
                 "dialog.preferences" => self.ui.preferences = true,
                 "dialog.missingFonts" => missing_fonts::request(self),
+                "dialog.createFromColor" => crate::sampled_color::request(self, &r.data),
                 "panel.shortcuts" => self.ui.shortcuts_panel = !self.ui.shortcuts_panel,
                 // MEDIDO en Android: el toggle es de upstream, y el foco se pide a mano o el teclado
                 // blando parpadea (`palette_focus_pending`).
@@ -214,10 +215,14 @@ impl FigApp {
                     if let Some(i) = r.data.get("inspect").and_then(|i| i.as_bool()) {
                         v.inspect = i;
                     }
+                    if let Some(h) = r.data.get("hideUi").and_then(|h| h.as_bool()) {
+                        v.hide_ui = h;
+                    }
                     if let Some(p) = self.ui.present.as_mut() {
                         p.view.device_frame = v.device_frame;
                         p.view.hotspot_hints = v.hotspot_hints;
                         p.view.inspect = v.inspect;
+                        p.view.hide_ui = v.hide_ui;
                         p.set_scale(v.scale);
                     }
                 }
@@ -228,9 +233,26 @@ impl FigApp {
                 }
                 "preview.close" => self.ui.preview = None,
                 "open.help" => self.services.open_url("https://getartcraft.com/apps/figcraft"),
+                // A link in text activated while editing (`text.openLink`): the engine checked it
+                // is a web or mail link.
+                "open.url" => {
+                    if let Some(url) = r.data["url"].as_str() {
+                        self.services.open_url(url);
+                    }
+                }
                 "layers.collapseAll" => layers::collapse_all(self),
                 "contextMenu" => self.ui.key_menu = true,
                 "selectArea" => self.start_key_box(),
+                "image.crop" => {
+                    // Crop mode takes the canvas: an open colour picker would edit the same paint.
+                    self.ui.picker = None;
+                    self.ui.crop = r
+                        .data
+                        .get("id")
+                        .and_then(figcraft_engine::params::id_of)
+                        .zip(r.data.get("index").and_then(Value::as_u64))
+                        .map(|(id, i)| (id, i as usize));
+                }
                 "canvas.renameLabel" => {
                     self.ui.rename_label = r.data.get("id").and_then(figcraft_engine::params::id_of).map(|id| layers::Rename { id, start: true });
                 }

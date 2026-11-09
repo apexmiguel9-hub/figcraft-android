@@ -17,6 +17,7 @@
 //! nested clip paths) is left out and reported in the import notes. Linked files are never read: only data URIs.
 
 mod budget;
+mod css_color;
 mod fx;
 mod paint;
 mod shape;
@@ -24,6 +25,8 @@ mod text;
 
 #[cfg(test)]
 mod budget_tests;
+#[cfg(test)]
+mod css_color_tests;
 #[cfg(test)]
 mod fx_tests;
 #[cfg(test)]
@@ -34,8 +37,10 @@ mod paint_tests;
 mod shape_tests;
 #[cfg(test)]
 mod structure_tests;
+#[cfg(test)]
+mod tile_tests;
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use figcraft_color::{BlendMode, ImageScaleMode, Paint};
 use figcraft_doc::{Document, Effect, MaskType, Node, NodeId, NodeKind, StrokeAlign, StrokeCap, StrokeJoin, VectorNetwork, WindingRule};
@@ -96,11 +101,36 @@ pub(crate) struct Ctx<'a> {
     fonts: Option<text::Fonts>,
     /// Patterns being drawn into tile images (inside one another).
     pattern_depth: usize,
+    /// Tiles drawn so far, by pattern and scale (see [`paint`]'s `render_tile`).
+    tiles: HashMap<(*const usvg::Pattern, u64), Option<paint::Tile>>,
+    /// The document image key of each embedded image's bytes already added, so an image a
+    /// pattern paints on many shapes is hashed once, not once per shape.
+    image_keys: HashMap<*const Vec<u8>, String>,
 }
 
 impl<'a> Ctx<'a> {
     pub(crate) fn new(doc: &'a mut Document) -> Self {
-        Ctx { doc, count: 0, anonymous: HashSet::new(), notes: BTreeSet::new(), fonts: None, pattern_depth: 0 }
+        Ctx {
+            doc,
+            count: 0,
+            anonymous: HashSet::new(),
+            notes: BTreeSet::new(),
+            fonts: None,
+            pattern_depth: 0,
+            tiles: HashMap::new(),
+            image_keys: HashMap::new(),
+        }
+    }
+
+    /// [`add_image`] for `bytes`, once per distinct buffer.
+    pub(crate) fn image(&mut self, bytes: std::sync::Arc<Vec<u8>>, w: f64, h: f64) -> String {
+        if let Some(k) = self.image_keys.get(&std::sync::Arc::as_ptr(&bytes)) {
+            return k.clone();
+        }
+        let ptr = std::sync::Arc::as_ptr(&bytes);
+        let key = add_image(self.doc, bytes, w, h);
+        self.image_keys.insert(ptr, key.clone());
+        key
     }
 
     pub(crate) fn full(&self) -> bool {
@@ -522,7 +552,11 @@ pub(crate) fn stroke_props(s: &usvg::Stroke, k: f64) -> figcraft_doc::StrokeProp
     };
     let mut dashes: Vec<f64> = s.dasharray().unwrap_or(&[]).iter().map(|v| f64::from(*v) * k).collect();
     if !dashes.is_empty() {
-        dashes = dash_offset(&dashes, f64::from(s.dashoffset()) * k, cap == StrokeCap::None).unwrap_or(dashes);
+        let offset = f64::from(s.dashoffset()) * k;
+        // Half a dash in is how a line starts by itself (and how export writes one).
+        if dashes.first().is_none_or(|d| (d / 2.0 - offset).abs() > 1e-3) {
+            dashes = dash_offset(&dashes, offset, cap == StrokeCap::None).unwrap_or(dashes);
+        }
     }
     figcraft_doc::StrokeProps {
         weight: f64::from(s.width().get()) * k,
@@ -594,10 +628,20 @@ fn image(cx: &mut Ctx, img: &usvg::Image, id: &str, parent: NodeId, base: Affine
     let size = img.size();
     let (iw, ih) = (f64::from(size.width()), f64::from(size.height()));
     let (transform, w, h) = place(world, Point::ZERO, iw, ih).unwrap_or((world, iw, ih));
-    let hash = add_image(cx.doc, bytes, iw, ih);
+    let hash = cx.image(bytes, iw, ih);
     let mut n = Node::new(cx.doc.alloc_id(), NodeKind::Rectangle, layer_name(id, "Image"), w, h);
     n.transform = transform;
-    n.fills = vec![Paint::image(hash, ImageScaleMode::Fill)];
+    let mut fill = Paint::image(hash, ImageScaleMode::Fill);
+    // usvg sizes the box to the picture (`meet` and `slice` are in the transform), so a box of
+    // another shape is `preserveAspectRatio="none"`: the picture stretched edge to edge. A Fill
+    // would keep its shape and crop it; a crop of the whole picture stretches it.
+    if (w * ih - h * iw).abs() > 1e-6 * (w * ih).max(h * iw)
+        && let figcraft_color::PaintKind::Image(ip) = &mut fill.kind
+    {
+        ip.scale_mode = ImageScaleMode::Crop;
+        ip.crop = Some(Affine::IDENTITY.as_coeffs());
+    }
+    n.fills = vec![fill];
     cx.add(n, parent);
 }
 
@@ -718,6 +762,45 @@ fn options(data: &[u8], limits: budget::Limits) -> usvg::Options<'static> {
     o
 }
 
+/// Length of the `<!...>` declaration at the start of `s`, skipping `>` inside quotes and an
+/// internal subset (`[ ... ]`).
+fn doctype_end(s: &str) -> Option<usize> {
+    let mut quote = None;
+    let mut depth = 0u32;
+    let mut skip_to = 0;
+    for (i, c) in s.char_indices() {
+        if i < skip_to {
+            continue;
+        }
+        if quote.is_none() && depth > 0 {
+            // Comments and processing instructions in the subset may hold quotes and brackets.
+            let rest = &s[i..];
+            let close = if rest.starts_with("<!--") {
+                Some("-->")
+            } else if rest.starts_with("<?") {
+                Some("?>")
+            } else {
+                None
+            };
+            if let Some(close) = close {
+                let len = rest.find(close)? + close.len();
+                skip_to = i + len;
+                continue;
+            }
+        }
+        match (quote, c) {
+            (Some(q), _) if c == q => quote = None,
+            (Some(_), _) => {}
+            (None, '"' | '\'') => quote = Some(c),
+            (None, '[') => depth += 1,
+            (None, ']') => depth = depth.saturating_sub(1),
+            (None, '>') if depth == 0 => return Some(i + 1),
+            _ => {}
+        }
+    }
+    None
+}
+
 /// Whether `text` (from the clipboard, say) is an SVG document: `<svg` after an optional byte
 /// order mark, XML declaration, comments, doctype and whitespace.
 pub fn looks_like_svg(text: &str) -> bool {
@@ -731,7 +814,7 @@ pub fn looks_like_svg(text: &str) -> bool {
         } else if s.starts_with("<!--") {
             s.find("-->").map(|i| i + 3)
         } else if s.starts_with("<!") {
-            s.find('>').map(|i| i + 1)
+            doctype_end(s)
         } else {
             None
         };
@@ -767,6 +850,11 @@ fn import_within(
     if too_deep(&data) {
         return Err(ImportError(format!("elements nested more than {MAX_NESTING} deep")));
     }
+    // usvg reads neither `color()` nor `color-mix()`: they are resolved first.
+    let (data, color_notes) = match css_color::resolve(&data, doc.color_profile) {
+        Some(resolved) => resolved,
+        None => (data, Vec::new()),
+    };
     let tree = usvg::Tree::from_data(&data, &options(&data, limits)).map_err(|e| ImportError(e.to_string()))?;
     let size = tree.size();
     let frame =
@@ -775,6 +863,7 @@ fn import_within(
         f.fills.clear();
     }
     let mut cx = Ctx::new(doc);
+    color_notes.into_iter().for_each(|n| cx.note(n));
     children(&mut cx, tree.root(), frame, Affine::IDENTITY, 0);
     Ok(Imported { frame, notes: cx.notes.into_iter().collect() })
 }

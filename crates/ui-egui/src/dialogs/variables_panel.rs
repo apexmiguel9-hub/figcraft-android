@@ -2,10 +2,10 @@
 //! read-only under the library's name); the selected collection's variables on the right as a
 //! table with one value column per mode. Double-click a name to rename it, right-click for more; a
 //! value's variable button turns it into an alias of another variable (a library one too).
-//! A library collection can be extended: a collection of this file with its modes and variables,
-//! whose overridden values are marked (with a reset). Import and export read and write the
-//! variables JSON (or CSS). Everything goes through `variable.*` / `library.*` commands, so it's
-//! undoable and the same over MCP.
+//! A collection (this file's or a library's) can be extended: a collection of this file with its
+//! modes and variables, whose overridden values are marked (with a reset). Import and export read
+//! and write the variables JSON (or CSS). Everything goes through `variable.*` / `library.*`
+//! commands, so it's undoable and the same over MCP.
 
 use egui::{Align2, Context, CornerRadius, Id, Rect, Sense, Stroke, StrokeKind, Ui, UiBuilder, pos2, vec2};
 use figcraft_doc::{Collection, Document, PublishedLibrary, Variable, VariableType, VariableValue, Variables, scopes_for};
@@ -245,10 +245,13 @@ fn import_dialog(app: &mut FigApp) {
     });
 }
 
-/// Extend library `lib`'s collection `c` and show the new collection.
-fn extend(app: &mut FigApp, lib: &str, c: &str, st: &mut Editor) {
-    if let Some(id) = app.run("library.extendCollection", json!({"library": lib, "collection": c})).and_then(|r| r["id"].as_str().map(str::to_string))
-    {
+/// Extend collection `c` (of library `lib`, else of this file) and show the new collection.
+fn extend(app: &mut FigApp, lib: Option<&str>, c: &str, st: &mut Editor) {
+    let run = match lib {
+        Some(lib) => app.run("library.extendCollection", json!({"library": lib, "collection": c})),
+        None => app.run("variable.extendCollection", json!({"collection": c})),
+    };
+    if let Some(id) = run.and_then(|r| r["id"].as_str().map(str::to_string)) {
         st.library = None;
         st.collection = Some(id);
         st.group = None;
@@ -281,7 +284,7 @@ fn rename_field(ui: &mut Ui, st: &mut Editor, target: &Rename, value: &str, rect
 }
 
 /// The first of `base`, `base 2`, `base 3`… that `taken` doesn't hold.
-fn unique(base: &str, taken: impl Fn(&str) -> bool) -> String {
+pub(crate) fn unique(base: &str, taken: impl Fn(&str) -> bool) -> String {
     (1..10_000).map(|k| if k == 1 { base.to_string() } else { format!("{base} {k}") }).find(|n| !taken(n)).unwrap_or_else(|| base.to_string())
 }
 
@@ -357,28 +360,24 @@ fn collection_row(app: &mut FigApp, ui: &mut Ui, view: &View, c: &Collection, st
         st.library = view.id().map(str::to_string);
         st.collection = Some(c.id.clone());
     }
-    if view.editable() {
-        if resp.double_clicked() {
-            start_rename(st, target.clone());
-        }
-        crate::right::context_popup(&resp).show(|ui| {
-            if menu_item(ui, tr("Rename"), "") {
-                start_rename(st, target.clone());
-                ui.close();
-            }
-            if menu_item(ui, tr("Delete collection"), "") {
-                app.run("variable.deleteCollection", json!({"collection": c.id}));
-                ui.close();
-            }
-        });
-    } else if let Some(lib) = view.id() {
-        crate::right::context_popup(&resp).show(|ui| {
-            if menu_item(ui, tr("Extend collection"), "") {
-                extend(app, lib, &c.id, st);
-                ui.close();
-            }
-        });
+    if view.editable() && resp.double_clicked() {
+        start_rename(st, target.clone());
     }
+    // A library's collections only extend; this file's also rename and delete.
+    crate::right::context_popup(&resp).show(|ui| {
+        if view.editable() && menu_item(ui, tr("Rename"), "") {
+            start_rename(st, target.clone());
+            ui.close();
+        }
+        if menu_item(ui, tr("Extend collection"), "") {
+            extend(app, view.id(), &c.id, st);
+            ui.close();
+        }
+        if view.editable() && menu_item(ui, tr("Delete collection"), "") {
+            app.run("variable.deleteCollection", json!({"collection": c.id}));
+            ui.close();
+        }
+    });
     if selected {
         group_rows(app, ui, view, c, st);
     }
@@ -556,11 +555,11 @@ fn table(app: &mut FigApp, ui: &mut Ui, view: &View, st: &mut Editor) {
     crate::widgets::select_all_on_focus(ui, &r, &st.query);
     let note = Rect::from_min_max(pos2(field.max.x + 16.0, sr.min.y + 8.0), pos2(sr.max.x - 16.0, sr.max.y - 8.0));
     let mut bar = ui.new_child(UiBuilder::new().max_rect(note).layout(egui::Layout::right_to_left(egui::Align::Center)));
-    let text = match (view.library, coll.extends.as_deref().and_then(|p| view.vars.collection(p))) {
+    let text = match (view.library, coll.extends.as_deref().and_then(|p| view.vars.collection_by_id(p))) {
         (Some((lib, name)), _) => {
             let tip = tr("A collection of this file with these modes and variables: override their values per mode and add variables of its own");
             if widgets::button(&mut bar, tr("Extend collection"), false, true).on_hover_text(tip).clicked() {
-                extend(app, lib, &coll.id, st);
+                extend(app, Some(lib), &coll.id, st);
             }
             bar.add_space(8.0);
             Some(trf("From the library \"{name}\": read-only", &[("name", &name)]))
@@ -762,14 +761,13 @@ fn kind_glyph(ui: &Ui, vars: &Variables, v: &Variable, coll: &Collection, rect: 
     }
 }
 
-/// `val` as a `variable.set` value.
-fn value_json(val: &VariableValue) -> Value {
-    match val {
-        VariableValue::Color(c) => json!(c.to_css_hex()),
-        VariableValue::Number(x) => json!(x),
-        VariableValue::String(s) => json!(s),
-        VariableValue::Boolean(b) => json!(b),
-        VariableValue::Alias(a) => json!({"alias": a}),
+/// The button that replaces the reference or calculation in `mode` with the value it shows now.
+fn detach(app: &mut FigApp, ui: &mut Ui, view: &View, v: &Variable, coll: &Collection, mode: &str, (key, at): (Id, Rect), label: &str) {
+    if widgets::icon_button_at(ui, key, at, Icon::Detach, label) {
+        let modes = [(coll.id.clone(), mode.to_string())].into_iter().collect();
+        if let Some(resolved) = view.vars.resolve(&v.id, &modes) {
+            set(app, v, mode, crate::panels::proto_panel::value_json(&resolved));
+        }
     }
 }
 
@@ -802,7 +800,7 @@ fn value_cell(app: &mut FigApp, ui: &mut Ui, view: &View, v: &Variable, coll: &C
         }
     }
     if let VariableValue::Alias(target) = val {
-        let full = view.vars.get(target).map(|x| x.name.as_str()).unwrap_or(tr("Missing variable"));
+        let full = view.vars.get_by_id(target).map(|x| x.name.as_str()).unwrap_or(tr("Missing variable"));
         let resp = ui.interact(body, id.with("alias"), if editable { Sense::click() } else { Sense::hover() });
         let resp = if editable { resp.on_hover_text(tr("Change alias")) } else { resp };
         ui.painter().rect_filled(body, CornerRadius::same(5), t.field);
@@ -821,12 +819,29 @@ fn value_cell(app: &mut FigApp, ui: &mut Ui, view: &View, v: &Variable, coll: &C
         if resp.clicked() {
             crate::variable_ui::open_alias(ui, &v.id, mode, v.kind, body.left_bottom());
         }
-        // Detach: keep the value it resolves to now.
-        if hovered && widgets::icon_button_at(ui, id.with("detach"), alias_btn, Icon::Detach, tr("Detach alias")) {
-            let modes = [(coll.id.clone(), mode.to_string())].into_iter().collect();
-            if let Some(resolved) = view.vars.resolve(&v.id, &modes) {
-                set(app, v, mode, value_json(&resolved));
-            }
+        if hovered {
+            detach(app, ui, view, v, coll, mode, (id.with("detach"), alias_btn), tr("Detach alias"));
+        }
+        return;
+    }
+    // A calculation shows what it resolves to and names its operands. It is set through the
+    // commands; here, like an alias, it can be swapped for an alias or detached to its colour.
+    if matches!(val, VariableValue::ColorAlpha { .. } | VariableValue::ColorMix { .. }) {
+        let name = |id: &str| view.vars.get_by_id(id).map_or_else(|| tr("Missing variable").to_string(), |x| x.name.clone());
+        let formula = val.display_with(&name);
+        let resp = ui.interact(body, id.with("calc"), if editable { Sense::click() } else { Sense::hover() });
+        let resp = resp.tip(format!("{formula}\n{}", tr("Calculated from other variables; it follows them")));
+        let shown = match view.vars.flattened(v, mode, val) {
+            Some(VariableValue::Color(c)) => Some(c),
+            _ => None,
+        };
+        // The formula is the point of the cell: it keeps the width an alpha readout would take.
+        read_only_cell(ui, body, shown, formula, false);
+        if resp.clicked() {
+            crate::variable_ui::open_alias(ui, &v.id, mode, v.kind, body.left_bottom());
+        }
+        if hovered {
+            detach(app, ui, view, v, coll, mode, (id.with("detach"), alias_btn), tr("Detach calculation"));
         }
         return;
     }
@@ -839,9 +854,8 @@ fn value_cell(app: &mut FigApp, ui: &mut Ui, view: &View, v: &Variable, coll: &C
             ui.painter().rect_filled(body, CornerRadius::same(5), t.field);
             let sw = Rect::from_center_size(pos2(body.min.x + 13.0, body.center().y), vec2(14.0, 14.0));
             widgets::paint_swatch(ui.painter(), sw, &figcraft_color::Paint::solid(*c));
-            if ui.interact(sw.expand(3.0), id.with("swatch"), Sense::click()).tip(tr("Edit colour")).clicked() {
-                app.ui.picker = Some(PickerTarget::Variable { id: v.id.clone(), mode: mode.to_string() });
-            }
+            let response = ui.interact(sw.expand(3.0), id.with("swatch"), Sense::click()).tip(tr("Edit colour"));
+            app.picker_control(PickerTarget::Variable { id: v.id.clone(), mode: mode.to_string() }, &response);
             let hex_r = Rect::from_min_max(pos2(sw.max.x + 8.0, body.min.y + 4.0), pos2(body.max.x - 44.0, body.max.y - 4.0));
             if let Some(h) = widgets::text_field_inline(ui, id.with("hex"), &c.to_hex(), hex_r, regular(11.0))
                 && let Some(nc) = figcraft_color::Color::from_hex_or_name(&h)
@@ -875,7 +889,7 @@ fn value_cell(app: &mut FigApp, ui: &mut Ui, view: &View, v: &Variable, coll: &C
                 set(app, v, mode, json!(!b));
             }
         }
-        VariableValue::Alias(_) => {}
+        VariableValue::Alias(_) | VariableValue::ColorAlpha { .. } | VariableValue::ColorMix { .. } => {}
     }
     if hovered && widgets::icon_button_at(ui, id.with("mkalias"), alias_btn, Icon::Variable, tr("Create alias")) {
         crate::variable_ui::open_alias(ui, &v.id, mode, v.kind, body.left_bottom());
@@ -891,20 +905,33 @@ fn alpha_text(ui: &Ui, c: &figcraft_color::Color, body: Rect) {
 
 /// A value that only shows (a library's): its swatch and hex for colours, else its text.
 fn read_only_value(ui: &Ui, val: &VariableValue, body: Rect) {
-    let t = Tokens::get(ui.ctx());
-    ui.painter().rect_filled(body, CornerRadius::same(5), t.field);
-    let mut x = body.min.x + 8.0;
-    if let VariableValue::Color(c) = val {
-        let sw = Rect::from_center_size(pos2(body.min.x + 13.0, body.center().y), vec2(14.0, 14.0));
-        widgets::paint_swatch(ui.painter(), sw, &figcraft_color::Paint::solid(*c));
-        x = sw.max.x + 8.0;
-        alpha_text(ui, c, body);
-    }
+    let swatch = match val {
+        VariableValue::Color(c) => Some(*c),
+        _ => None,
+    };
     let text = match val {
         VariableValue::Boolean(b) => (if *b { tr("True") } else { tr("False") }).to_string(),
         other => other.display(),
     };
-    let text_r = Rect::from_min_max(pos2(x, body.min.y), pos2(body.max.x - 44.0, body.max.y));
+    read_only_cell(ui, body, swatch, text, true);
+}
+
+/// A cell that only shows: the colour's swatch (and its alpha at the right end when `alpha`), then
+/// `text`.
+fn read_only_cell(ui: &Ui, body: Rect, swatch: Option<figcraft_color::Color>, text: String, alpha: bool) {
+    let t = Tokens::get(ui.ctx());
+    ui.painter().rect_filled(body, CornerRadius::same(5), t.field);
+    let mut x = body.min.x + 8.0;
+    if let Some(c) = swatch {
+        let sw = Rect::from_center_size(pos2(body.min.x + 13.0, body.center().y), vec2(14.0, 14.0));
+        widgets::paint_swatch(ui.painter(), sw, &figcraft_color::Paint::solid(c));
+        x = sw.max.x + 8.0;
+        if alpha {
+            alpha_text(ui, &c, body);
+        }
+    }
+    let right = if alpha && swatch.is_some() { 44.0 } else { 4.0 };
+    let text_r = Rect::from_min_max(pos2(x, body.min.y), pos2(body.max.x - right, body.max.y));
     ui.painter().with_clip_rect(text_r).text(text_r.left_center(), Align2::LEFT_CENTER, text, regular(11.0), t.text);
 }
 
@@ -940,7 +967,7 @@ fn create_row(app: &mut FigApp, ui: &mut Ui, view: &View, coll: &Collection, st:
 /// The details of one of this file's variables: name, description, where pickers offer it and
 /// whether publishing the file as a library leaves it out.
 fn details(app: &mut FigApp, ctx: &Context, vars: &Variables, st: &mut Editor) {
-    let Some(v) = st.details.as_ref().filter(|_| st.library.is_none()).and_then(|id| vars.get(id)).cloned() else {
+    let Some(v) = st.details.as_ref().filter(|_| st.library.is_none()).and_then(|id| vars.get_by_id(id)).cloned() else {
         st.details = None;
         return;
     };

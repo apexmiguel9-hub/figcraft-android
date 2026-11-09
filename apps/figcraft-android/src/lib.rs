@@ -243,11 +243,7 @@ pub fn build(cc: &eframe::CreationContext<'_>) -> std::result::Result<Box<dyn ef
 ///   - `gl`: fuerza OpenGL ES (default, estable en PowerVR).
 ///   - `auto`: deja que wgpu elija (tiende a Vulkan en Android).
 fn wgpu_backend() -> eframe::egui_wgpu::wgpu::Backends {
-    match std::env::var("FIGCRAFT_WGPU_BACKEND")
-        .ok()
-        .as_deref()
-        .unwrap_or("vulkan")
-    {
+    match std::env::var("FIGCRAFT_WGPU_BACKEND").ok().as_deref().unwrap_or("vulkan") {
         "vulkan" => {
             log::info!("wgpu backend: Vulkan (forzado por FIGCRAFT_WGPU_BACKEND)");
             eframe::egui_wgpu::wgpu::Backends::VULKAN

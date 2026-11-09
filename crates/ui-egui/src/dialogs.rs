@@ -34,6 +34,7 @@ pub mod credits;
 pub mod import_report;
 pub mod missing_fonts;
 pub mod plugins_ui;
+pub mod sampled_color;
 pub mod updates_ui;
 pub mod variables_panel;
 
@@ -44,9 +45,15 @@ const ISSUES: &str = "https://github.com/storytold/figcraft/issues";
 
 /// What the desktop app says when its window couldn't open with `error` (no frame was drawn: the
 /// language is the one [`i18n::set`] picked from the preferences). `backend_set`: `WGPU_BACKEND`
-/// named the graphics API, so the hint is to unset it rather than to try another one.
-pub fn window_failed(error: &str, backend_set: bool) -> String {
-    let hint = if backend_set {
+/// named the graphics API, so the hint is to unset it rather than to try another one. `tried`: the
+/// graphics APIs the app already started again with, so naming another one wouldn't help.
+pub fn window_failed(error: &str, backend_set: bool, tried: Option<&str>) -> String {
+    let hint = if let Some(apis) = tried {
+        trf(
+            "FigCraft tried {apis}, then again with lower requirements on the power-saving GPU. Updating the graphics driver often helps.",
+            &[("apis", &apis)],
+        )
+    } else if backend_set {
         tr("WGPU_BACKEND is set and names the graphics API to use; unsetting it lets FigCraft choose.").to_string()
     } else if cfg!(windows) {
         // Direct3D 12 and OpenGL are both offered, but wgpu keeps the Direct3D 12 adapter it picked
@@ -220,6 +227,7 @@ pub fn show(app: &mut FigApp, ctx: &Context) {
     crate::pending_open::pending_opens(app, ctx);
     crate::import_report::show(app, ctx);
     crate::missing_fonts::show(app, ctx);
+    crate::sampled_color::show(app, ctx);
     let t = Tokens::get(ctx);
     if app.ui.about {
         let mut open = true;
@@ -249,6 +257,7 @@ pub fn show(app: &mut FigApp, ctx: &Context) {
                 (tr("Rename duplicated layers"), prefs.rename_duplicates, "pref.renameDuplicates"),
                 (tr("Show dimensions on objects"), prefs.show_dimensions, "pref.showDimensions"),
                 (tr("Use number keys for opacity"), prefs.number_keys_opacity, "pref.numberKeysOpacity"),
+                (tr("Scroll wheel zoom"), prefs.scroll_wheel_zoom, "pref.scrollWheelZoom"),
                 (tr("Reduce motion"), prefs.reduce_motion, "pref.reduceMotion"),
             ] {
                 if crate::widgets::checkbox(ui, val, label) {
@@ -281,10 +290,8 @@ pub fn show(app: &mut FigApp, ctx: &Context) {
             }
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                ui.label(tr("Your name in comments"));
-                if let Some(name) = crate::widgets::text_field(ui, egui::Id::unique("pref_user_name"), &prefs.user_name, 160.0, tr("You")) {
-                    app.run("pref.userName", json!({"name": name}));
-                }
+                ui.label(tr("Your name"));
+                crate::live::name_field(app, ui, egui::Id::unique("pref_user_name"), 160.0);
             });
             ui.add_space(8.0);
             ui.horizontal(|ui| {
@@ -316,6 +323,8 @@ pub fn show(app: &mut FigApp, ctx: &Context) {
             });
             ui.add_space(8.0);
             interface_size(app, ui, prefs.ui_scale);
+            ui.add_space(8.0);
+            crate::board_bar::grid_settings(app, ui);
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 ui.label(tr("Theme"));

@@ -125,14 +125,17 @@ pub fn tab_bar(app: &mut FigApp, ui: &mut Ui) {
         let rect = ui.max_rect();
         let buttons_w = if app.ui.title_bar == TitleBar::Custom { window_buttons(app, ui, rect) } else { 0.0 };
         let mut x = rect.min.x + if app.ui.title_bar == TitleBar::Inset { 76.0 } else { 8.0 };
-        home_tab(app, ui, &t, x, rect);
-        x += 44.0;
+        x += home_tab(app, ui, &t, x, rect);
         ui.painter().line_segment([pos2(x, rect.min.y), pos2(x, rect.max.y)], Stroke::new(1.0, t.border));
         // Undo / redo, always in reach: on Android the Edit menu is two taps away from the canvas
         // (the main menu and then Edit), which is too much for the action used all the time.
-        history_buttons(app, ui, &t, x, rect);
-        x += 64.0;
-        ui.painter().line_segment([pos2(x, rect.min.y), pos2(x, rect.max.y)], Stroke::new(1.0, t.border));
+        // En escritorio upstream no estan: moverían las pestañas y romperían la posición
+        // que los tests de escritorio dan por supuesta, así que solo en Android.
+        if cfg!(target_os = "android") {
+            history_buttons(app, ui, &t, x, rect);
+            x += 64.0;
+            ui.painter().line_segment([pos2(x, rect.min.y), pos2(x, rect.max.y)], Stroke::new(1.0, t.border));
+        }
         let document_tabs: Vec<usize> = app.session.docs.iter().enumerate().filter_map(|(i, d)| app.shows(d.uid).then_some(i)).collect();
         let now = ui.input(|input| input.time);
         let motion_id = ui.scope_id().with("tab_motion");
@@ -188,9 +191,10 @@ pub fn tab_bar(app: &mut FigApp, ui: &mut Ui) {
                 None => {}
             }
             if several {
-                resp.context_menu(|ui| {
-                    ui.set_width(200.0);
-                    if crate::menus::item(ui, tr("Open in new window"), "", true, false, &t) {
+                // The tab strip's own menu takes the theme like its overflow menus (the in-app
+                // menus stay dark, #843): its rows read on the white popup of the light theme.
+                crate::right::context_popup(&resp).show(|ui| {
+                    if crate::right::menu_item(ui, tr("Open in new window"), "") {
                         detach = Some((i, None));
                         ui.close();
                     }
@@ -343,9 +347,11 @@ fn close_tab(app: &mut FigApp, ui: &Ui, i: usize) {
     }
 }
 
-/// The Home tab at `x`.
-fn home_tab(app: &mut FigApp, ui: &mut Ui, t: &Tokens, x: f32, rect: Rect) {
-    let hr = Rect::from_min_size(pos2(x, rect.min.y), vec2(44.0, HEIGHT));
+/// The Home tab at `x`; returns its width. Without inset window buttons its divider continues the
+/// icon rail's edge below.
+fn home_tab(app: &mut FigApp, ui: &mut Ui, t: &Tokens, x: f32, rect: Rect) -> f32 {
+    let w = if app.ui.title_bar == TitleBar::Inset { 44.0 } else { rect.min.x + crate::layers::RAIL_WIDTH - x };
+    let hr = Rect::from_min_size(pos2(x, rect.min.y), vec2(w, HEIGHT));
     let hresp = ui.interact(hr, ui.scope_id().with("home"), Sense::click()).tip(tr("Home"));
     let home_active = (app.ui.home || !app.has_files()) && app.ui.present.is_none();
     crate::a11y::tab(&hresp, tr("Home"), home_active);
@@ -359,6 +365,7 @@ fn home_tab(app: &mut FigApp, ui: &mut Ui, t: &Tokens, x: f32, rect: Rect) {
         pause_present(app);
         app.ui.home = true;
     }
+    w
 }
 
 /// The theme toggle, left of the window buttons; returns its rect.

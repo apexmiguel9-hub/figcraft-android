@@ -285,6 +285,14 @@ fn draw(p: &P, icon: Icon) {
             p.line(6.0, 10.0, 13.0, 3.0);
             p.poly(&[(9.5, 2.5), (13.5, 2.5), (13.5, 6.5)], false);
         }
+        FitContents => {
+            // Four frame corners around the content: a compact mark for fitting the frame.
+            p.poly(&[(2.5, 6.0), (2.5, 2.5), (6.0, 2.5)], false);
+            p.poly(&[(10.0, 2.5), (13.5, 2.5), (13.5, 6.0)], false);
+            p.poly(&[(2.5, 10.0), (2.5, 13.5), (6.0, 13.5)], false);
+            p.poly(&[(10.0, 13.5), (13.5, 13.5), (13.5, 10.0)], false);
+            p.rect(5.5, 5.5, 10.5, 10.5, 0.0);
+        }
         Hand => {
             hand(p);
         }
@@ -325,6 +333,33 @@ fn draw(p: &P, icon: Icon) {
             p.circle(11.5, 11.5, 2.0);
             p.line(6.0, 10.0, 11.5, 2.5);
             p.line(10.0, 10.0, 4.5, 2.5);
+        }
+        AddNode => {
+            // Geometría del SVG de diseño (viewBox 24, trazo 2, extremos redondeados,
+            // nodos rellenos), portée a la cuadrícula 16×16 (× 2/3):
+            // <path d="M4 18C10 18 14 6 20 6"/><path d="M18 14v6M15 17h6"/>
+            // <circle cx="4" cy="18" r="2"/><circle cx="20" cy="6" r="2"/>
+            // <circle cx="12" cy="12" r="3"/>
+            // La cúbica se muestrea para que `p.path` la dibuje como el SVG.
+            let (p0, c1, c2, p1) = ((2.6667, 12.0), (6.6667, 12.0), (9.3333, 4.0), (13.3333, 4.0));
+            let cubic = |t: f32| {
+                let u = 1.0 - t;
+                let x = u * u * u * p0.0 + 3.0 * u * u * t * c1.0 + 3.0 * u * t * t * c2.0 + t * t * t * p1.0;
+                let y = u * u * u * p0.1 + 3.0 * u * u * t * c1.1 + 3.0 * u * t * t * c2.1 + t * t * t * p1.1;
+                (x, y)
+            };
+            let pts: Vec<(f32, f32)> = (0..=12).map(|i| cubic(i as f32 / 12.0)).collect();
+            p.path(&pts, false);
+            p.line(12.0, 9.3333, 12.0, 13.3333);
+            p.line(10.0, 11.3333, 14.0, 11.3333);
+            p.dot(2.6667, 12.0, 1.3333);
+            p.dot(13.3333, 4.0, 1.3333);
+            p.dot(8.0, 8.0, 2.0);
+        }
+        Crop => {
+            // Two right angles overlapping into a frame, each running past the other's corner.
+            p.poly(&[(4.5, 1.5), (4.5, 11.5), (14.5, 11.5)], false);
+            p.poly(&[(1.5, 4.5), (11.5, 4.5), (11.5, 14.5)], false);
         }
         Rectangle => p.rect(2.5, 2.5, 13.5, 13.5, 1.0),
         Line => p.line(2.5, 13.5, 13.5, 2.5),
@@ -505,6 +540,18 @@ fn draw(p: &P, icon: Icon) {
             p.fill(&[(3.0, 9.0), (13.0, 9.0), (13.0, 14.0)]);
         }
         CornerRadius | CornerTopLeft => p.corner(2.5, 2.5, 1.0, 1.0, 11.5, 6.0),
+        CornerSmoothing => {
+            // An original superellipse corner, with dots marking its tangent endpoints.
+            let points: Vec<_> = (0..=24)
+                .map(|i| {
+                    let a = i as f32 / 24.0 * FRAC_PI_2;
+                    (2.5 + 11.0 * (1.0 - a.cos().max(0.0).sqrt()), 2.5 + 11.0 * (1.0 - a.sin().max(0.0).sqrt()))
+                })
+                .collect();
+            p.path(&points, false);
+            p.dot(2.5, 13.5, 1.0);
+            p.dot(13.5, 2.5, 1.0);
+        }
         CornerTopRight => p.corner(13.5, 2.5, -1.0, 1.0, 11.5, 6.0),
         CornerBottomRight => p.corner(13.5, 13.5, -1.0, -1.0, 11.5, 6.0),
         CornerBottomLeft => p.corner(2.5, 13.5, 1.0, -1.0, 11.5, 6.0),

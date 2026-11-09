@@ -100,6 +100,10 @@ impl Session {
     }
 
     pub(super) fn up(&mut self, ev: &PointerEvent) -> Result<()> {
+        // Alt went down or up since the last move: the drop is a copy or a move as the release has it.
+        if matches!(&self.tool.gesture, Gesture::Move { moved: true, duplicate, .. } if *duplicate != ev.alt) {
+            self.drag(ev)?;
+        }
         let g = std::mem::take(&mut self.tool.gesture);
         self.tool.overlay.marquee = None;
         self.tool.overlay.guides.clear();
@@ -109,9 +113,10 @@ impl Session {
         self.tool.overlay.measure_box = None;
         self.tool.overlay.insert_line = None;
         self.tool.overlay.drop_cell = None;
+        self.tool.overlay.stamp_target = None;
         let drop_target = self.tool.overlay.drop_target.take();
         match g {
-            Gesture::Move { ids, moved, duplicate, start, deselect, .. } => {
+            Gesture::Move { ids, moved, duplicate, start, deselect, keep, .. } => {
                 if moved {
                     // A free move lands in the frame under the pointer (or the page) where it was
                     // dropped; layers in an auto layout frame already sit in their slot.
@@ -156,6 +161,13 @@ impl Session {
                     if let Some(d) = deselect {
                         let sel = self.selection().into_iter().filter(|x| *x != d).collect();
                         self.set_selection(sel);
+                    } else if let Some(k) = keep {
+                        // A click (not a drag) on one layer of a multi-selection selects just it.
+                        let doc = self.doc()?.clone();
+                        let sel = self.selection();
+                        if sel.len() > 1 && (sel.contains(&k) || sel.iter().any(|s| doc.is_ancestor(*s, k))) {
+                            self.set_selection(vec![k]);
+                        }
                     }
                     if deselect.is_none() && !(ev.shift || ev.cmd || duplicate) {
                         self.widget_click(start, ev.tol() * 2.0)?;
@@ -219,6 +231,7 @@ impl Session {
             Gesture::Connect { from, start } => self.connect_up(ev, from, start)?,
             Gesture::Erase { .. } => self.erase_up()?,
             Gesture::Reattach { id, from, start } => self.reattach_up(ev, id, from, start)?,
+            Gesture::Reshape { id, portion, start } => self.reshape_up(ev, id, portion, start)?,
             Gesture::TextSelect { .. } | Gesture::TextBox { .. } | Gesture::Marquee { .. } | Gesture::None => {}
             Gesture::PenDrag { .. } | Gesture::ShapeBuild { .. } | Gesture::Origin => {}
             Gesture::Vector(_) => self.commit_interaction()?,

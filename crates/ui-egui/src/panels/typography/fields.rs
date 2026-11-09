@@ -3,9 +3,9 @@ use super::glyphs::{LeadGlyph, caption, feature_row, text_seg};
 use super::picker::{font_picker, remember_family};
 use super::spacing::{SpacingField, commit_spacing, parse_letter_spacing, parse_line_height, spacing_field, spacing_input};
 use super::{
-    Arc, DecorationLength, Document, FEATURES, FIELD_H, FieldEdit, FigApp, Icon, Id, Lead, LeadingTrim, ListStyle, MIXED, NodeId, PAD, SIZES, Sense,
-    TABS, TextAlignH, TextAlignV, TextAutoResize, TextCase, TextData, TextDecoration, TextStyle, Tokens, Ui, Value, VariableType, common, field_row,
-    icons, json, live, menu_item, menu_popup, regular, row, semibold, text_style_params, tr, tr_noop, trf, trim_num, uniform, vec2, widgets,
+    Arc, DecorationLength, Document, FEATURES, FIELD_H, FieldEdit, FigApp, Icon, Id, Lead, LeadingTrim, ListStyle, MIXED, NodeId, SIZES, Sense, TABS,
+    TextAlignH, TextAlignV, TextAutoResize, TextCase, TextData, TextDecoration, TextStyle, Tokens, Ui, Value, VariableType, common, field_row, icons,
+    json, live, menu_item, menu_popup, regular, row, semibold, text_style_params, tr, tr_noop, trf, trim_num, uniform, vec2, widgets,
 };
 
 /// The font rows: family, style and size, line height and letter spacing.
@@ -23,21 +23,7 @@ pub(super) fn font_rows(
     // Font family.
     let family = uniform(styles, |s| s.font_family.clone());
     let fstyle = uniform(styles, |s| s.font_style.clone());
-    row(ui, 32.0, |ui| {
-        let w = ui.available_width();
-        let resp = font_dropdown(app, ui, ids, "fontFamily", family.as_deref(), w, editing);
-        let before_search = |ui: &mut Ui| !editing && apply_variable_item(ui, ids, "fontFamily", &resp);
-        if let Some(pick) = font_picker(ui, &resp, family.as_deref(), w.max(240.0), before_search) {
-            if let Some(f) = pick.picked {
-                remember_family(ui.ctx(), &f);
-                apply_style(app, "fontFamily", json!(f));
-            } else if let Some(h) = pick.hovered.or(pick.highlighted) {
-                // The canvas shows the hovered family (or the one the arrow keys are on);
-                // closing without picking ends the preview.
-                app.preview_text(ui.ctx(), "text.style", text_style_params(ids, range, json!({"fontFamily": h})));
-            }
-        }
-    });
+    row(ui, 32.0, |ui| family_row(app, ui, ids, family.as_deref(), editing, apply_style));
 
     // Installing a font where fonts are chosen, not only in the Missing fonts window.
     if app.fonts_dir().is_some() {
@@ -49,7 +35,8 @@ pub(super) fn font_rows(
     }
 
     // Style + size.
-    let half = (ui.available_width() - PAD * 2.0 - 8.0) / 2.0;
+    // One of the two field columns of the section's grid.
+    let half = widgets::col_width(ui.available_width());
     row(ui, 32.0, |ui| {
         let resp = font_dropdown(app, ui, ids, "fontStyle", fstyle.as_deref(), half, editing);
         let fam = family.clone();
@@ -84,9 +71,9 @@ pub(super) fn font_rows(
         ui.spacing_mut().item_spacing.x = 0.0;
         // The whole layer's size can follow a variable; a selected range just takes a value.
         let e = if editing {
-            widgets::number_field(ui, Id::unique("ty_size"), Lead::None, size, "", half - 20.0, 1.0)
+            widgets::number_field(ui, Id::unique("ty_size"), Lead::None, size, "", ui.available_width() - 20.0, 1.0)
         } else {
-            crate::variable_ui::number_field(app, ui, ids, "fontSize", Id::unique("ty_size"), Lead::None, size, "", half - 20.0)
+            crate::variable_ui::number_field(app, ui, ids, "fontSize", Id::unique("ty_size"), Lead::None, size, "", ui.available_width() - 20.0)
         };
         match e {
             Some(FieldEdit::Set(v)) => apply_style(app, "fontSize", json!(v.clamp(1.0, 5000.0))),
@@ -141,7 +128,8 @@ pub(super) fn paragraph_rows(
     styles: &[TextStyle],
     apply_style: &dyn Fn(&mut FigApp, &str, Value),
 ) {
-    let half = (ui.available_width() - PAD * 2.0 - 8.0) / 2.0;
+    // One of the two field columns of the section's grid.
+    let half = widgets::col_width(ui.available_width());
     // Paragraph spacing + resizing.
     let ps = common(doc, ids, |n| n.kind.text().map(|t| t.paragraph_spacing.to_bits())).flatten().map(f64::from_bits);
     let resize = common(doc, ids, |n| n.kind.text().map(|t| t.auto_resize)).flatten();
@@ -240,144 +228,52 @@ fn apply_variable_item(ui: &mut Ui, ids: &[NodeId], field: &str, anchor: &egui::
     picked
 }
 
+/// The font family field and its searchable menu (hovering a family previews it on the canvas).
+fn family_row(app: &mut FigApp, ui: &mut Ui, ids: &[NodeId], family: Option<&str>, editing: bool, apply_style: &dyn Fn(&mut FigApp, &str, Value)) {
+    let range = figcraft_engine::textedit::selected_range(&app.session);
+    let w = ui.available_width();
+    let resp = font_dropdown(app, ui, ids, "fontFamily", family, w, editing);
+    let offer = app.services.can_ask_for_local_fonts();
+    let mut ask = false;
+    let before_search = |ui: &mut Ui| {
+        if !editing && apply_variable_item(ui, ids, "fontFamily", &resp) {
+            return true;
+        }
+        ask = offer && local_fonts_item(ui);
+        ask
+    };
+    let pick = font_picker(ui, &resp, family, w.max(240.0), before_search);
+    if ask {
+        app.services.ask_for_local_fonts();
+    }
+    let Some(pick) = pick else { return };
+    if let Some(f) = pick.picked {
+        remember_family(ui.ctx(), &f);
+        apply_style(app, "fontFamily", json!(f));
+    } else if let Some(h) = pick.hovered.or(pick.highlighted) {
+        // The canvas shows the hovered family (or the one the arrow keys are on); closing without
+        // picking ends the preview.
+        app.preview_text(ui.ctx(), "text.style", text_style_params(ids, range, json!({"fontFamily": h})));
+    }
+}
+
+/// "Use fonts installed on this computer…" above the font search (where the browser can list
+/// them): true when clicked (the menu closes).
+fn local_fonts_item(ui: &mut Ui) -> bool {
+    let picked = menu_item(ui, tr("Use fonts installed on this computer…"), "");
+    if picked {
+        ui.close();
+    } else {
+        ui.separator();
+    }
+    picked
+}
+
 /// The variable font the shown styles use (one family, one variable face), if any.
 fn variable_face(styles: &[TextStyle]) -> Option<Arc<figcraft_text::Face>> {
     let family = uniform(styles, |s| s.font_family.clone())?;
     let face = figcraft_text::find_face(&family, &styles.first()?.font_style)?;
     (face.is_variable() && face.family.eq_ignore_ascii_case(&family)).then_some(face)
-}
-
-/// The Basics tab of the Type settings popover: decoration, case, list, indent and truncation.
-fn type_settings_basics(
-    app: &mut FigApp,
-    ui: &mut Ui,
-    doc: &Document,
-    ids: &[NodeId],
-    styles: &[TextStyle],
-    apply_style: &dyn Fn(&mut FigApp, &str, Value),
-) {
-    let w = ui.available_width();
-    let deco = uniform(styles, |s| s.decoration);
-    caption(ui, tr("Decoration"));
-    let active = deco.map(|d| match d {
-        TextDecoration::None => 0,
-        TextDecoration::Underline => 1,
-        TextDecoration::Strikethrough => 2,
-    });
-    let items = [("—", tr_noop("None")), ("U", tr_noop("Underline")), ("S", tr_noop("Strikethrough"))];
-    if let Some(i) = text_seg(ui, "deco", &items, active, w) {
-        apply_style(app, "textDecoration", json!((["none", "underline", "strikethrough"].get(i).copied().unwrap_or("none"))));
-    }
-    if let Some(d @ (TextDecoration::Underline | TextDecoration::Strikethrough)) = deco {
-        decoration_details(app, ui, styles, apply_style, d == TextDecoration::Underline, w);
-    }
-    caption(ui, tr("Letter case"));
-    let case = uniform(styles, |s| s.case);
-    let active = case.map(|c| match c {
-        TextCase::Original => 0,
-        TextCase::Upper => 1,
-        TextCase::Lower => 2,
-        TextCase::Title => 3,
-        TextCase::SmallCaps => 4,
-    });
-    let items = [
-        ("—", tr_noop("As typed")),
-        ("AG", tr_noop("Uppercase")),
-        ("ag", tr_noop("Lowercase")),
-        ("Ag", tr_noop("Title case")),
-        ("Aɢ", tr_noop("Small caps")),
-    ];
-    if let Some(i) = text_seg(ui, "case", &items, active, w) {
-        apply_style(app, "textCase", json!((["original", "upper", "lower", "title", "smallCaps"].get(i).copied().unwrap_or("original"))));
-    }
-    caption(ui, tr("List style"));
-    // While editing: the selected paragraphs' list.
-    let range = figcraft_engine::textedit::selected_range(&app.session);
-    let list = common(doc, ids, |n| {
-        n.kind.text().and_then(|t| {
-            let (a, b) = range.filter(|r| r.0 == n.id).map_or((0, t.char_count()), |(_, a, b)| (a, b));
-            t.common_para_list(a, b).map(|p| p.list)
-        })
-    })
-    .flatten();
-    let active = list.map(|l| match l {
-        ListStyle::None => 0,
-        ListStyle::Bulleted => 1,
-        ListStyle::Numbered => 2,
-    });
-    let items = [("—", tr_noop("No list")), ("•", tr_noop("Bulleted list")), ("1.", tr_noop("Numbered list"))];
-    if let Some(i) = text_seg(ui, "list", &items, active, w) {
-        app.run("text.listStyle", json!({"ids": ids, "style": (["none", "bulleted", "numbered"].get(i).copied().unwrap_or("none"))}));
-    }
-    ui.add_space(6.0);
-    let spacing = common(doc, ids, |n| n.kind.text().map(|t| t.list_spacing.to_bits())).flatten().map(f64::from_bits);
-    field_row(ui, tr("List spacing"), |ui, fw| {
-        if let Some(FieldEdit::Set(v) | FieldEdit::Scrub(v, true)) =
-            widgets::number_field(ui, Id::unique("ty_list_spacing"), Lead::None, spacing, "", fw, 1.0)
-        {
-            app.set_props(ids, json!({"listSpacing": v.clamp(0.0, 10_000.0)}));
-        }
-    });
-    ui.add_space(4.0);
-    let indent = common(doc, ids, |n| n.kind.text().map(|t| t.paragraph_indent.to_bits())).flatten().map(f64::from_bits);
-    // Indent applies to start-aligned text only; elsewhere the field stays visible but off.
-    let start_aligned = common(doc, ids, |n| n.kind.text().map(|t| t.align_h != TextAlignH::Center && t.align_h != TextAlignH::Justified)).flatten();
-    ui.add_enabled_ui(start_aligned != Some(false), |ui| {
-        let field =
-            field_row(ui, tr("Paragraph indent"), |ui, fw| widgets::number_field(ui, Id::unique("ty_indent"), Lead::None, indent, "", fw, 1.0));
-        if let Some(FieldEdit::Set(v) | FieldEdit::Scrub(v, true)) = field {
-            app.set_props(ids, json!({"paragraphIndent": v.clamp(0.0, 10_000.0)}));
-        }
-    })
-    .response
-    .on_disabled_hover_text(tr("Paragraph indent applies to left-aligned text"));
-    ui.add_space(4.0);
-    for (key, label) in [("hangingPunctuation", tr("Hanging punctuation")), ("hangingList", tr("Hanging list"))] {
-        let all_on = ids.iter().all(|i| {
-            doc.node(*i).and_then(|n| n.kind.text()).is_some_and(|t| if key == "hangingList" { t.hanging_list } else { t.hanging_punctuation })
-        });
-        if widgets::checkbox(ui, all_on, label) {
-            app.set_props(ids, json!({ key: !all_on }));
-        }
-    }
-    caption(ui, tr("Vertical trim"));
-    let trim = common(doc, ids, |n| n.kind.text().map(|t| usize::from(t.leading_trim == LeadingTrim::CapHeight))).flatten();
-    let items = [(tr("Standard"), tr_noop("Standard")), ("Ag", tr_noop("Cap height to baseline"))];
-    if let Some(i) = text_seg(ui, "trim", &items, trim, w) {
-        app.set_props(ids, json!({"leadingTrim": if i == 1 { "capHeight" } else { "none" }}));
-    }
-    let resize = common(doc, ids, |n| n.kind.text().map(|t| t.auto_resize)).flatten();
-    // Auto-height text with a line limit truncates too.
-    let truncating = common(doc, ids, |n| n.kind.text().map(TextData::truncates)).flatten();
-    caption(ui, tr("Truncate text"));
-    match text_seg(
-        ui,
-        "trunc",
-        &[(tr("Off"), tr_noop("Don't truncate")), ("…", tr_noop("Truncate with an ellipsis"))],
-        truncating.map(usize::from),
-        w,
-    ) {
-        Some(1) if truncating != Some(true) => app.set_props(ids, json!({"textAutoResize": "truncate"})),
-        Some(0) if resize == Some(TextAutoResize::Height) => {
-            if truncating == Some(true) {
-                app.set_props(ids, json!({"maxLines": 0}));
-            }
-        }
-        Some(0) if resize != Some(TextAutoResize::WidthAndHeight) => app.set_props(ids, json!({"textAutoResize": "none"})),
-        _ => {}
-    }
-    // Max lines only matter while truncating; no limit shows "Auto".
-    if truncating == Some(true) {
-        let max = common(doc, ids, |n| n.kind.text().map(|t| t.max_lines)).flatten();
-        ui.add_space(4.0);
-        let shown = max.map(f64::from).filter(|m| *m > 0.0);
-        let empty = if max.is_some() { tr("Auto") } else { tr(MIXED) };
-        if let Some(FieldEdit::Set(v) | FieldEdit::Scrub(v, true)) =
-            field_row(ui, tr("Max lines"), |ui, fw| widgets::number_field_or(ui, Id::unique("ty_maxlines"), shown, empty, fw, 1.0))
-        {
-            app.run("text.maxLines", json!({"ids": ids, "lines": v.round().clamp(0.0, 10_000.0)}));
-        }
-    }
 }
 
 /// The Type settings popover: Basics (decoration, case, list, indent, truncation), Details
@@ -407,7 +303,147 @@ fn type_settings(
     ui.data_mut(|d| d.insert_temp(tab_id, tab));
     ui.add_space(4.0);
     if tab == 0 {
-        egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| type_settings_basics(app, ui, doc, ids, styles, apply_style));
+        // En Android el panel es bajo: el Basics hace scroll dentro de una altura explícita.
+        egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+            let w = ui.available_width();
+            let deco = uniform(styles, |s| s.decoration);
+            caption(ui, tr("Decoration"));
+            let active = deco.map(|d| match d {
+                TextDecoration::None => 0,
+                TextDecoration::Underline => 1,
+                TextDecoration::Strikethrough => 2,
+            });
+            let items = [("—", tr_noop("None")), ("U", tr_noop("Underline")), ("S", tr_noop("Strikethrough"))];
+            if let Some(i) = text_seg(ui, "deco", &items, active, w) {
+                apply_style(app, "textDecoration", json!((["none", "underline", "strikethrough"].get(i).copied().unwrap_or("none"))));
+            }
+            if let Some(d @ (TextDecoration::Underline | TextDecoration::Strikethrough)) = deco {
+                decoration_details(app, ui, styles, apply_style, d == TextDecoration::Underline, w);
+            }
+            caption(ui, tr("Letter case"));
+            let case = uniform(styles, |s| s.case);
+            let active = case.map(|c| match c {
+                TextCase::Original => 0,
+                TextCase::Upper => 1,
+                TextCase::Lower => 2,
+                TextCase::Title => 3,
+                TextCase::SmallCaps => 4,
+            });
+            let items = [
+                ("—", tr_noop("As typed")),
+                ("AG", tr_noop("Uppercase")),
+                ("ag", tr_noop("Lowercase")),
+                ("Ag", tr_noop("Title case")),
+                ("Aɢ", tr_noop("Small caps")),
+            ];
+            if let Some(i) = text_seg(ui, "case", &items, active, w) {
+                apply_style(app, "textCase", json!((["original", "upper", "lower", "title", "smallCaps"].get(i).copied().unwrap_or("original"))));
+            }
+            caption(ui, tr("List style"));
+            // While editing: the selected paragraphs' list.
+            let range = figcraft_engine::textedit::selected_range(&app.session);
+            let list = common(doc, ids, |n| {
+                n.kind.text().and_then(|t| {
+                    let (a, b) = range.filter(|r| r.0 == n.id).map_or((0, t.char_count()), |(_, a, b)| (a, b));
+                    t.common_para_list(a, b).map(|p| p.list)
+                })
+            })
+            .flatten();
+            let active = list.map(|l| match l {
+                ListStyle::None => 0,
+                ListStyle::Bulleted => 1,
+                ListStyle::Numbered => 2,
+            });
+            let items = [("—", tr_noop("No list")), ("•", tr_noop("Bulleted list")), ("1.", tr_noop("Numbered list"))];
+            if let Some(i) = text_seg(ui, "list", &items, active, w) {
+                app.run("text.listStyle", json!({"ids": ids, "style": (["none", "bulleted", "numbered"].get(i).copied().unwrap_or("none"))}));
+            }
+            ui.add_space(6.0);
+            let spacing = common(doc, ids, |n| n.kind.text().map(|t| t.list_spacing.to_bits())).flatten().map(f64::from_bits);
+            field_row(ui, tr("List spacing"), |ui, fw| {
+                if let Some(FieldEdit::Set(v) | FieldEdit::Scrub(v, true)) =
+                    widgets::number_field(ui, Id::unique("ty_list_spacing"), Lead::None, spacing, "", fw, 1.0)
+                {
+                    app.set_props(ids, json!({"listSpacing": v.clamp(0.0, 10_000.0)}));
+                }
+            });
+            ui.add_space(4.0);
+            let indent = common(doc, ids, |n| n.kind.text().map(|t| t.paragraph_indent.to_bits())).flatten().map(f64::from_bits);
+            // Indent applies to start-aligned text only; elsewhere the field stays visible but off.
+            let start_aligned =
+                common(doc, ids, |n| n.kind.text().map(|t| t.align_h != TextAlignH::Center && t.align_h != TextAlignH::Justified)).flatten();
+            ui.add_enabled_ui(start_aligned != Some(false), |ui| {
+                let field = field_row(ui, tr("Paragraph indent"), |ui, fw| {
+                    widgets::number_field(ui, Id::unique("ty_indent"), Lead::None, indent, "", fw, 1.0)
+                });
+                if let Some(FieldEdit::Set(v) | FieldEdit::Scrub(v, true)) = field {
+                    app.set_props(ids, json!({"paragraphIndent": v.clamp(0.0, 10_000.0)}));
+                }
+            })
+            .response
+            .on_disabled_hover_text(tr("Paragraph indent applies to left-aligned text"));
+            ui.add_space(4.0);
+            for (key, label) in [("hangingPunctuation", tr("Hanging punctuation")), ("hangingList", tr("Hanging list"))] {
+                let all_on = ids.iter().all(|i| {
+                    doc.node(*i)
+                        .and_then(|n| n.kind.text())
+                        .is_some_and(|t| if key == "hangingList" { t.hanging_list } else { t.hanging_punctuation })
+                });
+                if widgets::checkbox(ui, all_on, label) {
+                    app.set_props(ids, json!({ key: !all_on }));
+                }
+            }
+            caption(ui, tr("Vertical trim"));
+            let trim = common(doc, ids, |n| n.kind.text().map(|t| usize::from(t.leading_trim == LeadingTrim::CapHeight))).flatten();
+            let items = [(tr("Standard"), tr_noop("Standard")), ("Ag", tr_noop("Cap height to baseline"))];
+            if let Some(i) = text_seg(ui, "trim", &items, trim, w) {
+                app.set_props(ids, json!({"leadingTrim": if i == 1 { "capHeight" } else { "none" }}));
+            }
+            // Where lines break when the text wraps (Explore text properties).
+            caption(ui, tr("Wrap style"));
+            let wrap = common(doc, ids, |n| n.kind.text().map(|t| t.wrap_style as usize)).flatten();
+            let items = [
+                (tr("Auto"), tr_noop("Auto: as many words as fit on each line")),
+                (tr("Balance"), tr_noop("Balance: every line close to the same length")),
+                (tr("Pretty"), tr_noop("Pretty: full lines, no one word alone on the last")),
+            ];
+            if let Some(i) = text_seg(ui, "wrap", &items, wrap, w) {
+                let style = ["auto", "balance", "pretty"].get(i).copied().unwrap_or("auto");
+                app.set_props(ids, json!({"wrapStyle": style}));
+            }
+            let resize = common(doc, ids, |n| n.kind.text().map(|t| t.auto_resize)).flatten();
+            // Auto-height text with a line limit truncates too.
+            let truncating = common(doc, ids, |n| n.kind.text().map(TextData::truncates)).flatten();
+            caption(ui, tr("Truncate text"));
+            match text_seg(
+                ui,
+                "trunc",
+                &[(tr("Off"), tr_noop("Don't truncate")), ("…", tr_noop("Truncate with an ellipsis"))],
+                truncating.map(usize::from),
+                w,
+            ) {
+                Some(1) if truncating != Some(true) => app.set_props(ids, json!({"textAutoResize": "truncate"})),
+                Some(0) if resize == Some(TextAutoResize::Height) => {
+                    if truncating == Some(true) {
+                        app.set_props(ids, json!({"maxLines": 0}));
+                    }
+                }
+                Some(0) if resize != Some(TextAutoResize::WidthAndHeight) => app.set_props(ids, json!({"textAutoResize": "none"})),
+                _ => {}
+            }
+            // Max lines only matter while truncating; no limit shows "Auto".
+            if truncating == Some(true) {
+                let max = common(doc, ids, |n| n.kind.text().map(|t| t.max_lines)).flatten();
+                ui.add_space(4.0);
+                let shown = max.map(f64::from).filter(|m| *m > 0.0);
+                let empty = if max.is_some() { tr("Auto") } else { tr(MIXED) };
+                if let Some(FieldEdit::Set(v) | FieldEdit::Scrub(v, true)) =
+                    field_row(ui, tr("Max lines"), |ui, fw| widgets::number_field_or(ui, Id::unique("ty_maxlines"), shown, empty, fw, 1.0))
+                {
+                    app.run("text.maxLines", json!({"ids": ids, "lines": v.round().clamp(0.0, 10_000.0)}));
+                }
+            }
+        });
     } else if let (2, Some(face)) = (tab, &vf) {
         variable_axes(app, ui, ids, styles, face);
     } else {

@@ -18,6 +18,13 @@ pub(super) fn detach(s: &mut Session, p: &Value) -> Result<Value> {
         if inside_instance(doc, i) {
             return Err(EngineError::Disabled(cmd.into(), "a nested instance can't be detached on its own: detach the outer instance first".into()));
         }
+        // A library component's instance counts as detached, for the library's analytics.
+        if let NodeKind::Instance { component, .. } = doc.get(i)?.kind
+            && let Some(root) = crate::library::asset_root(doc, component)
+            && let Some((library, key)) = doc.libraries.components.iter().find(|r| r.root == root).map(|r| (r.library.clone(), r.key))
+        {
+            doc.libraries_mut().count_detach(&library, key);
+        }
         // Own layers lose their link (slot content stays as it is); nested instances stay
         // instances of their own mains.
         let nested = unlink_layers(doc, i, Some(i));
@@ -331,7 +338,7 @@ pub(super) fn restore_main(s: &mut Session, p: &Value) -> Result<Value> {
         let Some(mut n) = doc.node(*d).cloned() else { continue };
         if *d == i {
             let defs = restore_prop_defs(doc, &props);
-            n.kind = NodeKind::Component { description: String::new(), props: defs };
+            n.kind = NodeKind::Component { description: String::new(), props: defs, prop_order: Vec::new() };
             n.source = None;
             n.overrides.clear();
             n.prop_refs.clear();
@@ -376,8 +383,8 @@ pub(super) fn swap(s: &mut Session, p: &Value) -> Result<Value> {
 /// Make instance `i` show main component `c`, keeping the values of properties with the same names
 /// (the layers' overrides follow by name when the instance is rebuilt).
 pub(crate) fn swap_instance(doc: &mut Document, i: NodeId, c: NodeId) -> std::result::Result<(), String> {
-    if doc.is_ancestor(c, i) {
-        return Err("an instance can't show the component it is inside".into());
+    if crate::components::would_contain_itself(doc, c, i) {
+        return Err(crate::components::contains_itself_error(doc, c));
     }
     let defaults = doc.node(c).map(default_props).unwrap_or_default();
     match doc.get_mut(i).map(|n| &mut n.kind) {

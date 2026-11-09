@@ -1,10 +1,13 @@
+use std::sync::Arc;
+
 use super::builder::{builder_overlay, hatched, region_hatch};
-use super::outline::{TextOnScreen, draw_outline, node_quad, outline_colour, quad, slot_badges, stroke, swap_highlight};
+use super::outline::{TextOnScreen, draw_outline, node_quad, outline_colour, outline_shapes, quad, slot_badges, stroke, swap_highlight};
 use super::rulers::{boards, fmt, rulers};
 use super::{
     Align2, COMPONENT, Color32, CornerRadius, Document, FigApp, NodeId, NodeKind, Point, Pos2, Rect, Shape, Stroke, StrokeKind, Tokens, ToolId,
     doc_c32, pos2, selection_box, selection_frame, semibold, tr, vec2,
 };
+use figcraft_doc::{HConstraint, VConstraint};
 
 /// Everything drawn over the rendered page; returns the frame labels drawn (frame, corners on the
 /// page) for the engine to hit-test.
@@ -54,7 +57,12 @@ pub(super) fn overlays(app: &FigApp, painter: &egui::Painter, t: &Tokens) -> Vec
     }
     // Inside a boolean group (an operand selected or in vector edit mode): every operand's outline,
     // so the shapes making the live result stay visible while one of them changes.
-    let operands = figcraft_engine::booleans::outlined_operands(&doc, &sel, ds.vector_edit.as_ref().map(|ve| ve.id));
+    let editing = ds.vector_edit.as_ref().map(|ve| ve.id);
+    let unmoved = crate::selection_cache::unmoved(ds, &doc);
+    let key: Vec<u64> = editing.map(|e| e.0).into_iter().collect();
+    let operands = crate::selection_cache::cached(painter.ctx(), "operands", &unmoved, &sel, &key, || {
+        figcraft_engine::booleans::outlined_operands(&unmoved, &sel, editing)
+    });
     for id in operands.iter().filter(|o| !sel.contains(o)) {
         draw_outline(app, painter, &doc, *id, stroke(outline_colour(&doc, *id, accent(painter)).gamma_multiply(0.6), 1.0));
     }
@@ -69,7 +77,12 @@ pub(super) fn overlays(app: &FigApp, painter: &egui::Painter, t: &Tokens) -> Vec
     {
         quad(painter, q, stroke(if figcraft_engine::components::is_slot(&doc, d) { COMPONENT } else { accent(painter) }, 1.0));
     }
+    // Boards: the object a stamp would stick to, outlined as a hovered layer is.
+    if let Some(s) = ov.stamp_target {
+        draw_outline(app, painter, &doc, s, stroke(outline_colour(&doc, s, accent(painter)), 1.5));
+    }
     slot_badges(app, painter, &doc, &sel, ov.drop_target);
+    attach_points(app, painter, &ov.attach);
     if let Some(t) = ov.swap_target {
         swap_highlight(app, painter, &doc, t);
     }
@@ -239,24 +252,86 @@ fn text_edit_overlay(app: &FigApp, painter: &egui::Painter, t: &Tokens, doc: &Do
     painter.ctx().request_repaint_after(std::time::Duration::from_millis(500));
 }
 
+/// What the selection's overlay draws that only the document, the selection, the view and the
+/// overlay colour decide: kept for the frames that show the same ([`crate::selection_cache`]).
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct SelectionGeometry {
+    /// The outline colour: the component colour when any selected layer is in one.
+    pub(super) col: Color32,
+    /// Every selected layer's outline on screen.
+    pub(super) outlines: Arc<Vec<Shape>>,
+    /// The transform box (page space) and its width and height.
+    bbox: Option<[Point; 4]>,
+    size: Option<(f64, f64)>,
+    /// A selected layer is locked (no handles).
+    locked: bool,
+}
+
+pub(super) fn selection_geometry(app: &FigApp, painter: &egui::Painter, doc: &Arc<Document>, sel: &[NodeId]) -> SelectionGeometry {
+    let green = accent(painter);
+    let mapping = [app.to_screen(0.0, 0.0), app.to_screen(1.0, 1.0)].map(crate::selection_cache::bits);
+    let extra = [mapping[0][0], mapping[0][1], mapping[1][0], mapping[1][1], u64::from(u32::from_le_bytes(green.to_array()))];
+    crate::selection_cache::cached(painter.ctx(), "selection overlay", doc, sel, &extra, || {
+        let col = if sel.iter().any(|i| outline_colour(doc, *i, green) == COMPONENT) { COMPONENT } else { green };
+        let outlines = sel.iter().flat_map(|id| outline_shapes(app, doc, *id, stroke(col, 1.0))).collect();
+        SelectionGeometry {
+            col,
+            outlines: Arc::new(outlines),
+            bbox: selection_box(doc, sel),
+            size: selection_frame(doc, sel).map(|(_, w, h)| (w, h)),
+            locked: sel.iter().any(|i| figcraft_engine::tools::locked_in(doc, *i)),
+        }
+    })
+}
+
+/// [`selection_geometry`] as the canvas shows it now, and how far to shift it (on screen, on the
+/// page): while a gesture has only moved the selection, the geometry where it started (kept for
+/// the whole gesture) shifted by the move ([`crate::selection_cache::moved`]).
+fn shown_geometry(
+    app: &FigApp,
+    painter: &egui::Painter,
+    ds: &figcraft_engine::DocState,
+    doc: &Arc<Document>,
+    sel: &[NodeId],
+) -> (SelectionGeometry, egui::Vec2, figcraft_geom::Vec2) {
+    match crate::selection_cache::moved(ds) {
+        Some((base, (dx, dy))) => {
+            let on_screen = app.to_screen(dx, dy) - app.to_screen(0.0, 0.0);
+            (selection_geometry(app, painter, &base, sel), on_screen, figcraft_geom::Vec2::new(dx, dy))
+        }
+        None => (selection_geometry(app, painter, doc, sel), egui::Vec2::ZERO, figcraft_geom::Vec2::ZERO),
+    }
+}
+
 /// The selection's outlines, transform box and handles; returns the size label's box.
 fn selection_overlay(
     app: &FigApp,
     painter: &egui::Painter,
     ds: &figcraft_engine::DocState,
-    doc: &Document,
+    doc: &Arc<Document>,
     sel: &[NodeId],
     zoom: f64,
 ) -> Option<Rect> {
     let mut size_label = None;
-    let col = if sel.iter().any(|i| outline_colour(doc, *i, accent(painter)) == COMPONENT) { COMPONENT } else { accent(painter) };
-    for id in sel {
-        draw_outline(app, painter, doc, *id, stroke(col, 1.0));
+    let (geo, shift, page_shift) = shown_geometry(app, painter, ds, doc, sel);
+    let col = geo.col;
+    if shift == egui::Vec2::ZERO {
+        painter.extend(geo.outlines.iter().cloned());
+    } else {
+        painter.extend(geo.outlines.iter().cloned().map(|mut s| {
+            s.translate(shift);
+            s
+        }));
+    }
+    // Constraint guides belong to the normal selection overlay: not while the Shape Builder
+    // reshapes by regions, nor while measuring to another layer (Alt), whose lines take over.
+    if app.session.tool.tool != ToolId::ShapeBuilder && app.session.tool.overlay.measure_box.is_none() {
+        constraint_lines(app, painter, ds, doc, sel);
     }
     // The shape builder reshapes by regions: no transform box.
     if app.session.tool.tool != ToolId::ShapeBuilder
-        && let Some(b) = selection_box(doc, sel)
-        && let Some((_, w, h)) = selection_frame(doc, sel)
+        && let Some(b) = geo.bbox.map(|b| b.map(|p| p + page_shift))
+        && let Some((w, h)) = geo.size
     {
         let is_line = sel.len() == 1 && matches!(sel.first().and_then(|i| doc.node(*i)).map(|n| &n.kind), Some(NodeKind::Line));
         // A selected connector's handles are its two ends (drag one onto another object).
@@ -273,16 +348,17 @@ fn selection_overlay(
         let measuring = app.session.tool.overlay.measure_box.is_some();
         // Locked layers (selected in the layers panel) can't be resized, nor anything in Dev
         // Mode: no handles either.
-        let handles =
-            if measuring || app.session.tool.dev_mode || connector.is_some() || sel.iter().any(|i| figcraft_engine::tools::locked_in(doc, *i)) {
-                0
-            } else if is_line {
-                2
-            } else if tiny {
-                0
-            } else {
-                4
-            };
+        // Crop mode draws its own marks on the box instead (`handles::crop_marks`).
+        let cropping = app.ui.crop.is_some();
+        let handles = if cropping || measuring || app.session.tool.dev_mode || connector.is_some() || geo.locked {
+            0
+        } else if is_line {
+            2
+        } else if tiny {
+            0
+        } else {
+            4
+        };
         size_label = transform_box(
             app,
             painter,
@@ -292,12 +368,19 @@ fn selection_overlay(
             handles,
             (!measuring && connector.is_none()).then_some(label),
         );
+        // Its path handles, one for each portion that can be dragged.
+        let paths = if app.session.tool.dev_mode { Vec::new() } else { figcraft_engine::board::selected_connector_handles(doc, sel, zoom) };
+        for (_, at) in paths {
+            let c = app.to_screen(at.x, at.y);
+            painter.circle_filled(c, 3.5, col);
+            painter.circle_stroke(c, 3.5, stroke(Color32::WHITE, 1.0));
+        }
         for end in connector.into_iter().flatten().filter(|_| !app.session.tool.dev_mode) {
             let c = app.to_screen(end.x, end.y);
             painter.circle_filled(c, 5.0, Color32::WHITE);
             painter.circle_stroke(c, 5.0, stroke(col, 1.5));
         }
-        if !measuring {
+        if !measuring && !cropping {
             arc_overlay(app, painter, col);
             shape_overlay(app, painter, col);
         }
@@ -326,6 +409,18 @@ fn selection_overlay(
         }
     }
     size_label
+}
+
+/// The connector tool's attach points on the object under the pointer; the one its end is at is a
+/// larger see-through ring, so the end's cap shows inside it.
+fn attach_points(app: &FigApp, painter: &egui::Painter, points: &[([f64; 2], bool)]) {
+    let col = accent(painter);
+    for ([x, y], on) in points {
+        let c = app.to_screen(*x, *y);
+        let (r, fill) = if *on { (7.0, col.gamma_multiply(0.25)) } else { (4.0, Color32::WHITE) };
+        painter.circle_filled(c, r, fill);
+        painter.circle_stroke(c, r, stroke(col, 1.5));
+    }
 }
 
 fn pen_overlay(app: &FigApp, painter: &egui::Painter, zoom: f64) {
@@ -364,7 +459,8 @@ fn pen_overlay(app: &FigApp, painter: &egui::Painter, zoom: f64) {
             }
         }
     } else if let Some([x0, y0, x1, y1]) = ov.rubber {
-        // A connector being drawn, or one of its ends dragged: from where it starts to the pointer.
+        // A selected connector's end being dragged: from its other end to the pointer (one being
+        // drawn shows itself, previewed in the document).
         painter.line_segment([app.to_screen(x0, y0), app.to_screen(x1, y1)], stroke(accent(painter), 1.5));
     }
 }
@@ -412,6 +508,85 @@ fn transform_box(
         return Some(pill(painter, pos2(cx, bottom + 9.0), Align2::CENTER_TOP, label, col));
     }
     None
+}
+
+/// Blue dashed guides showing how a selected layer is pinned within its parent frame, and a short
+/// solid mark at the layer's centre when it is centred on an axis. A left constraint draws a
+/// horizontal line from the layer's left-edge midpoint to the frame's left edge; right, top and
+/// bottom likewise (the line is perpendicular to the edge it leaves). A centre constraint draws a
+/// short bar through the layer's middle — a horizontal one, a vertical one, or both (a cross when
+/// the layer is centred on both axes). Auto-layout frames ignore constraints, so no guides are
+/// drawn there, except for a layer that ignores the auto layout (absolute position).
+fn constraint_lines(app: &FigApp, painter: &egui::Painter, ds: &figcraft_engine::DocState, doc: &Arc<Document>, sel: &[NodeId]) {
+    // Constraints bind a layer only to a frame it sits inside: one without auto layout, or one
+    // whose auto layout the layer ignores (absolute position). A move changes neither.
+    let unmoved = crate::selection_cache::unmoved(ds, doc);
+    let bound = crate::selection_cache::cached(painter.ctx(), "constrained", &unmoved, sel, &[], || -> Vec<NodeId> {
+        let binds = |n: &figcraft_doc::Node, p: &figcraft_doc::Node| p.kind.is_frame_like() && (p.layout.is_none() || n.child_layout.absolute);
+        sel.iter()
+            .copied()
+            .filter(|i| unmoved.node(*i).is_some_and(|n| n.parent.and_then(|p| unmoved.node(p)).is_some_and(|p| binds(n, p))))
+            .collect()
+    });
+    let s = stroke(accent(painter), 1.0);
+    let line = |a: Pos2, b: Pos2| {
+        painter.add(Shape::dashed_line(&[a, b], s, 4.0, 3.0));
+    };
+    // A short solid bar at the layer's centre: horizontal, vertical, or both (a cross).
+    let mark = |c: Pos2, half: f32, h: bool, v: bool| {
+        if h {
+            painter.line_segment([pos2(c.x - half, c.y), pos2(c.x + half, c.y)], s);
+        }
+        if v {
+            painter.line_segment([pos2(c.x, c.y - half), pos2(c.x, c.y + half)], s);
+        }
+    };
+    for &id in &bound {
+        let Some(n) = doc.node(id) else { continue };
+        let Some(parent_id) = n.parent else { continue };
+        let Some(parent) = doc.node(parent_id) else { continue };
+        let nw = doc.world_transform(id);
+        let pw = doc.world_transform(parent_id);
+        let (nw_w, nw_h) = (n.width, n.height);
+        let (pw_w, pw_h) = (parent.width, parent.height);
+        let sp = |p: Point| app.to_screen(p.x, p.y);
+        // The layer's edge midpoints and centre in page space.
+        let n_left = sp(nw * Point::new(0.0, nw_h / 2.0));
+        let n_right = sp(nw * Point::new(nw_w, nw_h / 2.0));
+        let n_top = sp(nw * Point::new(nw_w / 2.0, 0.0));
+        let n_bottom = sp(nw * Point::new(nw_w / 2.0, nw_h));
+        let n_c = sp(nw * Point::new(nw_w / 2.0, nw_h / 2.0));
+        // The frame's edges and centre in page space (axis-aligned approximation).
+        let p_left = sp(pw * Point::new(0.0, 0.0)).x;
+        let p_right = sp(pw * Point::new(pw_w, 0.0)).x;
+        let p_top = sp(pw * Point::new(0.0, 0.0)).y;
+        let p_bottom = sp(pw * Point::new(0.0, pw_h)).y;
+        match n.constraints.horizontal {
+            HConstraint::Left => line(n_left, pos2(p_left, n_left.y)),
+            HConstraint::Right => line(n_right, pos2(p_right, n_right.y)),
+            HConstraint::LeftRight => {
+                line(n_left, pos2(p_left, n_left.y));
+                line(n_right, pos2(p_right, n_right.y));
+            }
+            HConstraint::Center | HConstraint::Scale => {}
+        }
+        match n.constraints.vertical {
+            VConstraint::Top => line(n_top, pos2(n_top.x, p_top)),
+            VConstraint::Bottom => line(n_bottom, pos2(n_bottom.x, p_bottom)),
+            VConstraint::TopBottom => {
+                line(n_top, pos2(n_top.x, p_top));
+                line(n_bottom, pos2(n_bottom.x, p_bottom));
+            }
+            VConstraint::Center | VConstraint::Scale => {}
+        }
+        // A centred axis marks the layer itself with a short bar through its middle (a cross when
+        // both axes are centred), rather than a guide reaching the frame's centre.
+        let hc = matches!(n.constraints.horizontal, HConstraint::Center);
+        let vc = matches!(n.constraints.vertical, VConstraint::Center);
+        if hc || vc {
+            mark(n_c, 8.0, hc, vc);
+        }
+    }
 }
 
 /// A canvas readout: white `text` on a `col` pill placed at `at` by `align` (its box returned).

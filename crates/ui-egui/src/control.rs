@@ -27,13 +27,15 @@
 //! - `app.quit {}`
 //!
 //! Any method takes `window` (an id from `window.list`) to run in that window, with its tabs and
-//! panels; without it, requests go to the window last in front.
+//! panels; without it, requests go to the window last in front. `engine.execute`,
+//! `document.inspect`, `node.get` and `ui.render` also take `document` (an `id` from `doc.list`,
+//! or an open file's path) to act on that file without bringing its tab to the front.
 
 use std::sync::{Arc, Mutex};
 
 use egui::Context;
 use figcraft_engine::cmd::comment::{Filter, Sort};
-use figcraft_engine::{PointerEvent, PointerKind};
+use figcraft_engine::{PointerEvent, PointerKind, Session};
 use serde_json::{Value, json};
 
 use crate::FigApp;
@@ -46,8 +48,8 @@ pub struct ControlReply {
 /// Which side has finished a control request.
 ///
 /// The transport and the UI race to settle one request: while it is `Open`, either may cancel it
-/// (the transport's timeout) or commit it (the UI's final reply). Once settled, neither side may
-/// change it.
+/// (the transport's timeout) or commit it (the UI's final reply) or, for a request the UI answers
+/// at once, start it (`Running`). Once settled or started, the transport can't cancel it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum RequestState {
     #[default]
@@ -56,6 +58,9 @@ pub enum RequestState {
     Cancelled,
     /// The UI wrote the file (if any) and queued the reply before releasing the gate.
     Replied,
+    /// The UI started a request it answers at once (an edit, an inspection); the transport can no
+    /// longer cancel it, so a timeout now means "still running, it will take effect" (#1673).
+    Running,
 }
 
 /// The gate the transport's timeout and the UI's final reply share for one request.
@@ -100,6 +105,17 @@ impl RequestGate {
         *state
     }
 
+    /// Start a request the UI answers at once, unless the transport already gave up on it: then
+    /// it must not run at all. `false` when it was cancelled (or already settled).
+    pub fn start(&self) -> bool {
+        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if *state != RequestState::Open {
+            return false;
+        }
+        *state = RequestState::Running;
+        true
+    }
+
     /// Run the final commit (file write and reply enqueue) only while the request is still open,
     /// then mark it replied before releasing the gate. `None` means the transport cancelled it or
     /// it was already committed; the closure must not have run then.
@@ -128,6 +144,13 @@ impl ControlRequest {
     /// Whether this request's gate is `Cancelled`.
     pub fn is_cancelled(&self) -> bool {
         self.state.is_cancelled()
+    }
+
+    /// Mark the request started just before the UI runs it; `false` when the transport timed out
+    /// first, and then it must not run. `ui.input` is acknowledged by a later frame, so it stays
+    /// open (cancellable) like a screenshot.
+    fn begin(&self) -> bool {
+        self.method == "ui.input" || self.state.start()
     }
 }
 
@@ -356,6 +379,12 @@ fn admit(app: &mut FigApp, r: ControlRequest, window: u64, now: f64) {
     }
     let path = params.get("path").and_then(Value::as_str).map(str::to_string);
     let (document, presentation) = app.windows.presentation(&app.session, window);
+    if let Err(e) = front_only(&app.session, Some(document), "ui.screenshot", &params) {
+        if !canceled {
+            let _ = tx.send(ControlReply { id, result: Err(e) });
+        }
+        return;
+    }
     app.capture.shots.push(ShotRequest {
         id,
         path,
@@ -511,8 +540,12 @@ pub fn background(app: &mut FigApp, ctx: &Context) {
             let _ = r.reply.send(ControlReply { id: r.id, result: Err(error) });
             continue;
         }
+        if !r.begin() {
+            continue;
+        }
         // Outside a frame, so outside the frame's guard: within the window's swap, a panic still
         // ends in recovery copies and leaves every window its own state.
+        let prefs = app.session.prefs.clone();
         let res = crate::windows::as_window(app, target, |app| {
             let mut res = Err("internal error".to_string());
             // Every control-channel gesture is fenced from the user's system clipboard.
@@ -522,6 +555,13 @@ pub fn background(app: &mut FigApp, ctx: &Context) {
             app.control_synthetic = before;
             res
         });
+        // A preference the command changed (the interface size, the theme) applies as each
+        // window's next frame begins; no frame's end-of-frame check ran here, so ask every window.
+        if app.session.prefs != prefs {
+            for id in std::iter::once(0).chain(app.windows.list.iter().map(|w| w.id)) {
+                ctx.request_repaint_of(crate::windows::viewport(id));
+            }
+        }
         let _ = r.reply.send(ControlReply { id: r.id, result: res.unwrap_or_else(|| Err(format!("no window {target}"))) });
     }
     request_paint(app, ctx);
@@ -709,6 +749,9 @@ fn route_queued(app: &mut FigApp, ctx: &Context, viewport: egui::ViewportId, now
     }
     if r.method == "ui.screenshot" {
         admit(app, r, target, now);
+        return;
+    }
+    if !r.begin() {
         return;
     }
     // Every control-channel gesture is fenced from the user's system clipboard (the flag is
@@ -961,11 +1004,24 @@ fn ui_key(app: &mut FigApp, ctx: &Context, p: &Value) -> Result<Value, String> {
                 "ArrowUp" => (0, -1),
                 _ => (0, 1),
             };
-            let (cmd, params) = if m.cmd || m.ctrl {
+            let (cmd, params) = if (m.cmd || m.ctrl) && m.alt {
+                // Rotate a degree, 15 with Shift: down and right clockwise, up and left back, about
+                // the selection's rotation origin; nothing while points are being edited.
+                if app.session.ds().is_ok_and(|d| d.vector_edit.is_some()) {
+                    return Ok(json!({}));
+                }
+                let step = if m.shift { 15.0 } else { 1.0 };
+                let origin = app.session.ds().ok().and_then(|d| d.origin_point());
+                ("transform.rotate", json!({"degrees": if dx + dy < 0 { -step } else { step }, "cx": origin.map(|o| o.x), "cy": origin.map(|o| o.y)}))
+            } else if m.cmd || m.ctrl {
                 ("transform.nudgeSize", json!({"dw": dx, "dh": dy, "big": m.shift}))
             } else {
                 ("transform.nudge", json!({"dx": dx, "dy": dy, "big": m.shift}))
             };
+            // Dev Mode only inspects, as the window's key path says.
+            if crate::menus::dev_mode_refuses(app, cmd) {
+                return Err("Dev Mode only inspects: switch to Design to edit".into());
+            }
             app.session.execute(cmd, &params).map_err(|e| e.to_string())
         }
         _ => {
@@ -1332,14 +1388,46 @@ fn ui_set_styles(app: &mut FigApp, p: &Value) -> Result<(), String> {
     Ok(())
 }
 
+/// The methods whose `document` may name a file behind the tab in front.
+const DOCUMENT_METHODS: &[&str] = &["engine.execute", "document.inspect", "node.get", "ui.render"];
+
+/// The request's `document` (an `id` from `doc.list`, or an open file's path), when it names one.
+fn document_of(p: &Value) -> Option<&Value> {
+    p.get("document").filter(|d| !d.is_null())
+}
+
+/// Run `f` with the request's `document` in front and the user's tab back afterwards, else on the
+/// tab in front (the same swap a command run in the background makes).
+fn in_document<T>(app: &mut FigApp, p: &Value, f: impl FnOnce(&mut Session) -> Result<T, String>) -> Result<T, String> {
+    let Some(target) = document_of(p) else { return f(&mut app.session) };
+    let forward = app.session.bring_forward(target).map_err(|e| e.to_string())?;
+    let r = f(&mut app.session);
+    app.session.put_back(forward);
+    r
+}
+
+/// A method that acts on the tab in front (`front`, a document uid) refuses a `document` naming
+/// another file instead of quietly acting on the wrong one.
+fn front_only(session: &Session, front: Option<u64>, method: &str, p: &Value) -> Result<(), String> {
+    let Some(target) = document_of(p) else { return Ok(()) };
+    if Some(session.document_uid(target).map_err(|e| e.to_string())?) == front {
+        return Ok(());
+    }
+    Err(format!("`{method}` acts on the tab in front: `document` can name another open file only for {}", DOCUMENT_METHODS.join(", ")))
+}
+
 /// Handle one control method (also used by tests and the headless snapshot tool).
 pub fn handle(app: &mut FigApp, ctx: &Context, method: &str, p: &Value) -> Result<Value, String> {
+    if !DOCUMENT_METHODS.contains(&method) {
+        front_only(&app.session, app.session.ds().ok().map(|d| d.uid), method, p)?;
+    }
     match method {
         "engine.execute" => {
             let cmd = p.get("command").and_then(Value::as_str).ok_or("`command` required")?;
             let params = p.get("params").cloned().unwrap_or(json!({}));
             let layers_generation = app.session.clipboard.layers_generation;
-            let r = app.session.execute(cmd, &params).map_err(|e| e.to_string());
+            let agent = p.get("agent").and_then(Value::as_str);
+            let r = in_document(app, p, |s| s.execute_as(agent, cmd, &params).map_err(|e| e.to_string()));
             app.clear_comment_draft_after_tool_set(cmd, r.is_ok());
             app.invalidate_synthetic_copy(layers_generation);
             // Programmatic calls never open dialogs.
@@ -1358,12 +1446,16 @@ pub fn handle(app: &mut FigApp, ctx: &Context, method: &str, p: &Value) -> Resul
         )),
         "document.inspect" => {
             let depth = p.get("depth").and_then(Value::as_u64).unwrap_or(8).min(64) as usize;
-            Ok(figcraft_engine::inspect::document(&app.session, depth, b(p, "allPages")))
+            let options = figcraft_engine::inspect::InspectOptions::parse(p)?;
+            in_document(app, p, |s| Ok(figcraft_engine::inspect::document_with_options(s, depth, b(p, "allPages"), &options)))
         }
         "node.get" => {
             let id = p.get("id").and_then(figcraft_engine::params::id_of).ok_or("`id` required")?;
             let depth = p.get("depth").and_then(Value::as_u64).unwrap_or(1) as usize;
-            app.session.doc().map(|d| figcraft_engine::inspect::node_json(d, id, depth)).map_err(|e| e.to_string())
+            let options = figcraft_engine::inspect::InspectOptions::parse(p)?;
+            in_document(app, p, |s| {
+                s.doc().map(|d| figcraft_engine::inspect::node_json_with_options(d, id, depth, &options)).map_err(|e| e.to_string())
+            })
         }
         "window.new" => {
             let index = p.get("index").and_then(Value::as_u64).map(|i| i as usize);
@@ -1411,7 +1503,7 @@ pub fn handle(app: &mut FigApp, ctx: &Context, method: &str, p: &Value) -> Resul
             if !ids.is_empty() {
                 params["ids"] = json!(ids);
             }
-            app.session.execute("file.export", &params).map_err(|e| e.to_string())
+            in_document(app, p, |s| s.execute("file.export", &params).map_err(|e| e.to_string()))
         }
         "app.quit" => {
             app.ui.quit = true;
@@ -1488,3 +1580,6 @@ mod roots_tests;
 
 #[cfg(test)]
 mod capture_tests;
+
+#[cfg(test)]
+mod document_tests;

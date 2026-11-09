@@ -780,6 +780,65 @@ dependencies = [
 ]
 
 [[package]]
+name = "clap"
+version = "4.6.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aa8876b300ab35ba921adea3dfd70157a46249b33f95c9084ae5709785478946"
+dependencies = [
+ "clap_builder",
+ "clap_derive",
+]
+
+[[package]]
+name = "clap_builder"
+version = "4.6.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ec0797fb7aeb1406c84efac526901f7ec3ead2124f946b494e72879d4b54704d"
+dependencies = [
+ "anstream",
+ "anstyle",
+ "clap_lex",
+ "strsim",
+]
+
+[[package]]
+name = "clap_complete"
+version = "4.5.67"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1248e420506b523e97ebd7b610656114abadbe73b04279a86768a12ce1860837"
+dependencies = [
+ "clap",
+]
+
+[[package]]
+name = "clap_derive"
+version = "4.6.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f9c751b79415d4e559e3d1fcf128e09e720eb673a06d26cf6f392d37d75b66e0"
+dependencies = [
+ "heck",
+ "proc-macro2",
+ "quote",
+ "syn 3.0.9",
+]
+
+[[package]]
+name = "clap_lex"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1c133bc6a41be0d194c306b5506d15e6feeea7b1d6604bd3f8310dfb2ca96486"
+
+[[package]]
+name = "clap_mangen"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "211d617eaa4b735c96c9e0228fcbdb5120ef623f2b8cb67ffb84c3e02dbc28a4"
+dependencies = [
+ "clap",
+ "roff",
+]
+
+[[package]]
 name = "clipboard-win"
 version = "5.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -973,19 +1032,54 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-atomic"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=e11f9d9aebea5f6b8e74643c1ea1ed172ba5f545#e11f9d9aebea5f6b8e74643c1ea1ed172ba5f545"
+dependencies = [
+ "rustix 1.1.6",
+]
+
+[[package]]
 name = "craft-docpath"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=92d392cff132eaf53e13afff77f38b5c11b73aa0#92d392cff132eaf53e13afff77f38b5c11b73aa0"
+source = "git+https://github.com/storytold/craft-libs?rev=e11f9d9aebea5f6b8e74643c1ea1ed172ba5f545#e11f9d9aebea5f6b8e74643c1ea1ed172ba5f545"
+
+[[package]]
+name = "craft-font-catalog"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=e11f9d9aebea5f6b8e74643c1ea1ed172ba5f545#e11f9d9aebea5f6b8e74643c1ea1ed172ba5f545"
+dependencies = [
+ "fontique",
+ "skrifa 0.47.0",
+ "thiserror 2.0.21",
+ "windows-registry",
+]
+
+[[package]]
+name = "craft-font-store"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=e11f9d9aebea5f6b8e74643c1ea1ed172ba5f545#e11f9d9aebea5f6b8e74643c1ea1ed172ba5f545"
+dependencies = [
+ "craft-atomic",
+ "craft-font-catalog",
+ "flate2",
+ "serde",
+ "serde_json",
+ "sha2",
+ "skrifa 0.47.0",
+ "thiserror 2.0.21",
+ "ureq",
+]
 
 [[package]]
 name = "craft-fonts-build"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=92d392cff132eaf53e13afff77f38b5c11b73aa0#92d392cff132eaf53e13afff77f38b5c11b73aa0"
+source = "git+https://github.com/storytold/craft-libs?rev=e11f9d9aebea5f6b8e74643c1ea1ed172ba5f545#e11f9d9aebea5f6b8e74643c1ea1ed172ba5f545"
 
 [[package]]
 name = "craft-i18n"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=92d392cff132eaf53e13afff77f38b5c11b73aa0#92d392cff132eaf53e13afff77f38b5c11b73aa0"
+source = "git+https://github.com/storytold/craft-libs?rev=e11f9d9aebea5f6b8e74643c1ea1ed172ba5f545#e11f9d9aebea5f6b8e74643c1ea1ed172ba5f545"
 dependencies = [
  "fixed_decimal",
  "icu_decimal",
@@ -1006,9 +1100,54 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-keymap"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=e11f9d9aebea5f6b8e74643c1ea1ed172ba5f545#e11f9d9aebea5f6b8e74643c1ea1ed172ba5f545"
+dependencies = [
+ "egui",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "craft-menu"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=e11f9d9aebea5f6b8e74643c1ea1ed172ba5f545#e11f9d9aebea5f6b8e74643c1ea1ed172ba5f545"
+dependencies = [
+ "craft-keymap",
+ "craft-quit",
+ "egui",
+ "muda",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+]
+
+[[package]]
+name = "craft-quit"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=e11f9d9aebea5f6b8e74643c1ea1ed172ba5f545#e11f9d9aebea5f6b8e74643c1ea1ed172ba5f545"
+dependencies = [
+ "dispatch2",
+ "egui",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+]
+
+[[package]]
+name = "craft-settings"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=e11f9d9aebea5f6b8e74643c1ea1ed172ba5f545#e11f9d9aebea5f6b8e74643c1ea1ed172ba5f545"
+dependencies = [
+ "craft-atomic",
+ "dirs",
+ "serde",
+ "toml_edit",
+]
+
+[[package]]
 name = "craft-ui"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=92d392cff132eaf53e13afff77f38b5c11b73aa0#92d392cff132eaf53e13afff77f38b5c11b73aa0"
+source = "git+https://github.com/storytold/craft-libs?rev=e11f9d9aebea5f6b8e74643c1ea1ed172ba5f545#e11f9d9aebea5f6b8e74643c1ea1ed172ba5f545"
 dependencies = [
  "craft-fonts-build",
  "craft-i18n",
@@ -1028,13 +1167,14 @@ dependencies = [
 [[package]]
 name = "craft-update"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=92d392cff132eaf53e13afff77f38b5c11b73aa0#92d392cff132eaf53e13afff77f38b5c11b73aa0"
+source = "git+https://github.com/storytold/craft-libs?rev=c5a1cbfb5f9049f9270955caffb5bee5997aebf7#c5a1cbfb5f9049f9270955caffb5bee5997aebf7"
 dependencies = [
  "chrono",
  "dunce",
  "egui",
  "flate2",
  "getrandom 0.3.4",
+ "image",
  "log",
  "plist",
  "semver",
@@ -1051,9 +1191,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-web-host"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=2e2312ddaf21bc3d85cd3395d0955c7d239306f6#2e2312ddaf21bc3d85cd3395d0955c7d239306f6"
+dependencies = [
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
 name = "craft-window"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=92d392cff132eaf53e13afff77f38b5c11b73aa0#92d392cff132eaf53e13afff77f38b5c11b73aa0"
+source = "git+https://github.com/storytold/craft-libs?rev=e11f9d9aebea5f6b8e74643c1ea1ed172ba5f545#e11f9d9aebea5f6b8e74643c1ea1ed172ba5f545"
 dependencies = [
  "wayland-client",
 ]
@@ -1065,6 +1214,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ba106e844045ddc02c20768ac4b0b7cb45f2cc2ecbd833ac9f5dacb183c2055"
 dependencies = [
  "cfg-if",
+]
+
+[[package]]
+name = "crossbeam-channel"
+version = "0.5.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "98b0cc327b5bc766e7fda9c9260cc0fa81b43a8e240440422dff70788e3f9ef1"
+dependencies = [
+ "crossbeam-utils",
 ]
 
 [[package]]
@@ -1219,6 +1377,27 @@ dependencies = [
  "block-buffer 0.12.1",
  "const-oid",
  "crypto-common 0.2.2",
+]
+
+[[package]]
+name = "dirs"
+version = "7.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8d57d423b3c82e89b9a24ca3091fee61f456a26edbd28d26c65906f4bc1dcd8f"
+dependencies = [
+ "dirs-sys",
+]
+
+[[package]]
+name = "dirs-sys"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e01a3366d27ee9890022452ee61b2b63a67e6f13f58900b651ff5665f0bb1fab"
+dependencies = [
+ "libc",
+ "option-ext",
+ "redox_users",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1650,9 +1829,11 @@ checksum = "b97b65636e5b9ef369943878ac74335ba1c55c1cb6adbf1e2c293c624248d693"
 
 [[package]]
 name = "figcraft"
-version = "0.12.1"
+version = "0.16.0"
 dependencies = [
  "arboard",
+ "craft-menu",
+ "craft-settings",
  "craft-update",
  "craft-window",
  "eframe",
@@ -1666,6 +1847,8 @@ dependencies = [
  "fmv-macos-events",
  "image",
  "log",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
  "rfd",
  "serde_json",
  "wat",
@@ -1678,7 +1861,7 @@ dependencies = [
 
 [[package]]
 name = "figcraft-android"
-version = "0.12.1"
+version = "0.16.0"
 dependencies = [
  "android-activity",
  "android_logger",
@@ -1698,8 +1881,11 @@ dependencies = [
 
 [[package]]
 name = "figcraft-cli"
-version = "0.12.1"
+version = "0.16.0"
 dependencies = [
+ "clap",
+ "clap_complete",
+ "clap_mangen",
  "figcraft-doc",
  "figcraft-engine",
  "figcraft-format",
@@ -1708,27 +1894,30 @@ dependencies = [
  "figcraft-svg",
  "figcraft-text",
  "serde_json",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
 name = "figcraft-collab"
-version = "0.12.1"
+version = "0.16.0"
 dependencies = [
  "base64 0.22.1",
  "chrono",
  "figcraft-color",
  "figcraft-doc",
  "figcraft-geom",
+ "flate2",
  "imbl",
  "postcard",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.21",
 ]
 
 [[package]]
 name = "figcraft-collab-net"
-version = "0.12.1"
+version = "0.16.0"
 dependencies = [
  "base64 0.22.1",
  "figcraft-collab",
@@ -1751,7 +1940,7 @@ dependencies = [
 
 [[package]]
 name = "figcraft-color"
-version = "0.12.1"
+version = "0.16.0"
 dependencies = [
  "kurbo",
  "serde",
@@ -1760,7 +1949,7 @@ dependencies = [
 
 [[package]]
 name = "figcraft-doc"
-version = "0.12.1"
+version = "0.16.0"
 dependencies = [
  "figcraft-color",
  "figcraft-geom",
@@ -1768,14 +1957,17 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "unicode-segmentation",
 ]
 
 [[package]]
 name = "figcraft-engine"
-version = "0.12.1"
+version = "0.16.0"
 dependencies = [
  "base64 0.22.1",
  "craft-docpath",
+ "craft-font-catalog",
+ "craft-font-store",
  "deunicode",
  "figcraft-collab",
  "figcraft-color",
@@ -1804,9 +1996,10 @@ dependencies = [
 
 [[package]]
 name = "figcraft-format"
-version = "0.12.1"
+version = "0.16.0"
 dependencies = [
  "figcraft-doc",
+ "figcraft-layout",
  "figcraft-pathops",
  "flate2",
  "image",
@@ -1820,7 +2013,7 @@ dependencies = [
 
 [[package]]
 name = "figcraft-geom"
-version = "0.12.1"
+version = "0.16.0"
 dependencies = [
  "kurbo",
  "serde",
@@ -1828,7 +2021,7 @@ dependencies = [
 
 [[package]]
 name = "figcraft-layout"
-version = "0.12.1"
+version = "0.16.0"
 dependencies = [
  "figcraft-doc",
  "figcraft-geom",
@@ -1836,7 +2029,7 @@ dependencies = [
 
 [[package]]
 name = "figcraft-mcp"
-version = "0.12.1"
+version = "0.16.0"
 dependencies = [
  "base64 0.22.1",
  "figcraft-collab-net",
@@ -1852,7 +2045,7 @@ dependencies = [
 
 [[package]]
 name = "figcraft-pathops"
-version = "0.12.1"
+version = "0.16.0"
 dependencies = [
  "figcraft-doc",
  "figcraft-geom",
@@ -1861,7 +2054,7 @@ dependencies = [
 
 [[package]]
 name = "figcraft-pdf"
-version = "0.12.1"
+version = "0.16.0"
 dependencies = [
  "figcraft-color",
  "figcraft-doc",
@@ -1878,7 +2071,7 @@ dependencies = [
 
 [[package]]
 name = "figcraft-plugin"
-version = "0.12.1"
+version = "0.16.0"
 dependencies = [
  "figcraft-color",
  "serde",
@@ -1891,11 +2084,12 @@ dependencies = [
 
 [[package]]
 name = "figcraft-render"
-version = "0.12.1"
+version = "0.16.0"
 dependencies = [
  "crc32fast",
  "figcraft-color",
  "figcraft-doc",
+ "figcraft-format",
  "figcraft-geom",
  "figcraft-pathops",
  "figcraft-text",
@@ -1909,8 +2103,9 @@ dependencies = [
 
 [[package]]
 name = "figcraft-server"
-version = "0.12.1"
+version = "0.16.0"
 dependencies = [
+ "chrono",
  "crc32fast",
  "ctrlc",
  "env_logger",
@@ -1933,7 +2128,7 @@ dependencies = [
 
 [[package]]
 name = "figcraft-svg"
-version = "0.12.1"
+version = "0.16.0"
 dependencies = [
  "base64 0.22.1",
  "figcraft-color",
@@ -1949,12 +2144,14 @@ dependencies = [
 
 [[package]]
 name = "figcraft-text"
-version = "0.12.1"
+version = "0.16.0"
 dependencies = [
  "core-text",
+ "craft-font-catalog",
  "figcraft-doc",
  "figcraft-geom",
  "harfrust 0.13.3",
+ "icu_segmenter",
  "log",
  "objc2 0.6.5",
  "png",
@@ -1965,7 +2162,7 @@ dependencies = [
 
 [[package]]
 name = "figcraft-ui-egui"
-version = "0.12.1"
+version = "0.16.0"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -1993,7 +2190,7 @@ dependencies = [
 
 [[package]]
 name = "figcraft-vectordrawable"
-version = "0.12.1"
+version = "0.16.0"
 dependencies = [
  "figcraft-color",
  "figcraft-doc",
@@ -2007,13 +2204,16 @@ dependencies = [
 
 [[package]]
 name = "figcraft-web"
-version = "0.12.1"
+version = "0.16.0"
 dependencies = [
  "base64 0.22.1",
+ "craft-web-host",
  "eframe",
  "egui",
  "figcraft-collab-net",
  "figcraft-engine",
+ "figcraft-format",
+ "figcraft-text",
  "figcraft-ui-egui",
  "js-sys",
  "log",
@@ -2143,6 +2343,28 @@ dependencies = [
  "memmap2",
  "slotmap",
  "tinyvec",
+]
+
+[[package]]
+name = "fontique"
+version = "0.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6688bc1294fe7117d788937b6c53480169b29c566954af490830d4c09da9516a"
+dependencies = [
+ "hashbrown 0.17.1",
+ "linebender_resource_handle",
+ "memmap2",
+ "objc2 0.6.5",
+ "objc2-core-foundation",
+ "objc2-core-text",
+ "objc2-foundation 0.3.2",
+ "parlance",
+ "read-fonts 0.41.0",
+ "roxmltree 0.21.2",
+ "smallvec",
+ "windows",
+ "windows-core",
+ "yeslogic-fontconfig-sys",
 ]
 
 [[package]]
@@ -2498,6 +2720,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "heck"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
+
+[[package]]
 name = "hermit-abi"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2710,6 +2938,29 @@ dependencies = [
  "zerotrie",
  "zerovec",
 ]
+
+[[package]]
+name = "icu_segmenter"
+version = "2.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "82d07aafccd67af15d02512a6adf5896fbc5ed00f2e99b471d2efa14016db3db"
+dependencies = [
+ "core_maths",
+ "icu_collections",
+ "icu_locale_fallback",
+ "icu_provider",
+ "icu_segmenter_data",
+ "potential_utf",
+ "smallvec",
+ "utf8_iter",
+ "zerovec",
+]
+
+[[package]]
+name = "icu_segmenter_data"
+version = "2.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ae293c039020f9ec10710af98d29ce6aa2051486638b49c9a6409f3b4a9e98ad"
 
 [[package]]
 name = "idna"
@@ -2943,6 +3194,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "keyboard-types"
+version = "0.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0fbe853b403ae61a04233030ae8a79d94975281ed9770a1f9e246732b534b28d"
+dependencies = [
+ "bitflags 2.13.2",
+ "serde",
+]
+
+[[package]]
 name = "khronos-egl"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2962,7 +3223,7 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 [[package]]
 name = "krilla"
 version = "0.8.2"
-source = "git+https://github.com/storytold/craft-libs?rev=92d392cff132eaf53e13afff77f38b5c11b73aa0#92d392cff132eaf53e13afff77f38b5c11b73aa0"
+source = "git+https://github.com/storytold/craft-libs?rev=e11f9d9aebea5f6b8e74643c1ea1ed172ba5f545#e11f9d9aebea5f6b8e74643c1ea1ed172ba5f545"
 dependencies = [
  "base64 0.22.1",
  "bumpalo",
@@ -3155,10 +3416,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "muda"
+version = "0.21.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4340e89c178916e62879c5c36b7f699019369be413e496178a6983ce91b8bc03"
+dependencies = [
+ "crossbeam-channel",
+ "dpi",
+ "keyboard-types",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-core-foundation",
+ "objc2-foundation 0.3.2",
+ "png",
+ "thiserror 2.0.21",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "naga"
 version = "30.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a616d2fb8c89516ac2723a581f69d6c18576046bed761bd6b305e5618e6ae130"
+source = "git+https://github.com/apexmiguel9-hub/wgpu.git?rev=5e615d4#5e615d45c26e80085cb88373669ce059ad16b601"
 dependencies = [
  "arrayvec",
  "bit-set 0.10.0",
@@ -3183,8 +3461,7 @@ dependencies = [
 [[package]]
 name = "naga-types"
 version = "30.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "590afbf58a6f4f62873cd5cff4468061844bafa1cdf399cc954537c22d768d49"
+source = "git+https://github.com/apexmiguel9-hub/wgpu.git?rev=5e615d4#5e615d45c26e80085cb88373669ce059ad16b601"
 dependencies = [
  "hashbrown 0.17.1",
  "indexmap",
@@ -3427,6 +3704,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-core-text"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0cde0dfb48d25d2b4862161a4d5fcc0e3c24367869ad306b0c9ec0073bfed92d"
+dependencies = [
+ "bitflags 2.13.2",
+ "objc2-core-foundation",
+]
+
+[[package]]
 name = "objc2-encode"
 version = "4.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3617,6 +3904,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7e036b411754132fd6b74e94b74e9a13c5cf606fa93d1885c35860d3060820b1"
 
 [[package]]
+name = "option-ext"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
+
+[[package]]
 name = "orbclient"
 version = "0.3.55"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3692,6 +3985,12 @@ dependencies = [
  "smallvec",
  "windows-link",
 ]
+
+[[package]]
+name = "parlance"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "73072a9470554c8e794778acece2312661218aaabb635600957d952cf01c716e"
 
 [[package]]
 name = "pdf-writer"
@@ -4201,6 +4500,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "redox_users"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "60dc65c0ff1a7ae1294b0c67b9f14baf70b644404010370171787bfac1038fc0"
+dependencies = [
+ "libredox",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "regex"
 version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4275,6 +4584,12 @@ dependencies = [
  "untrusted",
  "windows-sys 0.52.0",
 ]
+
+[[package]]
+name = "roff"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "323c417e1d9665a65b263ec744ba09030cfb277e9daa0b018a4ab62e57bc8189"
 
 [[package]]
 name = "roxmltree"
@@ -4868,6 +5183,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "strsim"
+version = "0.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
+
+[[package]]
 name = "subsetter"
 version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5164,8 +5485,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3641d5bbb5349a79e1020a242d251efbc546ad8048d133958323ce9c40a9c9c"
 dependencies = [
  "indexmap",
+ "serde_core",
+ "serde_spanned",
  "toml_datetime",
  "toml_parser",
+ "toml_writer",
  "winnow",
 ]
 
@@ -5371,6 +5695,7 @@ dependencies = [
  "rustls-platform-verifier",
  "ureq-proto",
  "utf8-zero",
+ "webpki-roots",
 ]
 
 [[package]]
@@ -5884,8 +6209,7 @@ checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
 [[package]]
 name = "wgpu"
 version = "30.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "527ccdf43dd5b2e8676eed9984ce00e2bbb0a1b85b70c1969dcb6cd2eb55ab9e"
+source = "git+https://github.com/apexmiguel9-hub/wgpu.git?rev=5e615d4#5e615d45c26e80085cb88373669ce059ad16b601"
 dependencies = [
  "arrayvec",
  "bitflags 2.13.2",
@@ -5914,8 +6238,7 @@ dependencies = [
 [[package]]
 name = "wgpu-core"
 version = "30.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "14c018fce9b6270aa203c2fdd56f3cce996713534bd757e4ea58c8560b121f14"
+source = "git+https://github.com/apexmiguel9-hub/wgpu.git?rev=5e615d4#5e615d45c26e80085cb88373669ce059ad16b601"
 dependencies = [
  "arrayvec",
  "bit-set 0.10.0",
@@ -5949,8 +6272,7 @@ dependencies = [
 [[package]]
 name = "wgpu-core-deps-apple"
 version = "30.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "061f3d319a40d39d00b1ecc2c33b89fe21d4e6fe01859df3500a3a8ecccd6b68"
+source = "git+https://github.com/apexmiguel9-hub/wgpu.git?rev=5e615d4#5e615d45c26e80085cb88373669ce059ad16b601"
 dependencies = [
  "wgpu-hal",
 ]
@@ -5958,8 +6280,7 @@ dependencies = [
 [[package]]
 name = "wgpu-core-deps-emscripten"
 version = "30.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d98b86cf4abf524a902dd35f18ca6a3f08fc2ae9847c8f10b48e30491b1f0b86"
+source = "git+https://github.com/apexmiguel9-hub/wgpu.git?rev=5e615d4#5e615d45c26e80085cb88373669ce059ad16b601"
 dependencies = [
  "wgpu-hal",
 ]
@@ -5967,8 +6288,7 @@ dependencies = [
 [[package]]
 name = "wgpu-core-deps-wasm"
 version = "30.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d260ca2ca8adc654f513a869bf3cac0b47f5b8d3f87803d6942015f8de597aae"
+source = "git+https://github.com/apexmiguel9-hub/wgpu.git?rev=5e615d4#5e615d45c26e80085cb88373669ce059ad16b601"
 dependencies = [
  "wgpu-hal",
 ]
@@ -5976,8 +6296,7 @@ dependencies = [
 [[package]]
 name = "wgpu-core-deps-windows-linux-android"
 version = "30.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7586165fd5f6d881cb9ce4bb71f40d6caab2c0f1837e3fc1d9788a197fb6004f"
+source = "git+https://github.com/apexmiguel9-hub/wgpu.git?rev=5e615d4#5e615d45c26e80085cb88373669ce059ad16b601"
 dependencies = [
  "wgpu-hal",
 ]
@@ -5985,8 +6304,7 @@ dependencies = [
 [[package]]
 name = "wgpu-hal"
 version = "30.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6b7fb58561a792bc237628ba0792e332de418fefe145f13b5ed8201e6d52f58"
+source = "git+https://github.com/apexmiguel9-hub/wgpu.git?rev=5e615d4#5e615d45c26e80085cb88373669ce059ad16b601"
 dependencies = [
  "android_system_properties",
  "arrayvec",
@@ -6041,8 +6359,7 @@ dependencies = [
 [[package]]
 name = "wgpu-naga-bridge"
 version = "30.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d2f62e73117bb7a62bfd9c5a5841438a823f6566c6442a808ee269d2d055c081"
+source = "git+https://github.com/apexmiguel9-hub/wgpu.git?rev=5e615d4#5e615d45c26e80085cb88373669ce059ad16b601"
 dependencies = [
  "naga",
  "wgpu-types",
@@ -6051,8 +6368,7 @@ dependencies = [
 [[package]]
 name = "wgpu-types"
 version = "30.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "99dad6f1fbdbbdb4c278a6508b059d44688f5cebddf78d005a46a31340269286"
+source = "git+https://github.com/apexmiguel9-hub/wgpu.git?rev=5e615d4#5e615d45c26e80085cb88373669ce059ad16b601"
 dependencies = [
  "bitflags 2.13.2",
  "bytemuck",
@@ -6510,10 +6826,21 @@ checksum = "9440ea3e5aeabb0ac63af70daf835274065238cdd0cec83418f417eae38bacee"
 
 [[package]]
 name = "xtask"
-version = "0.12.1"
+version = "0.16.0"
 dependencies = [
  "figcraft-engine",
  "serde_json",
+]
+
+[[package]]
+name = "yeslogic-fontconfig-sys"
+version = "6.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d8b8abf912b9a29ff112e1671c97c33636903d13a69712037190e6805af4f76"
+dependencies = [
+ "dlib",
+ "once_cell",
+ "pkg-config",
 ]
 
 [[package]]

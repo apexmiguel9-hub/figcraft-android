@@ -6,7 +6,7 @@ exclude = ["plugins", "third_party"]
 # default-members = ["crates/*", "apps/figcraft", "apps/figcraft-cli", "xtask"]
 
 [workspace.package]
-version = "0.12.1"
+version = "0.16.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.95"
@@ -33,21 +33,34 @@ figcraft-mcp = { path = "crates/mcp" }
 figcraft-collab-net = { path = "crates/collab-net" }
 figcraft-plugin = { path = "crates/plugin" }
 
-# craft-libs crates all pin one rev (craftrules standards/shared-libraries.md): bump them together.
+# Keep coupled craft-libs crates on one rev. craft-update has no sibling-crate
+# dependencies and is pinned separately for the suite updater rollout.
 # Which paths stored in a document may be followed (craft-libs).
-craft-docpath = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "92d392cff132eaf53e13afff77f38b5c11b73aa0" }
+craft-docpath = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "e11f9d9aebea5f6b8e74643c1ea1ed172ba5f545" }
 # Who draws the window frame on Linux — the compositor or the app — so every Craft app shows the
 # same native titlebar per desktop (craft-libs). FigCraft only reads the probe result and maps it
 # to its own `TitleBar`, so it does not enable craft-window's optional `egui` helpers (which would
 # pull a second egui family version).
-craft-window = { git = "https://github.com/storytold/craft-libs", rev = "92d392cff132eaf53e13afff77f38b5c11b73aa0" }
-craft-update = { git = "https://github.com/storytold/craft-libs", version = "=0.1.0", rev = "92d392cff132eaf53e13afff77f38b5c11b73aa0", features = ["egui"] }
+craft-window = { git = "https://github.com/storytold/craft-libs", rev = "e11f9d9aebea5f6b8e74643c1ea1ed172ba5f545" }
+# craft-update: app-specific pretend versions apply to startup and manual checks.
+craft-update = { git = "https://github.com/storytold/craft-libs", version = "=0.1.0", rev = "c5a1cbfb5f9049f9270955caffb5bee5997aebf7", features = ["egui"] }
+# The suite's font store: exact lookup of a missing font in the pinned Google Fonts and Noto
+# indexes, and checksum-verified installs into the one folder every Craft app reads (craft-libs).
+craft-font-store = { git = "https://github.com/storytold/craft-libs", rev = "e11f9d9aebea5f6b8e74643c1ea1ed172ba5f545" }
+craft-font-catalog = { git = "https://github.com/storytold/craft-libs", rev = "e11f9d9aebea5f6b8e74643c1ea1ed172ba5f545" }
 # Shared dropdown menus: a combo box whose menu grows back after shrinking (craft-libs).
-craft-ui = { git = "https://github.com/storytold/craft-libs", rev = "92d392cff132eaf53e13afff77f38b5c11b73aa0" }
+craft-ui = { git = "https://github.com/storytold/craft-libs", rev = "e11f9d9aebea5f6b8e74643c1ea1ed172ba5f545" }
+# The macOS app menu whose Quit (⌘Q) asks the app before quitting, like the window's close button
+# (craft-libs; the menu it replaces quits straight through `terminate:` and loses unsaved work).
+craft-menu = { git = "https://github.com/storytold/craft-libs", rev = "e11f9d9aebea5f6b8e74643c1ea1ed172ba5f545" }
+# Where the settings live: the suite's folder rules, portable mode included (craft-libs).
+craft-settings = { git = "https://github.com/storytold/craft-libs", rev = "e11f9d9aebea5f6b8e74643c1ea1ed172ba5f545" }
 
 # foundation
 kurbo = { version = "0.13", features = ["serde"] }
 thiserror = "2"
+# Command-line parsing for figcraft-cli (craft-contrib RFC-0012: clap derive, as photocraft does).
+clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
 regex = "1.13"
@@ -71,6 +84,11 @@ skrifa = "0.47"
 harfrust = "0.13"
 unicode-bidi = "0.3"
 unicode-segmentation = "1.13"
+# Line breaks between the words of Thai, Lao, Khmer and Burmese, which are written without spaces
+# (#1219): ICU4X's line segmenter with its compiled data (pure Rust, Unicode-3.0 like the icu_*
+# crates already in the lock, whose version it matches). figcraft-text picks the dictionaries, or
+# in the browser the smaller LSTM models.
+icu_segmenter = { version = "2.3", default-features = false, features = ["compiled_data"] }
 # Code export: layer names transliterated into ASCII identifiers (pure Rust data tables, zero
 # dependencies, BSD-3-Clause, no_std so the web build keeps it too).
 deunicode = "1.6"
@@ -136,7 +154,7 @@ lto = "thin"
 codegen-units = 4
 
 # The browser build only (apps/figcraft-web/index.html: data-cargo-profile). Optimised for size:
-# packaging/web/package.sh fails a .wasm over 25 MiB - 512 KiB (Cloudflare's per-file cap is 25 MiB).
+# packaging/web/package.sh fails a .wasm over 24 MiB (Cloudflare's per-file cap is 25 MiB).
 # wasm32-unknown-unknown always aborts on panic, so panic = "abort" changes nothing there.
 [profile.web-release]
 inherits = "release"
@@ -169,4 +187,4 @@ winit = { git = "https://github.com/storytold/winit.git", rev = "a517b3846ee8457
 
 # craft-libs' vendored krilla 0.8.2: decoded PNGs are capped at 1 GiB and reserved fallibly, and a
 # panic while drawing unwinds without aborting.
-krilla = { git = "https://github.com/storytold/craft-libs", rev = "92d392cff132eaf53e13afff77f38b5c11b73aa0" }
+krilla = { git = "https://github.com/storytold/craft-libs", rev = "e11f9d9aebea5f6b8e74643c1ea1ed172ba5f545" }

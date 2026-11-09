@@ -16,7 +16,7 @@ pub fn specs() -> Vec<CommandSpec> {
         spec!(
             "proto.interaction.add",
             "Add interaction",
-            "{id?, trigger? {type: onClick|onHover|onPress|onDrag|mouseEnter|mouseLeave|mouseDown|mouseUp|afterDelay {ms}|keyPress {key (a key or a combination: Shift+K, Ctrl+Alt+Delete; or a controller button: Gamepad A|B|X|Y|LB|RB|LT|RT|View|Menu|LS|RS|Up|Down|Left|Right|Home)}}, action {type: navigate {preserveScroll?}|back|scrollTo {offset? [x, y] (where the layer ends up from the top-left)}|openOverlay {position?, anchor? screen|triggerInside|triggerOutside (default screen; the trigger ones measure the position preset on the layer that opens the overlay: outside puts top presets above it and bottom presets below it, edges lined up), offset? [x, y] (position manual: the overlay's top-left from the top-left of the layer that opens it; without it, right below that layer), close_on_outside? (default true), background?}|swapOverlay|closeOverlay|openUrl {url}|changeTo|setVariable {variable, value | expression (text, e.g. \"count + 1\")}|setVariableMode {collection, mode}|conditional {blocks [{condition? | expression? (text, e.g. \"count >= 3\"), actions}]}, dest?}, actions? [..], transition? {type: instant|dissolve|smartAnimate|moveIn|moveOut|push|slideIn|slideOut, direction?: left|right|top|bottom}, durationMs?, easing? linear|easeIn|easeOut|easeInOut|easeInBack|easeOutBack|easeInOutBack|gentle|quick|bouncy|slow|{customBezier {x1, y1, x2, y2}}|{customSpring {mass, stiffness, damping}}}, delayMs? (mouse enter, leave, down and up: how long after the gesture the actions run, up to 600000)} — or {id, dest} for a click-navigate. Returns {index}",
+            "{id?, trigger? {type: onClick|onHover|onPress|onDrag|mouseEnter|mouseLeave|mouseDown|mouseUp|afterDelay {ms}|keyPress {key (a key or a combination: Shift+K, Ctrl+Alt+Delete; or a controller button: Gamepad A|B|X|Y|LB|RB|LT|RT|View|Menu|LS|RS|Up|Down|Left|Right|Home)}}, action {type: navigate {preserveScroll?}|back|scrollTo {offset? [x, y] (where the layer ends up from the top-left)}|openOverlay {position?, anchor? screen|triggerInside|triggerOutside (default screen; the trigger ones measure the position preset on the layer that opens the overlay: outside puts top presets above it and bottom presets below it, edges lined up), offset? [x, y] (position manual: the overlay's top-left from the top-left of the layer that opens it; without it, right below that layer), close_on_outside? (default true), background?}|swapOverlay|closeOverlay|openUrl {url, openInNewTab? (default true; false opens it in place of the prototype where the viewer's tab can go there: the web build)}|changeTo|setVariable {variable, value | expression (text, e.g. \"count + 1\")}|setVariableMode {collection, mode}|conditional {blocks [{condition? | expression? (text, e.g. \"count >= 3\"), actions}]}, dest?}, actions? [..], dest? (without action: a click-navigate to it), transition? {type: instant|dissolve|smartAnimate|moveIn|moveOut|push|slideIn|slideOut, direction?: left|right|top|bottom}, durationMs? | duration_ms?, easing? linear|easeIn|easeOut|easeInOut|easeInBack|easeOutBack|easeInOutBack|gentle|quick|bouncy|slow|{customBezier {x1, y1, x2, y2}}|{customSpring {mass, stiffness, damping}}, delayMs? | delay_ms? (mouse enter, leave, down and up: how long after the gesture the actions run, up to 600000)} — or {id, dest} for a click-navigate. Returns {index}",
             true,
             add
         ),
@@ -31,8 +31,8 @@ pub fn specs() -> Vec<CommandSpec> {
         spec!("proto.interaction.remove", "Remove interaction", "{id?, index}", true, |s, p| {
             let cmd = "proto.interaction.remove";
             let k = req_num(cmd, p, "index")?;
-            if k < 0.0 {
-                return Err(bad(cmd, "`index` must be ≥ 0"));
+            if !(0.0..1e9).contains(&k) || k.fract() != 0.0 {
+                return Err(bad(cmd, "`index` must be a whole number in 0..1e9"));
             }
             let k = k as usize;
             let mut hit = false;
@@ -51,7 +51,7 @@ pub fn specs() -> Vec<CommandSpec> {
         spec!(
             "proto.interaction.set",
             "Edit interaction",
-            "{id?, index, interaction {..}} replaces it; or patch fields: {id?, index, trigger?, action? (first action), actions?, transition?, durationMs?, easing?, delayMs?}",
+            "{id?, index, interaction? {..} (replaces it whole), trigger?, action? (first action), actions?, transition?, durationMs? | duration_ms?, easing?, delayMs? | delay_ms?}  patch fields on top of the current interaction (or of interaction)",
             true,
             set
         ),
@@ -137,7 +137,7 @@ pub fn specs() -> Vec<CommandSpec> {
         spec!(
             "proto.presentOptions",
             "Presentation options",
-            "{scale? fit|fitWidth|fill|actual, deviceFrame? bool, hotspotHints? bool, inspect? bool}  how the presenter sizes the prototype (Fit scales down to fit, Fit width fills the width, Fill covers the window, Actual shows it at 100%), whether it draws the device, whether a click where nothing reacts flashes the hotspots (on by default) and whether the Inspect panel shows the properties of the layer under the pointer; kept for later presentations",
+            "{scale? fit|fitWidth|fill|actual, deviceFrame? bool, hotspotHints? bool, inspect? bool, hideUi? bool}  how the presenter sizes the prototype (Fit scales down to fit, Fit width fills the width, Fill covers the window, Actual shows it at 100%), whether it draws the device, whether a click where nothing reacts flashes the hotspots (on by default), whether the Inspect panel shows the properties of the layer under the pointer, and whether the bars are hidden (Hide UI: the prototype alone; Cmd/Ctrl+\\ shows them again); kept for later presentations",
             false,
             |s, p| {
                 let cmd = "proto.presentOptions";
@@ -146,13 +146,13 @@ pub fn specs() -> Vec<CommandSpec> {
                     let scale = v.as_str().filter(|x| PRESENT_SCALES.contains(x)).ok_or_else(|| bad(cmd, "scale: fit|fitWidth|fill|actual"))?;
                     data.insert("scale".into(), json!(scale));
                 }
-                for key in ["deviceFrame", "hotspotHints", "inspect"] {
+                for key in ["deviceFrame", "hotspotHints", "inspect", "hideUi"] {
                     if let Some(v) = p.get(key).filter(|v| !v.is_null()) {
                         data.insert(key.into(), json!(v.as_bool().ok_or_else(|| bad(cmd, format!("{key}: true|false")))?));
                     }
                 }
                 if data.is_empty() {
-                    return Err(bad(cmd, "nothing to set: scale, deviceFrame, hotspotHints or inspect"));
+                    return Err(bad(cmd, "nothing to set: scale, deviceFrame, hotspotHints, inspect or hideUi"));
                 }
                 s.request_ui("present.options", Value::Object(data));
                 ok()
@@ -161,11 +161,12 @@ pub fn specs() -> Vec<CommandSpec> {
         spec!(
             "proto.linkNotice",
             "Notice before leaving for a link",
-            "{show? (default true; false skips it)}  whether a presented prototype's Open link to a website first says that it leaves the prototype, with Open link and Cancel; kept with the preferences → {shown}",
+            "{show? (default true; false skips it)}  whether a presented prototype's Open link the viewer clicked (or fired by a key) first says that it leaves the prototype, with Open link and Cancel (a link a delay or hover fired always does); kept with the preferences → {shown}",
             false,
             |s, p| {
                 let show = boolean(p, "show").unwrap_or(true);
                 s.prefs.link_notice_skipped = !show;
+                s.prefs_unsaved = true;
                 Ok(json!({"shown": show}))
             }
         ),
@@ -308,40 +309,6 @@ pub(crate) fn check_action_dests(cmd: &str, doc: &Document, actions: &[Action]) 
     Ok(())
 }
 
-/// Variables, collections and modes that actions name by name, stored by id.
-fn canonical_ids(doc: &Document, it: &mut Interaction) {
-    canonical_actions(&doc.variables, &mut it.actions);
-}
-
-/// Variables (also those expressions read), collections and modes that `actions` name by name,
-/// stored by id.
-pub(crate) fn canonical_actions(vars: &Variables, actions: &mut [Action]) {
-    walk_mut(actions, &mut |a| match a {
-        Action::SetVariable { variable, expr, .. } => {
-            if let Some(v) = vars.get(variable) {
-                *variable = v.id.clone();
-            }
-            if let Some(e) = expr {
-                canonical_expr(vars, e, 0);
-            }
-        }
-        Action::SetVariableMode { collection, mode } => {
-            if let Some(c) = vars.collection(collection) {
-                if let Some(m) = c.find_mode(mode) {
-                    *mode = m.id.clone();
-                }
-                *collection = c.id.clone();
-            }
-        }
-        Action::Conditional { blocks } => {
-            for e in blocks.iter_mut().filter_map(|b| b.condition.as_mut()) {
-                canonical_expr(vars, e, 0);
-            }
-        }
-        _ => {}
-    });
-}
-
 /// Variables, collections and modes an expression names by name, stored by id.
 pub(crate) fn canonical_expr(vars: &Variables, e: &mut Expr, depth: usize) {
     match e {
@@ -357,7 +324,7 @@ pub(crate) fn canonical_expr(vars: &Variables, e: &mut Expr, depth: usize) {
         }
         Expr::InMode { variable, mode } => {
             if let Some(v) = vars.get(variable) {
-                if let Some(m) = vars.collection(&v.collection).and_then(|c| c.find_mode(mode)) {
+                if let Some(m) = vars.collection_by_id(&v.collection).and_then(|c| c.find_mode(mode)) {
                     *mode = m.id.clone();
                 }
                 *variable = v.id.clone();
@@ -425,7 +392,6 @@ fn add(s: &mut Session, p: &Value) -> Result<Value> {
     let mut it = it;
     it.delay_ms = delay(cmd, p)?.unwrap_or(0);
     settle(&mut it);
-    canonical_ids(s.doc()?, &mut it);
     check_dests(cmd, s, &it)?;
     let mut index = 0;
     for i in req_targets(cmd, s, p)? {
@@ -440,8 +406,8 @@ fn set(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "proto.interaction.set";
     let p = &super::proto_actions::with_expressions(cmd, &s.doc()?.variables, p)?;
     let k = req_num(cmd, p, "index")?;
-    if k < 0.0 {
-        return Err(bad(cmd, "`index` must be ≥ 0"));
+    if !(0.0..1e9).contains(&k) || k.fract() != 0.0 {
+        return Err(bad(cmd, "`index` must be a whole number in 0..1e9"));
     }
     let k = k as usize;
     let whole: Option<Interaction> = parse(cmd, p, "interaction")?;
@@ -484,7 +450,6 @@ fn set(s: &mut Session, p: &Value) -> Result<Value> {
         if it.actions.is_empty() {
             return Err(bad(cmd, "an interaction needs an action"));
         }
-        canonical_ids(s.doc()?, &mut it);
         check_dests(cmd, s, &it)?;
         if let Some(slot) = s.doc_mut()?.get_mut(i)?.interactions.get_mut(k) {
             *slot = it;
@@ -569,6 +534,20 @@ mod tests {
         assert_eq!(s.doc().unwrap().node(a).unwrap().interactions.len(), 1);
         assert!(s.undo().unwrap());
         assert_eq!(s.doc().unwrap().node(a).unwrap().interactions.len(), 2);
+    }
+
+    #[test]
+    fn fractional_index_is_rejected() {
+        let mut s = Session::new();
+        let a = frame(&mut s, 0.0);
+        let b = frame(&mut s, 200.0);
+        s.execute("proto.interaction.add", &json!({"id": a, "dest": b})).unwrap();
+        s.execute("proto.interaction.add", &json!({"id": a, "dest": b})).unwrap();
+        assert!(s.execute("proto.interaction.remove", &json!({"id": a, "index": 0.5})).is_err());
+        assert_eq!(s.doc().unwrap().node(a).unwrap().interactions.len(), 2);
+        let before = s.doc().unwrap().node(a).unwrap().interactions[0].clone();
+        assert!(s.execute("proto.interaction.set", &json!({"id": a, "index": 0.5, "easing": "linear"})).is_err());
+        assert_eq!(s.doc().unwrap().node(a).unwrap().interactions[0], before);
     }
 
     #[test]

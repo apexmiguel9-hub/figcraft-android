@@ -79,6 +79,24 @@ pub struct OpenPanel {
     pub panel: Panel,
     pub values: Map<String, Value>,
     instance: Instance,
+    /// API 5: the widget whose callback opened the panel; its callbacks can redraw it.
+    pub widget: Option<figcraft_doc::NodeId>,
+}
+
+/// Show `panel` as plugin `m`'s one open panel (replacing any it has), keeping `instance` loaded
+/// for its callbacks. `opener` is the command that opened it, its parameters and its undo step's name.
+pub(crate) fn open_panel(
+    s: &mut Session,
+    m: &Manifest,
+    opener: (&str, Value, String),
+    panel: Panel,
+    instance: Instance,
+    widget: Option<figcraft_doc::NodeId>,
+) {
+    let (command, params, label) = opener;
+    let values = panel.values(&Map::new());
+    close_panel(s, &m.id);
+    s.plugins.panels.push(OpenPanel { manifest: m.clone(), command: command.into(), params, label, panel, values, instance, widget });
 }
 
 impl OpenPanel {
@@ -107,6 +125,8 @@ const DENIED: &[&str] = &[
     "plugins.",
     "libraries.",
     "library.add",
+    // Contacts the servers a file names, and remembers them as yours (#1097).
+    "library.check",
     // Uploads the open document to a server.
     "library.publishToServer",
     "edit.undo",
@@ -128,6 +148,16 @@ const ALLOWED: &[&str] = &["doc.list", "version.list"];
 fn refusal(m: &Manifest, command: &str, params: &Value) -> Option<String> {
     if DENIED.iter().any(|p| command.starts_with(p)) && !ALLOWED.contains(&command) {
         return Some(format!("`{command}` isn't available to plugins"));
+    }
+    // A preview runs its inner command, which the plugin's permissions and the denied list must cover too.
+    // An inner command that can't be previewed (a nested preview) is refused by the preview itself,
+    // before it runs: descending into its parameters first would only rescan them.
+    if command == "text.preview"
+        && let Some(inner) = get(params, "command").and_then(Value::as_str)
+        && crate::textpreview::PREVIEWABLE.contains(&inner)
+        && let Some(why) = refusal(m, inner, get(params, "params").unwrap_or(&Value::Null))
+    {
+        return Some(why);
     }
     // A widget's own data is FigCraft's to write, so no plugin can forge or retarget a widget.
     if writes_widget_data(params, 0) {
@@ -232,7 +262,16 @@ impl figcraft_plugin::Host for EngineHost<'_> {
             }
             Ok(v)
         });
-        r.map(|v| v.to_string()).map_err(|e| e.to_string())
+        r.map(|mut v| {
+            // A plugin gets the open files' names, not where they are on disk (#1117).
+            if command == "doc.list" {
+                for e in v.as_array_mut().into_iter().flatten().filter_map(Value::as_object_mut) {
+                    e.remove("path");
+                }
+            }
+            v.to_string()
+        })
+        .map_err(|e| e.to_string())
     }
 
     fn selection(&mut self) -> String {
@@ -313,11 +352,7 @@ pub(crate) fn installed<'a>(s: &'a Session, cmd: &str, id: &str) -> Result<&'a I
 /// Read a file of at most `max` bytes.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn read_file(path: &std::path::Path, max: usize) -> Result<Vec<u8>> {
-    let meta = crate::file_access::metadata(path)?;
-    if !meta.is_file() || meta.len() > max as u64 {
-        return Err(EngineError::Other(format!("{}: not a file of at most {} KB", path.display(), max / 1024)));
-    }
-    crate::file_access::read(path)
+    crate::file_access::read_capped(path, max as u64)
 }
 
 /// The manifest at `path` (the file, or the folder holding `figcraft-plugin.json`), its absolute
@@ -491,11 +526,7 @@ pub fn run(s: &mut Session, id: &str, command: Option<&str>, params: &Value, fue
     let mut instance = Instance::new(&wasm, &limits).map_err(|e| plugin_error(&m.name, e))?;
     let mut out = call_plugin(s, m, &label, &mut instance, &input).map_err(|(e, _)| e)?;
     match out.ui.take() {
-        Some(UiChange::Show(panel)) => {
-            let values = panel.values(&Map::new());
-            close_panel(s, &m.id);
-            s.plugins.panels.push(OpenPanel { manifest: m.clone(), command: c.id.clone(), params, label, panel, values, instance });
-        }
+        Some(UiChange::Show(panel)) => open_panel(s, m, (&c.id, params, label), panel, instance, None),
         Some(UiChange::Close) => close_panel(s, &m.id),
         None => {}
     }
@@ -538,7 +569,7 @@ fn report(s: &Session, id: &str, command: &str, out: RunOutput) -> Value {
 }
 
 /// Close plugin `id`'s panel, if it has one open.
-fn close_panel(s: &mut Session, id: &str) {
+pub(crate) fn close_panel(s: &mut Session, id: &str) {
     s.plugins.panels.retain(|o| o.manifest.id != id);
 }
 
@@ -561,7 +592,7 @@ fn event(s: &mut Session, p: &Value) -> Result<Value> {
     let c = open
         .panel
         .control(&control)
-        .filter(|c| c.kind != ParamKind::Note)
+        .filter(|c| !matches!(c.kind, ParamKind::Note | ParamKind::Image))
         .ok_or_else(|| bad(cmd, format!("the panel has no control `{control}`")))?;
     let field = c.is_field();
     let value = if field { c.coerce(get(p, "value").unwrap_or(&Value::Null)).map_err(|e| bad(cmd, e))? } else { Value::Null };
@@ -572,7 +603,11 @@ fn event(s: &mut Session, p: &Value) -> Result<Value> {
     let command = open.command.clone();
     let event = json!({"control": control, "value": value});
     let input = json!({"api": open.manifest.api, "command": open.command, "params": open.params, "selection": s.selection(), "event": event, "values": open.values});
-    let mut out = match call_plugin(s, &open.manifest, &open.label, &mut open.instance, &input.to_string()) {
+    let called = match open.widget {
+        Some(w) => crate::widgets::panel_callback(s, &open.manifest, &open.label, &mut open.instance, input, w),
+        None => call_plugin(s, &open.manifest, &open.label, &mut open.instance, &input.to_string()),
+    };
+    let mut out = match called {
         Ok(out) => out,
         Err((e, usable)) => {
             // A plugin that returned an error keeps its panel; one that crashed loses it.

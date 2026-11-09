@@ -35,6 +35,7 @@ use render::{JobKey, request_render, shows};
 pub use rulers::fmt;
 pub(crate) use rulers::{status_badge, status_label};
 pub mod board_bar;
+pub mod board_connect;
 pub mod board_facilitate;
 pub mod comments;
 pub mod cursors;
@@ -84,6 +85,9 @@ pub struct CanvasState {
     pub last_pointer: Option<Point>,
     /// The real pointer was over the canvas last frame (leaving it clears what it hovered).
     hovering: bool,
+    /// The hover last sent to the tools and the state it was found in ([`input::HoverKey`]): the
+    /// frames egui draws after a pointer move carry no new input, and would find the same again.
+    last_hover: Option<input::HoverKey>,
     /// What the pointer shows over the canvas (`ui.inspect`); none while it is elsewhere or
     /// something on the canvas with a cursor of its own has it (a ruler guide, a gradient handle).
     pub cursor: Option<crate::cursors::Shown>,
@@ -91,6 +95,8 @@ pub struct CanvasState {
     /// The pen pressure last reported during the current press (pen and stylus touches; the
     /// winit backends and browsers that report it).
     pressure: Option<f32>,
+    /// The latest scroll came from a mouse wheel rather than a trackpad (Scroll wheel zoom).
+    wheel_is_mouse: bool,
     /// Fingers that were on the canvas last frame: two or more make a drag pan and zoom at
     /// once (`gestos_tactiles`).
     pub touch_count: usize,
@@ -164,6 +170,7 @@ impl Default for CanvasState {
             zoom_drag: None,
             last_pointer: None,
             hovering: false,
+            last_hover: None,
             preedit: None,
             pressure: None,
             touch_count: 0,
@@ -171,6 +178,7 @@ impl Default for CanvasState {
             toque: Toque::default(),
             timing: CanvasTiming::new(64),
             last_input_instant: None,
+            wheel_is_mouse: false,
         }
     }
 }
@@ -237,7 +245,8 @@ fn pointer_event(app: &FigApp, kind: PointerKind, pos: Pos2, m: &egui::Modifiers
         sy: f64::from(pos.y),
         shift: m.shift,
         alt: m.alt,
-        cmd: m.command,
+        // Crop mode: resizing the layer crops it, as Cmd/Ctrl-resizing does.
+        cmd: m.command || app.ui.crop.is_some(),
         ctrl: m.ctrl,
         zoom,
         pressure: app.canvas.pressure,
@@ -434,7 +443,10 @@ pub fn show(app: &mut FigApp, ui: &mut Ui, worker: &mut Worker) {
     } else {
         tr("Drop to import")
     };
-    crate::drop_overlay(&ctx, ctx.content_rect(), label);
+    match crate::colorpicker::image_drop_target(app, &ctx).filter(|_| !documents && app.ui.right_tab != crate::RightTab::Inspect) {
+        Some((rect, _)) => crate::drop_overlay(&ctx, rect, tr("Drop to use this image")),
+        None => crate::drop_overlay(&ctx, ctx.content_rect(), label),
+    }
     crate::guides::end_released(&ctx);
     crate::live::track_pointer(app, &ctx);
     app.sync_preedit();
@@ -522,12 +534,14 @@ pub fn show(app: &mut FigApp, ui: &mut Ui, worker: &mut Worker) {
     crate::board_facilitate::badges(app, &painter);
     crate::board_bar::stamp_author(app, &painter, ctx.input(|i| i.pointer.hover_pos()).filter(|p| rect.contains(*p)));
     crate::board_bar::show(app, &ctx);
+    crate::board_connect::show(app, &ctx);
     crate::board_facilitate::show(app, &ctx, rect);
     crate::widget_bar::show(app, &ctx);
     crate::selection_spacing::draw(app, &painter);
     crate::comments::draw(app, &painter);
     crate::live_text::draw(app, &painter);
     crate::live::draw(app, &painter, &ctx);
+    crate::live::agent::draw(app, &painter, &ctx);
     crate::live::chat_box(app, &ctx);
     crate::live::spotlight_banner(app, &ctx, rect);
     crate::comments::popovers(app, &ctx);
@@ -601,6 +615,17 @@ mod builder_poly_tests;
 
 #[cfg(test)]
 mod loupe_tests;
+#[cfg(test)]
+mod outline_tests;
+
+#[cfg(test)]
+mod panel_nodes_tests;
+
+#[cfg(test)]
+mod selection_cache_tests;
+
+#[cfg(test)]
+mod wheel_zoom_tests;
 
 #[cfg(test)]
 mod zoom_preview_tests;
