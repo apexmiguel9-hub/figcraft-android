@@ -339,30 +339,38 @@ pub(super) fn menu_frame<R>(ui: &mut Ui, t: &Tokens, at: At, add: impl FnOnce(&m
             // On a phone a submenu is pinned below the tab bar (see `submenu_at`), so it has
             // less room and must not be constrained after layout: moving an Area after its
             // rows were laid out is what made taps land in the wrong place.
-            let max_h = if at.path.is_empty() || screen.height() >= 600.0 {
-                (screen.height() - 24.0).max(160.0)
-            } else {
-                // The panel starts at the same absolute y as the main menu.
-                (screen.max.y - (crate::tabs::HEIGHT + 48.0) - 16.0).max(160.0)
-            };
-            let fresh = ui.data_mut(|d| d.remove_temp::<bool>(Id::unique(("menu_fresh", at.root, at.path.clone())))).unwrap_or(false);
-            let mut scroll =
-                egui::ScrollArea::vertical().id_salt(("menu_scroll", at.root, at.path.clone())).max_height(max_h).auto_shrink([false, true]);
-            if fresh {
-                scroll = scroll.vertical_scroll_offset(0.0);
+            // En escritorio el menú cabe entero y los tests de menú esperan ver sus filas sin
+            // scroll (si no, `layer_id_at` del click da Background y el menú se cierra sin
+            // invocar), así que el scroll solo va en Android.
+            if cfg!(target_os = "android") {
+                let max_h = if at.path.is_empty() || screen.height() >= 600.0 {
+                    (screen.height() - 24.0).max(160.0)
+                } else {
+                    // The panel starts at the same absolute y as the main menu.
+                    (screen.max.y - (crate::tabs::HEIGHT + 48.0) - 16.0).max(160.0)
+                };
+                let fresh = ui.data_mut(|d| d.remove_temp::<bool>(Id::unique(("menu_fresh", at.root, at.path.clone())))).unwrap_or(false);
+                let mut scroll =
+                    egui::ScrollArea::vertical().id_salt(("menu_scroll", at.root, at.path.clone())).max_height(max_h).auto_shrink([false, true]);
+                if fresh {
+                    scroll = scroll.vertical_scroll_offset(0.0);
+                }
+                // The rows live in the scroll area's own `Ui`, not in this frame's. The menu level
+                // has to be stored on that one too: `level_at` reads it from the `Ui` that draws the
+                // rows. Storing it only here made every level fall back to the same `"menus"`/empty
+                // path, so hovering a submenu item closed the submenu (it thought it was a plain row
+                // of the parent), and closing the menu never forgot the real tree.
+                let inner_at = at.clone();
+                return scroll
+                    .show(ui, |ui| {
+                        ui.data_mut(|d| d.insert_temp(at_key(ui), inner_at));
+                        add(ui)
+                    })
+                    .inner;
             }
-            // The rows live in the scroll area's own `Ui`, not in this frame's. The menu level
-            // has to be stored on that one too: `level_at` reads it from the `Ui` that draws the
-            // rows. Storing it only here made every level fall back to the same `"menus"`/empty
-            // path, so hovering a submenu item closed the submenu (it thought it was a plain row
-            // of the parent), and closing the menu never forgot the real tree.
-            let inner_at = at.clone();
-            scroll
-                .show(ui, |ui| {
-                    ui.data_mut(|d| d.insert_temp(at_key(ui), inner_at));
-                    add(ui)
-                })
-                .inner
+            let key = at_key(ui);
+            ui.data_mut(|d| d.insert_temp(key, at));
+            add(ui)
         })
         .inner
 }
