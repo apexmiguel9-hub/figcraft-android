@@ -117,16 +117,19 @@ pub enum AboutTab {
     About,
     Contributors,
     Models,
+    /// Pantalla de licencias: MIT, Apache-2.0 y atribuciones (incluidas las de fuentes).
+    Licencias,
 }
 
 impl AboutTab {
-    pub const ALL: [AboutTab; 3] = [AboutTab::About, AboutTab::Contributors, AboutTab::Models];
+    pub const ALL: [AboutTab; 4] = [AboutTab::About, AboutTab::Contributors, AboutTab::Models, AboutTab::Licencias];
 
     pub fn label(self) -> &'static str {
         match self {
             AboutTab::About => tr("About"),
             AboutTab::Contributors => tr("Contributors"),
             AboutTab::Models => tr("Models"),
+            AboutTab::Licencias => tr("Licencias"),
         }
     }
 }
@@ -178,6 +181,27 @@ fn about_body(ui: &mut egui::Ui, t: &Tokens) {
     ui.label(
         RichText::new(tr("Dual-licensed MIT OR Apache-2.0. Made by the ArtCraft team and community.")).color(t.text_secondary).font(regular(11.0)),
     );
+}
+
+/// About ▸ Licencias: texto de las licencias MIT y Apache-2.0, y las atribuciones
+/// (incluidas las de las fuentes).
+fn licencias_body(ui: &mut egui::Ui) {
+    let mit = include_str!("../../../LICENSE-MIT");
+    let apache = include_str!("../../../LICENSE-APACHE");
+    let attribution = include_str!("../../../ATTRIBUTION.md");
+    egui::ScrollArea::vertical().show(ui, |ui| {
+        ui.heading(tr("Licencia MIT"));
+        ui.add_space(6.0);
+        ui.label(mit);
+        ui.add_space(12.0);
+        ui.heading(tr("Licencia Apache-2.0"));
+        ui.add_space(6.0);
+        ui.label(apache);
+        ui.add_space(12.0);
+        ui.heading(tr("Atribuciones"));
+        ui.add_space(6.0);
+        ui.label(attribution);
+    });
 }
 
 /// Escape closes the topmost simple dialog (one without menus of its own), before the canvas's
@@ -244,6 +268,7 @@ pub fn show(app: &mut FigApp, ctx: &Context) {
                 AboutTab::About => about_body(ui, &t),
                 AboutTab::Contributors => crate::credits::contributors_ui(ui),
                 AboutTab::Models => crate::credits::models_ui(ui),
+                AboutTab::Licencias => licencias_body(ui),
             }
         });
         if !open {
