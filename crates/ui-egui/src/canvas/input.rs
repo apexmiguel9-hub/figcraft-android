@@ -431,6 +431,7 @@ fn pulsacion_larga(app: &mut FigApp, ctx: &egui::Context) -> bool {
             // dispare tambien el clic. Y `dragging` a false para que el dedo que levanta no
             // termine un arrastre que nunca existio.
             app.canvas.long_press = None;
+            app.canvas.long_press_menu = true;
             app.canvas.dragging = false;
             app.canvas.loupe = None;
             // A long press is not half of a double tap.
@@ -692,6 +693,12 @@ pub(super) fn input(app: &mut FigApp, ui: &mut Ui, resp: &egui::Response) -> boo
         }
         (press, release)
     });
+    // Un long press abrio el menu contextual: el proximo release del dedo se ignora para que
+    // no se dispare un click que deseleccione la multiseleccion.
+    if primary_released && app.canvas.long_press_menu {
+        app.canvas.long_press_menu = false;
+        return true;
+    }
     // A touch press held back (`toque_prem`) resolves here, before the kinds below: the menu
     // opening dropped it already (`pulsacion_larga`), a release is the whole click, and a drag
     // flushes the Down at the finger's landing point so the frame carries on as a Move.

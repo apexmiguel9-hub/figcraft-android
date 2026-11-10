@@ -108,6 +108,9 @@ pub struct CanvasState {
     /// MEDIDO que son **puntos recorridos acumulados** y no un instante: a finger resting does
     /// not produce events, so a clock would not advance.
     long_press: Option<(Pos2, f32)>,
+    /// Un long press abrio el menu contextual: el proximo release del dedo se ignora para que no
+    /// se dispare un click que deseleccione la multiseleccion.
+    long_press_menu: bool,
     /// The taps on the canvas, for the double tap (`doble_toque`).
     toque: Toque,
     /// A touch press over a multi-selection, held back until we know what it is: sent as a Down it
@@ -182,6 +185,7 @@ impl Default for CanvasState {
             pressure: None,
             touch_count: 0,
             long_press: None,
+            long_press_menu: false,
             toque: Toque::default(),
             toque_prem: None,
             timing: CanvasTiming::new(64),
