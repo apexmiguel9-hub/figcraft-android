@@ -304,6 +304,22 @@ Installers for macOS (universal, signed and notarized), Windows (x64, x86 and ar
 > [!IMPORTANT]
 > **Status:** FigCraft is in **alpha**: about 49% of the way to replacing proprietary tools for real work, by our own estimate. Nearly all tracked interface design actions in the menu checklist are wired ([`docs/parity-checklist.md`](docs/parity-checklist.md)) and the core editor works end to end, but FigCraft opens `.fig` files only best effort, has only a first preview of multiplayer (live sessions hosted from the app or a self-hosted server, with per-person undo and share links to edit or to view; no accounts, teams or cloud yet), runs its own WebAssembly plugins, and hasn't been checked against real design documents. The honest, area-by-area picture is in the [roadmap](ROADMAP.md) and [`docs/target-app-parity.md`](docs/target-app-parity.md). Expect rough edges and please file issues, or tell us what broke on [Discord](https://discord.gg/artcraft).
 
+## Android port
+
+Este repositorio es un **fork** de [`storytold/figcraft`](https://github.com/storytold/figcraft) con un port de Android, usando la plantilla de [`vectorcraft-android`](https://github.com/apexmiguel9-hub/vectorcraft-android).
+
+- **Repo:** `apexmiguel9-hub/figcraft-android`
+- **Arquitectura:** el `.so` nativo (`figcraft-android`, arm64-v8a) se carga desde una app Android con `NativeActivity` + `egui`/`eframe`. El motor rasteriza en CPU (`tiny-skia`); la GPU solo presenta píxeles.
+- **Backend de render:** Vulkan por defecto en Android (con `FIGCRAFT_WGPU_BACKEND` para forzar `gl`/`auto` en depuración). Se aplica un fork de wgpu (`apexmiguel9-hub/wgpu@5e615d45`) que desactiva `WriterFlags::DEBUG` solo para vendor `0x1010` (PowerVR/Imagination), evitando el aborto del driver al crear el pipeline de egui.
+- **Dispositivos probados:**
+  - Moto G56 5G: MediaTek Dimensity 7060 (MT6855G), PowerVR BXM-8-256, 8 GB RAM, Vulkan 1.3.303, Android 16.
+  - Infinix Hot 10i: Mediatek Helio P65, Mali-G52, 4 GB RAM, Vulkan 1.1, Android 11 (no conectado al preparar el release; datos no obtenidos vía adb).
+- **CI:** `build-android-so` compila el `.so` (debug, arm64-v8a); `build-apk` genera el APK debug firmado con keystore de debug versionado en el repo.
+- **Release:** el tag del primer release del port es `v0.17.0-android.1`. No hay aún job de CI para APK release (firmado, `--release`).
+- **Problemas conocidos:** "no such node" al copiar, pegar y mover lo pegado (prioridad baja). Véase [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
+- **No afiliado:** este port no es oficial ni está afiliado a ArtCraft ni a Figma.
+
+
 ## Privacy and online sharing
 
 FigCraft works offline: it has no account and no telemetry, and it contacts no server until you

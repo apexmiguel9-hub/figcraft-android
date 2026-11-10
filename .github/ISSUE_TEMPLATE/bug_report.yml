@@ -1,0 +1,95 @@
+name: 🐛 Bug report
+description: Reporta un error en el port Android de FigCraft
+title: "[Android] "
+labels: ["android", "bug"]
+body:
+  - type: markdown
+    attributes:
+      value: "Gracias por reportar. Por favor rellena todos los campos. La app tiene un botón **Copiar info del sistema** en Acerca de ▸ Acerca de que pega la versión, backend, adaptador, driver y versión de Vulkan."
+
+  - type: input
+    id: device
+    attributes:
+      label: Dispositivo
+      description: Modelo exacto del móvil
+      placeholder: Ej. Moto G56 5G
+    validations:
+      required: true
+
+  - type: input
+    id: soc
+    attributes:
+      label: SoC / GPU
+      description: Procesador y gráfica (ej. de `ro.soc.model` y `cmd gpu vkjson`)
+      placeholder: Ej. MediaTek MT6855G / PowerVR BXM-8-256
+    validations:
+      required: true
+
+  - type: input
+    id: android_version
+    attributes:
+      label: Versión de Android
+      placeholder: Ej. 16
+    validations:
+      required: true
+
+  - type: input
+    id: app_version
+    attributes:
+      label: Versión de la app
+      description: Versión mostrada en Acerca de o en el tag del release
+      placeholder: Ej. 0.17.0-android.1
+    validations:
+      required: true
+
+  - type: textarea
+    id: system_info
+    attributes:
+      label: Info del sistema (copiada de la app)
+      description: Pega aquí la salida del botón "Copiar info del sistema" de Acerca de
+      placeholder: |
+        versión: ...
+        backend wgpu: ...
+        adaptador: ...
+        driver: ...
+        Vulkan: ...
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Pasos para reproducir
+      placeholder: |
+        1. Abrir la app
+        2. Seleccionar dos rectángulos
+        3. Hacer long press...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Comportamiento esperado
+      placeholder: Qué debería pasar
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Comportamiento actual
+      placeholder: Qué pasa en realidad (incluye "no such node" si aparece)
+
+  - type: textarea
+    id: logcat
+    attributes:
+      label: Logcat (opcional)
+      description: Salida de `adb logcat` alrededor del fallo, si la tienes
+      placeholder: Pega aquí el logcat relevante...
+
+  - type: checkboxes
+    id: verified_on
+    attributes:
+      label: Verificado en
+      description: Marca en qué dispositivo lo has probado
+      options:
+        - label: Moto G56 5G (PowerVR, Android 16)
+        - label: Infinix Hot 10i (Mali, Android 11)
+        - label: Otro dispositivo
