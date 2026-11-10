@@ -74,7 +74,8 @@ pub struct CanvasState {
     pub timing: CanvasTiming,
     /// Momento en que llegó el último evento de dedo/pointer relevante (para marcar el input del ciclo abierto).
     pub last_input_instant: Option<Instant>,
-    dragging: bool,
+    /// A primary drag is under way (the tools got its Down; the Up ends it).
+    pub dragging: bool,
     /// The magnifier shown over the finger while a vector point or handle is dragged (touch).
     pub loupe: Option<Loupe>,
     space_pan: bool,
@@ -109,6 +110,12 @@ pub struct CanvasState {
     long_press: Option<(Pos2, f32)>,
     /// The taps on the canvas, for the double tap (`doble_toque`).
     toque: Toque,
+    /// A touch press over a multi-selection, held back until we know what it is: sent as a Down it
+    /// would replace the selection with the object under the finger before the long press can open
+    /// the context menu over the whole selection (to duplicate or delete it). Resolved in
+    /// `input()`: a drag flushes the Down at the finger's landing point, a quick tap sends the
+    /// whole click at the release, and the long press that opens the menu drops it unsent.
+    toque_prem: Option<Pos2>,
 }
 
 /// The magnifier shown over the finger while a point or handle is dragged in vector edit mode.
@@ -176,6 +183,7 @@ impl Default for CanvasState {
             touch_count: 0,
             long_press: None,
             toque: Toque::default(),
+            toque_prem: None,
             timing: CanvasTiming::new(64),
             last_input_instant: None,
             wheel_is_mouse: false,

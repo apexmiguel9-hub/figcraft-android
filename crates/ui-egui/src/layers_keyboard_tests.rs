@@ -199,6 +199,99 @@ fn a_long_press_release_does_not_close_the_context_menu() {
     assert!(u.app.ui.context_menu.is_none(), "a later press outside closes it");
 }
 
+/// Selects both rectangles and hands the touch helper the test drives gestures with.
+fn multi() -> (Ui, NodeId, NodeId, impl Fn(egui::TouchPhase, egui::Pos2) -> Event) {
+    let (mut u, a, b) = setup();
+    u.app.session.execute("select.set", &json!({"ids": [a, b]})).unwrap();
+    u.frame(vec![]);
+    let touch =
+        |phase: egui::TouchPhase, pos: egui::Pos2| Event::Touch { device_id: egui::TouchDeviceId(0), id: egui::TouchId(1), phase, pos, force: None };
+    (u, a, b, touch)
+}
+
+/// Both still selected, whatever happened to the touches in between.
+fn both(u: &Ui, a: NodeId, b: NodeId) {
+    let sel = u.app.session.selection();
+    assert!(sel.contains(&a) && sel.contains(&b) && sel.len() == 2, "the multi-selection stands: {sel:?}");
+}
+
+#[test]
+fn a_long_press_over_a_multi_selection_opens_the_menu_and_keeps_it() {
+    let (mut u, a, b, touch) = multi();
+    // Over A (one of the selected): the touch and the emulated press egui-winit delivers together.
+    let p = u.app.to_screen(20.0, 15.0);
+    assert!(u.app.canvas.rect.contains(p), "the touch lands on the canvas: {p:?}");
+    u.frame(vec![
+        touch(egui::TouchPhase::Start, p),
+        Event::PointerMoved(p),
+        Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE },
+    ]);
+    both(&u, a, b); // the held-back press does not replace the selection
+    // A still finger: four touch moves in one frame open the menu over the whole selection.
+    let mut still = vec![Event::PointerMoved(p)];
+    for _ in 0..4 {
+        still.push(touch(egui::TouchPhase::Move, p));
+    }
+    u.frame(still);
+    assert!(u.app.ui.context_menu.is_some(), "the long press opens the context menu");
+    both(&u, a, b); // the menu keeps the multi-selection (duplicate and delete act on it)
+    // The finger lifts a few points away: the release must not turn into a click on it.
+    let up = p - egui::vec2(8.0, 8.0);
+    u.frame(vec![
+        touch(egui::TouchPhase::End, up),
+        Event::PointerMoved(up),
+        Event::PointerButton { pos: up, button: egui::PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE },
+        Event::PointerGone,
+    ]);
+    both(&u, a, b); // the release that ends the long press keeps the selection
+}
+
+#[test]
+fn a_quick_tap_with_a_multi_selection_is_still_a_click() {
+    let (mut u, _a, _b, touch) = multi();
+    // On the empty canvas (outside the selection box): the tap is a click, and a click on nothing
+    // clears the selection as it does under the mouse.
+    let p = u.app.to_screen(200.0, 200.0);
+    assert!(u.app.canvas.rect.contains(p), "the tap lands on the canvas: {p:?}");
+    u.frame(vec![
+        touch(egui::TouchPhase::Start, p),
+        Event::PointerMoved(p),
+        Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE },
+    ]);
+    both(&u, _a, _b);
+    u.frame(vec![
+        touch(egui::TouchPhase::End, p),
+        Event::PointerMoved(p),
+        Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE },
+        Event::PointerGone,
+    ]);
+    assert!(u.app.session.selection().is_empty(), "the quick tap cleared the selection as a click does");
+}
+
+#[test]
+fn a_drag_from_a_multi_selection_drags_it_and_keeps_it() {
+    let (mut u, a, b, touch) = multi();
+    // Press on A and drag well past the long press's stillness: the Down flushes where the finger
+    // landed and the drag moves the whole selection.
+    let p = u.app.to_screen(20.0, 15.0);
+    u.frame(vec![
+        touch(egui::TouchPhase::Start, p),
+        Event::PointerMoved(p),
+        Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE },
+    ]);
+    let q = u.app.to_screen(70.0, 55.0);
+    u.frame(vec![touch(egui::TouchPhase::Move, q), Event::PointerMoved(q)]);
+    assert!(u.app.canvas.dragging, "the drag took over from the held-back press");
+    both(&u, a, b);
+    u.frame(vec![
+        touch(egui::TouchPhase::End, q),
+        Event::PointerMoved(q),
+        Event::PointerButton { pos: q, button: egui::PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE },
+        Event::PointerGone,
+    ]);
+    both(&u, a, b); // the selection survives its own drag
+}
+
 #[test]
 fn f8_draws_a_selection_box_the_arrows_move_and_size() {
     let (mut u, a, b) = setup();

@@ -606,6 +606,8 @@ pub(super) fn input(app: &mut FigApp, ui: &mut Ui, resp: &egui::Response) -> boo
         return true;
     }
     if gestos_tactiles(app, &ctx, resp, pos) {
+        // Dos dedos: eso es pan y zoom; el press aplazado del primero no es un toque.
+        app.canvas.toque_prem = None;
         return true;
     }
     if zoom_tool(app, ui, resp, pos, mods, editing_text || typing_elsewhere) {
@@ -616,6 +618,9 @@ pub(super) fn input(app: &mut FigApp, ui: &mut Ui, resp: &egui::Response) -> boo
     // pulsacion larga es de **un** dedo, asi que con dos dedos ya se ha resuelto el frame y
     // aqui solo queda el dedo suelto.
     if pulsacion_larga(app, &ctx) {
+        // El menu abrio sobre lo que habia: el press aplazado se queda sin enviar, y la
+        // seleccion multiple con el (el bug que traia era que el Down lo reemplazaba).
+        app.canvas.toque_prem = None;
         return true;
     }
     // Middle-button (or side-button) / space panning.
@@ -687,8 +692,38 @@ pub(super) fn input(app: &mut FigApp, ui: &mut Ui, resp: &egui::Response) -> boo
         }
         (press, release)
     });
+    // A touch press held back (`toque_prem`) resolves here, before the kinds below: the menu
+    // opening dropped it already (`pulsacion_larga`), a release is the whole click, and a drag
+    // flushes the Down at the finger's landing point so the frame carries on as a Move.
+    if let Some(prem) = app.canvas.toque_prem {
+        if primary_released {
+            // A quick tap: the click reaches the engine whole, as a mouse's would.
+            app.canvas.toque_prem = None;
+            send(app, PointerKind::Down, prem, &mods);
+            send(app, PointerKind::Up, release_pos.unwrap_or(pos), &mods);
+            app.canvas.last_input_instant = Some(Instant::now());
+            return true;
+        }
+        if pos.distance(prem) > LONG_PRESS_MOVEMENT_PX {
+            send(app, PointerKind::Down, prem, &mods);
+            app.canvas.toque_prem = None;
+            app.canvas.dragging = true;
+            app.canvas.last_input_instant = Some(Instant::now());
+            // This frame's kind falls through to the Move branch below (dragging, primary down).
+        }
+    }
     let kind = if primary_pressed && resp.hovered() {
-        app.canvas.dragging = true;
+        // A touch press over a multi-selection is held back (`toque_prem`) until we know what it
+        // is: sent as a Down it would replace the selection with the object under the finger (or
+        // clear it on empty canvas) before the long press can open the menu over the whole
+        // selection. A mouse press is never held: desktop keeps upstream's click.
+        let touch = cfg!(target_os = "android") || ctx.input(|i| i.any_touches());
+        if touch && !primary_released && app.session.selection().len() > 1 {
+            let prem = press_pos.unwrap_or(pos);
+            app.canvas.toque_prem = Some(prem);
+        } else {
+            app.canvas.dragging = true;
+        }
         app.ui.context_menu = None;
         app.ui.tool_flyout = None;
         // Clicking the canvas takes focus from panel fields.
@@ -698,7 +733,7 @@ pub(super) fn input(app: &mut FigApp, ui: &mut Ui, resp: &egui::Response) -> boo
             }
         });
         app.canvas.last_input_instant = Some(Instant::now());
-        Some(PointerKind::Down)
+        app.canvas.dragging.then_some(PointerKind::Down)
     } else if app.canvas.dragging && primary_released {
         app.canvas.dragging = false;
         Some(PointerKind::Up)

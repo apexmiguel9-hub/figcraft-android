@@ -171,6 +171,7 @@ impl Session {
             }
             None => {
                 let within = self.marquee_within(ev.p())?;
+                eprintln!("[dbg] engine move_down marquee: p=({:.0},{:.0}) shift={} -> clear", ev.x, ev.y, ev.shift);
                 if !ev.shift {
                     self.set_selection(vec![]);
                 }
