@@ -800,6 +800,12 @@ fn draw(p: &P, icon: Icon) {
             p.path(&u, false);
             p.head((f(3.0), 5.5), if undo { PI } else { 0.0 }, 3.0);
         }
+        Trash => {
+            // A bin: a lid slightly wider than the body, with a small knob on top.
+            p.rect(4.0, 5.0, 12.0, 11.0, 1.0); // body
+            p.rect(3.5, 3.0, 12.5, 5.5, 1.0); // lid
+            p.line(8.0, 3.0, 8.0, 4.0); // lid knob
+        }
         Hug => {
             p.poly(&[(2.5, 4.5), (5.5, 7.5), (2.5, 10.5)], false);
             p.poly(&[(13.5, 4.5), (10.5, 7.5), (13.5, 10.5)], false);

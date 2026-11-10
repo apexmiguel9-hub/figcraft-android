@@ -111,8 +111,14 @@ fn tab_drop_position(visible: &[(usize, Rect)], from: usize, pointer_x: f32) -> 
 /// canvas (the main menu and then Edit), which is too much for the action used all the time.
 fn history_buttons(app: &mut FigApp, ui: &mut Ui, t: &Tokens, x: f32, rect: Rect) {
     let history = app.session.ds().map(|d| (d.history.undo.len(), d.history.redo.len())).unwrap_or((0, 0));
-    for (i, (icon, enabled, label, command)) in
-        [(Icon::Undo, history.0 > 0, tr("Undo"), "edit.undo"), (Icon::Redo, history.1 > 0, tr("Redo"), "edit.redo")].into_iter().enumerate()
+    let can_delete = !app.session.selection().is_empty();
+    for (i, (icon, enabled, label, command)) in [
+        (Icon::Undo, history.0 > 0, tr("Undo"), "edit.undo"),
+        (Icon::Redo, history.1 > 0, tr("Redo"), "edit.redo"),
+        (Icon::Trash, can_delete, tr("Delete"), "edit.delete"),
+    ]
+    .into_iter()
+    .enumerate()
     {
         let r = Rect::from_center_size(pos2(x + 16.0 + 32.0 * i as f32, rect.center().y), vec2(28.0, 28.0));
         let resp = ui.interact(r, ui.scope_id().with(("history", i)), Sense::click()).tip(crate::shortcuts::tip(label, command));
@@ -143,7 +149,7 @@ pub fn tab_bar(app: &mut FigApp, ui: &mut Ui) {
         // que los tests de escritorio dan por supuesta, así que solo en Android.
         if cfg!(target_os = "android") {
             history_buttons(app, ui, &t, x, rect);
-            x += 64.0;
+            x += 96.0;
             ui.painter().line_segment([pos2(x, rect.min.y), pos2(x, rect.max.y)], Stroke::new(1.0, t.border));
         }
         let document_tabs: Vec<usize> = app.session.docs.iter().enumerate().filter_map(|(i, d)| app.shows(d.uid).then_some(i)).collect();

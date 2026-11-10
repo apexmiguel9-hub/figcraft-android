@@ -149,6 +149,8 @@ icons! {
     Moon,
     Undo,
     Redo,
+    /// Delete the selection: a bin. Android-only toolbar button next to undo/redo.
+    Trash,
     Union,
     Subtract,
     Intersect,
