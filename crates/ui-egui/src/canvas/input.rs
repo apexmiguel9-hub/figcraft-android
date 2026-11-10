@@ -594,6 +594,13 @@ pub(super) fn input(app: &mut FigApp, ui: &mut Ui, resp: &egui::Response) -> boo
         crate::handles::end_released_drag(app, &ctx);
         return true;
     };
+    // Si el menú contextual está abierto, no enviamos eventos del pointer al motor del
+    // canvas: el menú maneja sus propios clics y el canvas no debe reaccionar a toques
+    // mientras el menú está visible (evita que un toque sobre una opción del menú se
+    // interprete como un click que deseleccione la multiselección).
+    if app.ui.context_menu.is_some() {
+        return true;
+    };
     // A press on the canvas gives the keyboard back to it (arrows nudge again).
     if resp.hovered() && ctx.input(|i| i.pointer.any_pressed()) {
         app.ui.layers_focus = false;
