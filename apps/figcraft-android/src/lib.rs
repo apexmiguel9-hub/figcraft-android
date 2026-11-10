@@ -15,6 +15,10 @@
 //! Bordes: `raw_input_hook` recorta `screen_rect` con los insets que lee Java, porque la
 //! ventana llega edge-to-edge y `winit` 0.30 solo rellena `safe_area_insets` en iOS.
 
+use std::fs;
+use std::path::Path;
+use std::sync::OnceLock;
+
 use figcraft_engine::Session;
 use figcraft_ui_egui::FigApp;
 
@@ -22,6 +26,47 @@ use figcraft_ui_egui::FigApp;
 mod browser;
 #[cfg(target_os = "android")]
 mod permiso;
+
+/// Fichero marcador del guarda anti-bucle de cierre (crash-loop).
+///
+/// Se crea justo antes de `eframe::run_native` y se borra en el primer frame que
+/// pinta correctamente. Si al arrancar el marcador todavía está, la ejecucion
+/// anterior murio antes del primer frame (p. ej. el driver Vulkan aborto al
+/// crear el pipeline de egui), asi que esta vez se fuerza OpenGL ES.
+const CRASH_MARKER: &str = ".figcraft_crash_marker";
+
+/// Ruta del marcador de crash-loop dentro del directorio privado de datos de la app.
+#[cfg(target_os = "android")]
+fn crash_marker_path(app: &winit::platform::android::activity::AndroidApp) -> Option<std::path::PathBuf> {
+    app.internal_data_path().map(|dir| dir.join(CRASH_MARKER))
+}
+
+/// Comprueba si el marcador de crash-loop esta presente y, en ese caso, lo borra y
+/// devuelve `true` (la sesion anterior cerro de forma inesperada).
+#[cfg(target_os = "android")]
+fn hubo_crash_previo(app: &winit::platform::android::activity::AndroidApp) -> bool {
+    let Some(path) = crash_marker_path(app) else { return false };
+    if path.exists() {
+        let _ = fs::remove_file(&path);
+        log::warn!("figcraft-android: marcador de crash-loop previo; se fuerza OpenGL ES esta vez");
+        return true;
+    }
+    false
+}
+
+/// Crea el marcador de crash-loop antes de lanzar el bucle de frames. Devuelve su ruta.
+#[cfg(target_os = "android")]
+fn crear_marcador_crash(app: &winit::platform::android::activity::AndroidApp) -> Option<PathBuf> {
+    let Some(path) = crash_marker_path(app) else { return None };
+    let _ = fs::File::create(&path);
+    Some(path)
+}
+
+/// Borra el marcador de crash-loop: el primer frame se pudo pintar.
+fn borrar_marcador_crash(app: &winit::platform::android::activity::AndroidApp) {
+    let Some(path) = crash_marker_path(app) else { return };
+    let _ = fs::remove_file(&path);
+}
 
 // MEDIDO, y el punto en el que el port dio la vuelta: con `NativeActivity` Android manda
 // **teclas** al `InputConnection` de AOSP, `winit` las recibe y el texto llega a egui solo.
@@ -44,6 +89,13 @@ mod permiso;
 // que `text_input_state()` no abortara con `slice::from_raw_parts(nulo, 0)`. Esa API ya no se
 // llama. Ver el `Cargo.toml` para los datos que trajeron aqui (el APK de vectorcraft instalado en el
 // movil tiene `Landroid/app/NativeActivity;` en sus `.dex`).
+
+/// Ruta del marcador de crash-loop, establecida en `android_main` y leida en el primer frame.
+static CRASH_MARKER_PATH: OnceLock<PathBuf> = OnceLock::new();
+
+/// `true` una vez que se ha pintado el primer frame correctamente; se usa para borrar el
+/// marcador de crash-loop solo la primera vez.
+static PRIMER_FRAME: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// El `eframe::App` del port. Reenvia a `FigApp`, que ya trae 100% de la UI.
 pub struct App(pub FigApp);
@@ -133,6 +185,15 @@ impl eframe::App for App {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // Primer frame que pinta bien: borrar el marcador de crash-loop para que el
+        // proximo arranque use el backend normal (no el fallback de OpenGL).
+        #[cfg(target_os = "android")]
+        if !PRIMER_FRAME.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            if let Some(path) = CRASH_MARKER_PATH.get() {
+                let _ = fs::remove_file(path);
+                log::info!("figcraft-android: primer frame OK; marcador de crash-loop borrado");
+            }
+        }
         let ctx = ui.ctx().clone();
         figcraft_ui_egui::windows::guard(&mut self.0, &ctx, |fig| fig.ui(ui));
         // MEDIDO: el aviso va en una `Window` propia y **no** en el `Ui` del editor, porque
@@ -274,24 +335,43 @@ fn wgpu_backend() -> eframe::egui_wgpu::wgpu::Backends {
 ///
 /// MEDIDO que el motor rasteriza en CPU (`tiny-skia`), asi que la GPU solo presenta pixeles
 /// y no tiene nada que hacer con esto: quedarse con GL no cuesta nada al dibujo.
-fn wgpu_solo_opengl() -> eframe::egui_wgpu::WgpuConfiguration {
+/// Nombre legible del backend que se usara, para el log de arranque.
+fn wgpu_backend_name(forzar_gl: bool) -> &'static str {
+    if forzar_gl {
+        "OpenGL ES (forzado por crash previo)"
+    } else {
+        match std::env::var("FIGCRAFT_WGPU_BACKEND").ok().as_deref().unwrap_or("vulkan") {
+            "vulkan" => "Vulkan",
+            "gl" => "OpenGL ES",
+            _ => "auto",
+        }
+    }
+}
+
+/// Solo OpenGL ES (estable en PowerVR/MediaTek). Cuando `forzar_gl` es true ignora
+/// `FIGCRAFT_WGPU_BACKEND` y usa solo OpenGL ES (fallback tras un crash previo).
+fn wgpu_solo_opengl(forzar_gl: bool) -> eframe::egui_wgpu::WgpuConfiguration {
     let mut setup = eframe::egui_wgpu::WgpuSetupCreateNew::without_display_handle();
-    setup.instance_descriptor.backends = wgpu_backend();
+    setup.instance_descriptor.backends = if forzar_gl {
+        eframe::egui_wgpu::wgpu::Backends::GL
+    } else {
+        wgpu_backend()
+    };
     eframe::egui_wgpu::WgpuConfiguration { wgpu_setup: eframe::egui_wgpu::WgpuSetup::CreateNew(setup), ..Default::default() }
 }
 
-fn window_options() -> eframe::NativeOptions {
+fn window_options(forzar_gl: bool) -> eframe::NativeOptions {
     eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([1280.0, 800.0]).with_min_inner_size([360.0, 480.0]).with_fullscreen(true),
         renderer: eframe::Renderer::Wgpu,
-        wgpu_options: wgpu_solo_opengl(),
+        wgpu_options: wgpu_solo_opengl(forzar_gl),
         ..Default::default()
     }
 }
 
 /// Arranque en escritorio, para probar sin movil.
 pub fn run() -> eframe::Result {
-    eframe::run_native("FigCraft", window_options(), Box::new(|cc| build(cc).map_err(|e| e.into())))
+    eframe::run_native("FigCraft", window_options(false), Box::new(|cc| build(cc).map_err(|e| e.into())))
 }
 
 /// Punto de entrada en Android.
@@ -347,11 +427,21 @@ pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidA
         log::warn!("figcraft-android: Android no dio un directorio de datos; las preferencias no se guardaran");
     }
 
+    // Guarda anti-bucle de cierre: si la sesion anterior murio antes del primer frame
+    // (p. ej. el driver Vulkan aborto al crear el pipeline de egui), esta vez se forza
+    // OpenGL ES. El marcador se borra en el primer frame que pinta bien.
+    let forzar_gl = hubo_crash_previo(&app);
+
     // El `AndroidApp` va DENTRO de las opciones, no como argumento aparte: es lo que el
     // `EventLoop` de winit necesita para construirse, y sin el se queda sin bucle de eventos.
     let options = eframe::NativeOptions { android_app: Some(app), ..window_options() };
 
     log::info!("figcraft-android: arrancando, version {}", env!("CARGO_PKG_VERSION"));
+    log::info!("figcraft-android: backend wgpu = {:?}, forzar_gl = {}", wgpu_backend_name(forzar_gl), forzar_gl);
+
+    // Crear el marcador ANTES de run_native: si no llega al primer frame, perdura.
+    let marker_path = crear_marcador_crash(&app);
+    let _ = CRASH_MARKER_PATH.set(marker_path);
 
     let resultado = eframe::run_native("FigCraft", options, Box::new(|cc| build(cc).map_err(|e| e.into())));
 
