@@ -33,11 +33,14 @@ jobs:
       - name: Poner el SDK de Android en el PATH
         uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407
         with:
-          packages: |
-            platform-tools
-            build-tools;34.0.0
+          packages: platform-tools
           accept-android-sdk-licenses: true
           log-accepted-android-sdk-licenses: true
+
+      - name: Instalar build-tools 34.0.0
+        run: |
+          sdkmanager "build-tools;34.0.0"
+          echo "ANDROID_BUILD_TOOLS=$ANDROID_SDK_ROOT/build-tools/34.0.0" >> "$GITHUB_ENV"
 
       - name: Instalar el NDK
         run: |
@@ -228,11 +231,14 @@ jobs:
       - name: Poner el SDK de Android en el PATH
         uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407
         with:
-          packages: |
-            platform-tools
-            build-tools;34.0.0
+          packages: platform-tools
           accept-android-sdk-licenses: true
           log-accepted-android-sdk-licenses: true
+
+      - name: Instalar build-tools 34.0.0
+        run: |
+          sdkmanager "build-tools;34.0.0"
+          echo "ANDROID_BUILD_TOOLS=$ANDROID_SDK_ROOT/build-tools/34.0.0" >> "$GITHUB_ENV"
 
       - name: Instalar el NDK
         run: |
