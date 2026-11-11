@@ -210,7 +210,7 @@ jobs:
           name: figcraft-android-release-test
           path: |
             apps/figcraft-android/android/figcraft-android-*-release-test.apk
-            ../release-info.txt
+            release-info.txt
           if-no-files-found: error
           retention-days: 30
 
