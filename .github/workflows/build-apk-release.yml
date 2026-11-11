@@ -198,7 +198,12 @@ jobs:
             echo ""
             echo "--- cargo ndk --version ---"
             cargo ndk --version
-          } > ../release-info.txt 2>&1
+          } > "$GITHUB_WORKSPACE/release-info.txt" 2>&1
+
+      - name: Verificar release-info.txt generado
+        run: |
+          ls -la "$GITHUB_WORKSPACE/release-info.txt"
+          test -s "$GITHUB_WORKSPACE/release-info.txt" || { echo "::error::release-info.txt vacio o inexistente"; exit 1; }
 
       - name: Configuracion de perfil release en Cargo.toml
         run: |
