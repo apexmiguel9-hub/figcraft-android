@@ -58,6 +58,13 @@ jobs:
           key: release-test-gradle-v1-${{ hashFiles('apps/figcraft-android/android/**/*.gradle') }}
           restore-keys: release-test-gradle-
 
+      - name: Check out craft-fonts
+        uses: actions/checkout@v4
+        with:
+          repository: storytold/craft-fonts
+          ref: 43913056ce82a3fdad0ef69f6b88d1dc922a8104
+          path: craft-fonts
+
       - name: Cargo toolchain y target Android
         run: |
           rustc --version && cargo --version
