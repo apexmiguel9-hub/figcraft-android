@@ -33,7 +33,9 @@ jobs:
       - name: Poner el SDK de Android en el PATH
         uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407
         with:
-          packages: platform-tools,build-tools;34.0.0
+          packages: |
+            platform-tools
+            build-tools;34.0.0
           accept-android-sdk-licenses: true
           log-accepted-android-sdk-licenses: true
 
@@ -226,7 +228,9 @@ jobs:
       - name: Poner el SDK de Android en el PATH
         uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407
         with:
-          packages: platform-tools,build-tools;34.0.0
+          packages: |
+            platform-tools
+            build-tools;34.0.0
           accept-android-sdk-licenses: true
           log-accepted-android-sdk-licenses: true
 
