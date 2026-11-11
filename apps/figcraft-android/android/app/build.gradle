@@ -40,7 +40,10 @@ android {
         // que Ajustes > Acerca de y el log de arranque (`figcraft-android: arrancando, version`)
         // decian una cosa y el workspace otra. El `Cargo.toml` del port si la hereda
         // (`version.workspace = true`), asi que aqui se pone la del workspace a mano.
-        versionName '0.17.0'
+        // NOTA: no se pudo leer el versionCode del APK instalado en el Moto G56 (adb no
+        // responde en este momento); se deja 4, igual que el build actual. Si el APK
+        // instalado tiene versionCode >= 4, subir este valor antes de release-signed.
+        versionName '0.17.0-android.1'
 
         // MEDIDO, y esto es lo que hace que `adb install -r` funcione: sin `signingConfig`
         // explicito, AGP genera un keystore debug **nuevo en cada runner**, asi que cada APK

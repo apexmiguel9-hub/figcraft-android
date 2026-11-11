@@ -1,0 +1,364 @@
+name: build-apk-release
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [release-prep]
+    tags: ['v*-android.*']
+
+permissions:
+  contents: read
+
+jobs:
+  # =========================================================================
+  # release-test: build de release firmado con la clave de debug del repo.
+  # Dispara en workflow_dispatch y en push a release-prep.
+  # =========================================================================
+  release-test:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || (github.event_name == 'push' && github.ref == 'refs/heads/release-prep')
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Poner el SDK de Android en el PATH
+        uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407
+        with:
+          packages: platform-tools,build-tools;34.0.0
+          accept-android-sdk-licenses: true
+          log-accepted-android-sdk-licenses: true
+
+      - name: Instalar el NDK
+        run: |
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager "ndk;26.1.10909125"
+          echo "NDK_DIR=$ANDROID_SDK_ROOT/ndk/26.1.10909125" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/26.1.10909125" >> "$GITHUB_ENV"
+
+      - name: Cache de Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: release-test-gradle-v1-${{ hashFiles('apps/figcraft-android/android/**/*.gradle') }}
+          restore-keys: release-test-gradle-
+
+      - name: Cargo toolchain y target Android
+        run: |
+          rustc --version && cargo --version
+          rustup target add aarch64-linux-android
+          cargo install cargo-ndk --version 4.1.2 --locked
+
+      - name: Cache de target/ (release)
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: android-release-${{ hashFiles('Cargo.lock') }}
+          restore-keys: android-release-
+
+      - name: Compilar la libreria nativa en release (arm64-v8a)
+        env:
+          ANDROID_NDK_HOME: ${{ env.NDK_DIR }}
+          CRAFT_FONTS_DIR: ${{ github.workspace }}/craft-fonts
+          CRAFT_FONTS_REQUIRED: "1"
+        run: |
+          cargo ndk -t arm64-v8a -o ./target build -p figcraft-android --locked --release
+          SO="target/aarch64-linux-android/release/libfigcraft_android.so"
+          echo "--- .so release producido ---"
+          ls -la "$SO"
+          file "$SO"
+
+      - name: Colocar .so en jniLibs
+        run: |
+          mkdir -p "apps/figcraft-android/android/app/src/main/jniLibs/arm64-v8a"
+          cp target/aarch64-linux-android/release/libfigcraft_android.so \
+             "apps/figcraft-android/android/app/src/main/jniLibs/arm64-v8a/libfigcraft_android.so"
+          chmod 644 "apps/figcraft-android/android/app/src/main/jniLibs/arm64-v8a/libfigcraft_android.so"
+
+      - name: Fijar la version de Gradle
+        working-directory: apps/figcraft-android/android
+        run: |
+          gradle wrapper --gradle-version 8.9 --distribution-type bin
+          ./gradlew --version | head -3
+
+      - name: Construir APK release con Gradle
+        working-directory: apps/figcraft-android/android
+        env:
+          ANDROID_NDK_HOME: ${{ env.NDK_DIR }}
+        run: ./gradlew --no-daemon --refresh-dependencies assembleRelease
+
+      - name: Leer versionName y renombrar el APK
+        working-directory: apps/figcraft-android/android
+        run: |
+          VERSION_NAME=$(grep -oP "versionName '\K[^']+" app/build.gradle)
+          echo "VERSION_NAME=$VERSION_NAME" >> "$GITHUB_ENV"
+          APK_SRC="app/build/outputs/apk/release/app-release.apk"
+          APK_DST="figcraft-android-${VERSION_NAME}-release-test.apk"
+          cp "$APK_SRC" "$APK_DST"
+          echo "APK renombrado: $APK_DST"
+
+      - name: Firmar APK release con la clave de debug del repo
+        working-directory: apps/figcraft-android/android
+        env:
+          KS_PATH: app/figcraft-debug.keystore
+          KS_STOREPASS: android
+          KS_KEYALIAS: figcraftdebug
+          KS_KEYPASS: android
+        run: |
+          APK="figcraft-android-${VERSION_NAME}-release-test.apk"
+          test -f "$APK" || { echo "::error::no sale el APK release renombrado"; exit 1; }
+          echo "APK antes de firmar: $APK"
+          du -h "$APK"
+          sha256sum "$APK"
+          "$ANDROID_SDK_ROOT/build-tools/34.0.0/apksigner" sign \
+            --ks "$KS_PATH" \
+            --ks-pass env:KS_STOREPASS \
+            --key-pass env:KS_KEYPASS \
+            --ks-key-alias "$KS_KEYALIAS" \
+            "$APK"
+          echo "APK firmado:"
+          du -h "$APK"
+          sha256sum "$APK"
+
+      - name: zipalign -c 4 sobre el APK final
+        working-directory: apps/figcraft-android/android
+        run: |
+          APK="figcraft-android-${VERSION_NAME}-release-test.apk"
+          "$ANDROID_SDK_ROOT/build-tools/34.0.0/zipalign" -c 4 "$APK"
+          echo "zipalign -c 4 OK"
+
+      - name: Datos publicos del APK release-test
+        working-directory: apps/figcraft-android/android
+        run: |
+          APK="figcraft-android-${VERSION_NAME}-release-test.apk"
+          echo "### tamano"
+          du -h "$APK" && stat -c%s "$APK"
+          echo "### sha256"
+          sha256sum "$APK"
+          echo "### aapt dump badging"
+          AAPT="$ANDROID_SDK_ROOT/build-tools/34.0.0/aapt2"
+          "$AAPT" dump badging "$APK"
+          echo "### permisos"
+          "$AAPT" dump badging "$APK" | grep -E 'uses-permission|uses-feature' || true
+          echo "### apksigner verify --verbose --print-certs"
+          "$ANDROID_SDK_ROOT/build-tools/34.0.0/apksigner" verify --verbose --print-certs "$APK"
+
+      - name: Generar release-info.txt con datos publicos
+        working-directory: apps/figcraft-android/android
+        run: |
+          {
+            echo "=== release-info ==="
+            echo "APK: figcraft-android-${VERSION_NAME}-release-test.apk"
+            echo "fecha: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo ""
+            echo "--- tamano ---"
+            du -h "figcraft-android-${VERSION_NAME}-release-test.apk"
+            stat -c%s "figcraft-android-${VERSION_NAME}-release-test.apk"
+            echo ""
+            echo "--- sha256sum ---"
+            sha256sum "figcraft-android-${VERSION_NAME}-release-test.apk"
+            echo ""
+            echo "--- aapt2 dump badging ---"
+            AAPT="$ANDROID_SDK_ROOT/build-tools/34.0.0/aapt2"
+            "$AAPT" dump badging "figcraft-android-${VERSION_NAME}-release-test.apk"
+            echo ""
+            echo "--- permisos ---"
+            "$AAPT" dump badging "figcraft-android-${VERSION_NAME}-release-test.apk" | grep -E 'uses-permission|uses-feature' || true
+            echo ""
+            echo "--- apksigner verify --verbose --print-certs ---"
+            "$ANDROID_SDK_ROOT/build-tools/34.0.0/apksigner" verify --verbose --print-certs "figcraft-android-${VERSION_NAME}-release-test.apk"
+            echo ""
+            echo "--- zipalign -c 4 ---"
+            "$ANDROID_SDK_ROOT/build-tools/34.0.0/zipalign" -c 4 "figcraft-android-${VERSION_NAME}-release-test.apk"
+            echo ""
+            echo "--- rustc --version ---"
+            rustc --version
+            echo ""
+            echo "--- cargo ndk --version ---"
+            cargo ndk --version
+          } > ../release-info.txt 2>&1
+
+      - name: Configuracion de perfil release en Cargo.toml
+        run: |
+          echo "### [profile.release] en Cargo.toml"
+          grep -A8 '^\[profile.release\]' Cargo.toml
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: figcraft-android-release-test
+          path: |
+            apps/figcraft-android/android/figcraft-android-*-release-test.apk
+            ../release-info.txt
+          if-no-files-found: error
+          retention-days: 30
+
+  # =========================================================================
+  # release-signed: build de release firmado con keystore de secretos de CI.
+  # Dispara SOLO en workflow_dispatch y tags v*-android.*.
+  # Nunca pull_request ni pull_request_target.
+  # =========================================================================
+  release-signed:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    if: >-
+      (github.event_name == 'workflow_dispatch' && (github.ref == 'refs/heads/release-prep' || github.ref == 'refs/heads/main'))
+      || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && contains(github.ref, '-android.'))
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Poner el SDK de Android en el PATH
+        uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407
+        with:
+          packages: platform-tools,build-tools;34.0.0
+          accept-android-sdk-licenses: true
+          log-accepted-android-sdk-licenses: true
+
+      - name: Instalar el NDK
+        run: |
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager "ndk;26.1.10909125"
+          echo "NDK_DIR=$ANDROID_SDK_ROOT/ndk/26.1.10909125" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/26.1.10909125" >> "$GITHUB_ENV"
+
+      - name: Cargo toolchain y target Android
+        run: |
+          rustc --version && cargo --version
+          rustup target add aarch64-linux-android
+          cargo install cargo-ndk --version 4.1.2 --locked
+
+      - name: Compilar la libreria nativa en release (arm64-v8a)
+        env:
+          ANDROID_NDK_HOME: ${{ env.NDK_DIR }}
+          CRAFT_FONTS_DIR: ${{ github.workspace }}/craft-fonts
+          CRAFT_FONTS_REQUIRED: "1"
+        run: |
+          cargo ndk -t arm64-v8a -o ./target build -p figcraft-android --locked --release
+          SO="target/aarch64-linux-android/release/libfigcraft_android.so"
+          echo "--- .so release producido ---"
+          ls -la "$SO"
+          file "$SO"
+
+      - name: Colocar .so en jniLibs
+        run: |
+          mkdir -p "apps/figcraft-android/android/app/src/main/jniLibs/arm64-v8a"
+          cp target/aarch64-linux-android/release/libfigcraft_android.so \
+             "apps/figcraft-android/android/app/src/main/jniLibs/arm64-v8a/libfigcraft_android.so"
+          chmod 644 "apps/figcraft-android/android/app/src/main/jniLibs/arm64-v8a/libfigcraft_android.so"
+
+      - name: Fijar la version de Gradle
+        working-directory: apps/figcraft-android/android
+        run: |
+          gradle wrapper --gradle-version 8.9 --distribution-type bin
+          ./gradlew --version | head -3
+
+      - name: Construir APK release con Gradle
+        working-directory: apps/figcraft-android/android
+        env:
+          ANDROID_NDK_HOME: ${{ env.NDK_DIR }}
+        run: ./gradlew --no-daemon --refresh-dependencies assembleRelease
+
+      - name: Leer versionName y renombrar el APK
+        working-directory: apps/figcraft-android/android
+        run: |
+          VERSION_NAME=$(grep -oP "versionName '\K[^']+" app/build.gradle)
+          echo "VERSION_NAME=$VERSION_NAME" >> "$GITHUB_ENV"
+          APK_SRC="app/build/outputs/apk/release/app-release.apk"
+          APK_DST="figcraft-android-${VERSION_NAME}-signed.apk"
+          cp "$APK_SRC" "$APK_DST"
+          echo "APK renombrado: $APK_DST"
+
+      - name: Decodificar keystore de release (solo este paso ve los secretos)
+        working-directory: apps/figcraft-android/android
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          test -n "$ANDROID_KEYSTORE_BASE64" || { echo "::error::falta ANDROID_KEYSTORE_BASE64"; exit 1; }
+          test -n "$ANDROID_KEYSTORE_PASSWORD" || { echo "::error::falta ANDROID_KEYSTORE_PASSWORD"; exit 1; }
+          test -n "$ANDROID_KEY_ALIAS" || { echo "::error::falta ANDROID_KEY_ALIAS"; exit 1; }
+          test -n "$ANDROID_KEY_PASSWORD" || { echo "::error::falta ANDROID_KEY_PASSWORD"; exit 1; }
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/figcraft-release.keystore"
+          chmod 600 "$RUNNER_TEMP/figcraft-release.keystore"
+          echo "KEYSTORE_PATH=$RUNNER_TEMP/figcraft-release.keystore" >> "$GITHUB_ENV"
+
+      - name: Firmar APK release con el keystore de secretos
+        working-directory: apps/figcraft-android/android
+        env:
+          KS_PATH: ${{ env.KEYSTORE_PATH }}
+          KS_STOREPASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KS_KEYALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KS_KEYPASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          APK="figcraft-android-${VERSION_NAME}-signed.apk"
+          test -f "$APK" || { echo "::error::no sale el APK release renombrado"; exit 1; }
+          echo "APK antes de firmar: $APK"
+          du -h "$APK"
+          sha256sum "$APK"
+          "$ANDROID_SDK_ROOT/build-tools/34.0.0/apksigner" sign \
+            --ks "$KS_PATH" \
+            --ks-pass env:KS_STOREPASS \
+            --key-pass env:KS_KEYPASS \
+            --ks-key-alias "$KS_KEYALIAS" \
+            "$APK"
+          echo "APK firmado:"
+          du -h "$APK"
+          sha256sum "$APK"
+
+      - name: Borrar el keystore decodificado (siempre, aunque falle)
+        if: always()
+        run: |
+          test -f "${{ env.KEYSTORE_PATH }}" && rm -f "${{ env.KEYSTORE_PATH }}" && echo "keystore borrado" || echo "no había keystore que borrar"
+
+      - name: zipalign -c 4 sobre el APK final
+        working-directory: apps/figcraft-android/android
+        run: |
+          APK="figcraft-android-${VERSION_NAME}-signed.apk"
+          "$ANDROID_SDK_ROOT/build-tools/34.0.0/zipalign" -c 4 "$APK"
+          echo "zipalign -c 4 OK"
+
+      - name: Datos publicos del APK release-signed
+        working-directory: apps/figcraft-android/android
+        run: |
+          APK="figcraft-android-${VERSION_NAME}-signed.apk"
+          echo "### tamano"
+          du -h "$APK" && stat -c%s "$APK"
+          echo "### sha256"
+          sha256sum "$APK"
+          echo "### aapt dump badging"
+          AAPT="$ANDROID_SDK_ROOT/build-tools/34.0.0/aapt2"
+          "$AAPT" dump badging "$APK"
+          echo "### permisos"
+          "$AAPT" dump badging "$APK" | grep -E 'uses-permission|uses-feature' || true
+          echo "### apksigner verify --verbose --print-certs"
+          "$ANDROID_SDK_ROOT/build-tools/34.0.0/apksigner" verify --verbose --print-certs "$APK"
+
+      - name: Configuracion de perfil release en Cargo.toml
+        run: |
+          echo "### [profile.release] en Cargo.toml"
+          grep -A8 '^\[profile.release\]' Cargo.toml
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: figcraft-android-release-signed
+          path: apps/figcraft-android/android/figcraft-android-*-signed.apk
+          if-no-files-found: error
+          retention-days: 30
