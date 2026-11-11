@@ -233,6 +233,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: JDK 17
         uses: actions/setup-java@v4
@@ -258,6 +260,13 @@ jobs:
           sdkmanager "ndk;26.1.10909125"
           echo "NDK_DIR=$ANDROID_SDK_ROOT/ndk/26.1.10909125" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/26.1.10909125" >> "$GITHUB_ENV"
+
+      - name: Check out craft-fonts
+        uses: actions/checkout@v4
+        with:
+          repository: storytold/craft-fonts
+          ref: 43913056ce82a3fdad0ef69f6b88d1dc922a8104
+          path: craft-fonts
 
       - name: Cargo toolchain y target Android
         run: |
@@ -378,9 +387,51 @@ jobs:
           echo "### [profile.release] en Cargo.toml"
           grep -A8 '^\[profile.release\]' Cargo.toml
 
+      - name: Generar release-info.txt con datos publicos
+        working-directory: apps/figcraft-android/android
+        run: |
+          {
+            echo "=== release-info ==="
+            echo "APK: figcraft-android-${VERSION_NAME}-signed.apk"
+            echo "fecha: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo ""
+            echo "--- tamano ---"
+            du -h "figcraft-android-${VERSION_NAME}-signed.apk"
+            stat -c%s "figcraft-android-${VERSION_NAME}-signed.apk"
+            echo ""
+            echo "--- sha256sum ---"
+            sha256sum "figcraft-android-${VERSION_NAME}-signed.apk"
+            echo ""
+            echo "--- aapt2 dump badging ---"
+            AAPT="$ANDROID_SDK_ROOT/build-tools/34.0.0/aapt2"
+            "$AAPT" dump badging "figcraft-android-${VERSION_NAME}-signed.apk"
+            echo ""
+            echo "--- permisos ---"
+            "$AAPT" dump badging "figcraft-android-${VERSION_NAME}-signed.apk" | grep -E 'uses-permission|uses-feature' || true
+            echo ""
+            echo "--- apksigner verify --verbose --print-certs ---"
+            "$ANDROID_SDK_ROOT/build-tools/34.0.0/apksigner" verify --verbose --print-certs "figcraft-android-${VERSION_NAME}-signed.apk"
+            echo ""
+            echo "--- zipalign -c 4 ---"
+            "$ANDROID_SDK_ROOT/build-tools/34.0.0/zipalign" -c 4 "figcraft-android-${VERSION_NAME}-signed.apk"
+            echo ""
+            echo "--- rustc --version ---"
+            rustc --version
+            echo ""
+            echo "--- cargo ndk --version ---"
+            cargo ndk --version
+          } > "$GITHUB_WORKSPACE/release-info.txt" 2>&1
+
+      - name: Verificar release-info.txt generado
+        run: |
+          ls -la "$GITHUB_WORKSPACE/release-info.txt"
+          test -s "$GITHUB_WORKSPACE/release-info.txt" || { echo "::error::release-info.txt vacio o inexistente"; exit 1; }
+
       - uses: actions/upload-artifact@v4
         with:
           name: figcraft-android-release-signed
-          path: apps/figcraft-android/android/figcraft-android-*-signed.apk
+          path: |
+            apps/figcraft-android/android/figcraft-android-*-signed.apk
+            release-info.txt
           if-no-files-found: error
           retention-days: 30
